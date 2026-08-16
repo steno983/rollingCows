@@ -2,24 +2,8 @@ import type { Rng } from '../core/rng';
 import { CONFIG } from './config';
 import type { Entity, EntityKind, Lane, ObstacleKind, PickupKind } from './types';
 
-/** Quota della base del ramo sospeso: sotto ci si passa con lo slam.
- *  È geometria dell'entità (come ENTITY_BOX in collisions.ts), non bilanciamento. */
-export const BRANCH_Y = 1.6;
-
-/** Pesi della tabella di generazione. Stanno qui e non in CONFIG perché il
- *  contratto congela il contenuto di config.ts: sono gli unici numeri locali del
- *  modulo e vivono tutti in questa costante, pronti per essere spostati. */
-const WEIGHTS = {
-  /** Probabilità che la riga sia dominata da una cabin, a difficoltà 0 e 1. */
-  cabinBase: 0.1,
-  cabinPerDifficulty: 0.12,
-  /** Probabilità di un secondo ostacolo a terra, a difficoltà 0 e 1. */
-  secondObstacleBase: 0.2,
-  secondObstaclePerDifficulty: 0.45,
-  /** Probabilità di un ramo sospeso, a difficoltà 0 e 1. */
-  branchBase: 0.12,
-  branchPerDifficulty: 0.2,
-} as const;
+/** Quota della base del ramo sospeso: sotto ci si passa con lo slam. */
+export const BRANCH_Y: number = CONFIG.spawn.branchY;
 
 /** Ostacoli che poggiano a terra e bloccano la corsia. */
 const GROUND_OBSTACLES: readonly ObstacleKind[] = ['rock', 'tree', 'fence', 'crevasse'];
@@ -104,7 +88,8 @@ export function createSpawner(rng: Rng): Spawner {
     clearLanes();
 
     // 1. Ostacoli a terra. La cabin occupa due corsie e da sola satura il budget.
-    const cabinChance = WEIGHTS.cabinBase + WEIGHTS.cabinPerDifficulty * difficulty;
+    const cabinChance =
+      CONFIG.spawn.cabinChanceBase + CONFIG.spawn.cabinChancePerDifficulty * difficulty;
     if (blockLimit >= 2 && laneCount >= 3 && rng.chance(cabinChance)) {
       const lane = rng.int(0, laneCount - 1); // 0 o 1: la cabin sfora a destra
       emit(out, 'cabin', 'obstacle', lane, 2, rowZ, 0);
@@ -112,7 +97,8 @@ export function createSpawner(rng: Rng): Spawner {
       laneBlocked[lane + 1] = true;
     } else {
       const secondChance =
-        WEIGHTS.secondObstacleBase + WEIGHTS.secondObstaclePerDifficulty * difficulty;
+        CONFIG.spawn.secondObstacleChanceBase +
+        CONFIG.spawn.secondObstacleChancePerDifficulty * difficulty;
       const wanted = rng.chance(secondChance) ? 2 : 1;
       const count = Math.min(wanted, blockLimit);
       for (let i = 0; i < count; i++) {
@@ -126,7 +112,8 @@ export function createSpawner(rng: Rng): Spawner {
     // 2. Ramo sospeso: non blocca la corsia (ci si passa sotto con lo slam), ma lo
     //    generiamo solo se resta almeno una corsia completamente sgombra.
     const blocked = laneCount - freeLaneCount();
-    const branchChance = WEIGHTS.branchBase + WEIGHTS.branchPerDifficulty * difficulty;
+    const branchChance =
+      CONFIG.spawn.branchChanceBase + CONFIG.spawn.branchChancePerDifficulty * difficulty;
     if (blocked < blockLimit && rng.chance(branchChance)) {
       const lane = pickFreeLane();
       if (lane >= 0) {

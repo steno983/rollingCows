@@ -9,6 +9,8 @@ export const CONFIG = {
     chunkLength: 40,
     chunkCount: 6,
     despawnBehindZ: -20,
+    /** Zona franca davanti al giocatore alla partenza: nessuna entità nasce sotto questa z. */
+    spawnSafeZ: 25,
   },
   player: {
     laneChangeSeconds: 0.12,
@@ -20,6 +22,36 @@ export const CONFIG = {
     baseHeight: 1.2,
     heightPerSize: 0.25,
     depth: 1.4,
+    /** Durata della finestra di schiacciata a terra: quanto la mucca resta abbassata. */
+    slamGroundSeconds: 0.25,
+  },
+  collisions: {
+    /** Quanto si abbassa la mucca in schiacciata: dimezza l'altezza del box, il
+     *  che la porta sotto la base del ramo sospeso (spawn.branchY) fino a taglia 5. */
+    slamHeightRatio: 0.5,
+    /** Ingombro verticale e in profondità di ogni tipo di entità. La larghezza
+     *  non serve: deriva dalle corsie occupate (entityHalfWidth). */
+    entityBox: {
+      /** Masso basso e tozzo: si scavalca solo saltando. */
+      rock: { height: 1.4, depth: 1.4 },
+      /** Albero: troppo alto per essere saltato, va aggirato o sfondato da taglia 3. */
+      tree: { height: 3, depth: 1.2 },
+      /** Staccionata: bassa e sottile, il salto ci passa sopra comodamente. */
+      fence: { height: 1.2, depth: 0.8 },
+      /** Baita: muro invalicabile, profondo, che occupa due corsie. */
+      cabin: { height: 3.5, depth: 4 },
+      /** Crepaccio: praticamente piatto, quindi collide solo con chi è a terra;
+       *  molto profondo, così va anticipato con il salto. */
+      crevasse: { height: 0.1, depth: 3 },
+      /** Ramo sospeso: base a spawn.branchY, spesso quanto una staccionata. */
+      branch: { height: 1.2, depth: 0.8 },
+      /** Fiocco di neve: piccolo, ma la raccolta è generosa. */
+      snowflake: { height: 0.8, depth: 0.8 },
+      /** Balla di fieno: cubo di un metro. */
+      hay: { height: 1, depth: 1 },
+      /** Altra mucca: stesse proporzioni del giocatore a taglia 1. */
+      cow: { height: 1.4, depth: 1.6 },
+    },
   },
   avalanche: {
     threshold: 100,
@@ -60,6 +92,17 @@ export const CONFIG = {
     pickupChance: 0.45,
     cowChance: 0.05,
     hayChance: 0.15,
+    /** Probabilità che la riga sia dominata da una cabin, a difficoltà 0 e 1. */
+    cabinChanceBase: 0.1,
+    cabinChancePerDifficulty: 0.12,
+    /** Probabilità di un secondo ostacolo a terra, a difficoltà 0 e 1. */
+    secondObstacleChanceBase: 0.2,
+    secondObstacleChancePerDifficulty: 0.45,
+    /** Probabilità di un ramo sospeso, a difficoltà 0 e 1. */
+    branchChanceBase: 0.12,
+    branchChancePerDifficulty: 0.2,
+    /** Quota della base del ramo sospeso: sotto ci si passa con lo slam. */
+    branchY: 1.6,
   },
   render: {
     maxPixelRatio: 2,
@@ -78,8 +121,41 @@ export const CONFIG = {
     swipeMaxMs: 400,
     bufferSeconds: 0.18,
   },
+  audio: {
+    /** Volume del bus principale: tutto passa di qui. */
+    masterVolume: 0.35,
+    mutedKey: 'rollingcows.muted',
+    /** Durata del buffer di rumore bianco riusato da impatti e rombo. */
+    noiseSeconds: 1,
+    /** Muggito: sawtooth con portamento discendente. */
+    moo: { startHz: 220, endHz: 110, seconds: 0.5, attackRatio: 0.12, gain: 0.9 },
+    /** Impatto: rumore bianco passa-basso con decadimento rapido. */
+    impact: { cutoffHz: 700, seconds: 0.28, gain: 1 },
+    /** Raccolta: triangolare con salto di frequenza verso l'alto. */
+    pickup: { lowHz: 620, highHz: 990, stepRatio: 0.35, seconds: 0.18, gain: 0.5 },
+    /** Rombo della valanga: rumore filtrato in loop. */
+    rumble: { cutoffHz: 380, maxGain: 0.8, riseSeconds: 0.4, fadeSeconds: 0.8, endingGainRatio: 0.4 },
+  },
   perf: {
     lowFpsThreshold: 45,
     lowFpsSeconds: 3,
+    /** Costante di tempo della media mobile degli FPS, in secondi. */
+    smoothingSeconds: 0.5,
+    /** Fattore applicato alle particelle quando la qualità viene abbassata. */
+    lowQualityParticleScale: 0.35,
+    /** Ogni quanti secondi loggare draw call e triangoli in console. */
+    statsLogSeconds: 5,
+  },
+  feel: {
+    /** Rallentatore alla morte: quanto dura e quanto rallenta. */
+    deathSlowSeconds: 0.8,
+    deathTimeScale: 0.35,
+    /** Ampiezza dello scuotimento di camera per i vari eventi. */
+    impactShake: 0.7,
+    avalancheShake: 1.1,
+    deathShake: 1.6,
+    /** Potenza dell'esplosione di cubetti. */
+    deathBurstPower: 9,
+    smashBurstPower: 6,
   },
 } as const;

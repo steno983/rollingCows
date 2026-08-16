@@ -98,11 +98,65 @@ describe('startRun', () => {
     expect(game.seed).toBe(7);
     expect(game.alive).toBe(true);
     expect(game.forgivenessUsed).toBe(false);
-    expect(game.entities).toHaveLength(0);
+    // Il pendio iniziale è ripopolato da zero (niente entità residue dalla run
+    // precedente) e nessuna nasce nella zona franca davanti al giocatore.
+    expect(game.entities.length).toBeGreaterThan(0);
+    for (const entity of game.entities) {
+      expect(entity.z).toBeGreaterThanOrEqual(CONFIG.world.spawnSafeZ);
+    }
     expect(game.score).toEqual({ points: 0, distance: 0 });
     expect(game.world.distance).toBe(0);
     expect(game.avalanche).toEqual({ charge: 0, size: 1, phase: 'idle', timeLeft: 0 });
     expect(payloadsOf(events, 'run:started')).toEqual([{ seed: 99 }, { seed: 7 }]);
+  });
+});
+
+describe('startRun — popolamento iniziale del pendio', () => {
+  it('subito dopo startRun il pendio non è vuoto', () => {
+    const bus = createEventBus();
+    const game = createGame(2026, bus);
+
+    startRun(game);
+
+    expect(game.entities.length).toBeGreaterThan(0);
+  });
+
+  it('nessuna entità nasce nella zona franca davanti al giocatore', () => {
+    const bus = createEventBus();
+    const game = createGame(2026, bus);
+
+    startRun(game);
+
+    for (const entity of game.entities) {
+      expect(entity.z).toBeGreaterThanOrEqual(CONFIG.world.spawnSafeZ);
+    }
+  });
+
+  it('nei primi 3 secondi il giocatore incontra almeno un ostacolo o un raccoglibile', () => {
+    // Prima della correzione i chunk iniziali erano vuoti: il primo riciclo
+    // arriva solo dopo ~3,3s a velocità iniziale, quindi in questa finestra
+    // non poteva succedere nulla.
+    const bus = createEventBus();
+    const game = createGame(2026, bus);
+    startRun(game);
+    const events = recordEvents(bus);
+
+    runFrames(game, 3 * 60);
+
+    const encountered =
+      countOf(events, 'obstacle:hit') + countOf(events, 'pickup:collected');
+    expect(encountered).toBeGreaterThan(0);
+  });
+
+  it('resta deterministico: stesso seed produce le stesse entità iniziali', () => {
+    function initialEntities(seed: number): Entity[] {
+      const bus = createEventBus();
+      const game = createGame(seed, bus);
+      startRun(game);
+      return game.entities.map((entity) => ({ ...entity }));
+    }
+
+    expect(initialEntities(2026)).toEqual(initialEntities(2026));
   });
 });
 

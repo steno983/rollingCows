@@ -1,4 +1,5 @@
 import type { GameStateName } from '../core/state-machine';
+import { CONFIG } from '../game/config';
 
 export interface Screens {
   show(name: GameStateName): void;
@@ -12,6 +13,15 @@ export interface Screens {
 }
 
 const HIDDEN = 'screen--hidden';
+
+/** Stato del mute salvato dall'audio: il bottone deve nascere coerente. */
+function readPersistedMuted(): boolean {
+  try {
+    return globalThis.localStorage?.getItem(CONFIG.audio.mutedKey) === '1';
+  } catch {
+    return false;
+  }
+}
 
 /**
  * Menu, pausa e game over in HTML/CSS sopra al canvas.
@@ -77,7 +87,7 @@ export function createScreens(root: HTMLElement): Screens {
   let menuFn: () => void = noop;
   let muteFn: (muted: boolean) => void = () => {};
 
-  let muted = false;
+  let muted = readPersistedMuted();
 
   function bind(action: string, handler: () => void): void {
     layer.querySelectorAll<HTMLButtonElement>(`[data-action="${action}"]`).forEach((button) => {

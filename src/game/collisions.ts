@@ -14,32 +14,13 @@ export interface Box {
 }
 
 /** Quanto si abbassa la mucca in schiacciata: dimezza l'altezza del box, il che
- *  la porta sotto la base del ramo sospeso (1.6) fino a taglia 5. */
-export const SLAM_HEIGHT_RATIO = 0.5;
+ *  la porta sotto la base del ramo sospeso (CONFIG.spawn.branchY) fino a taglia 5. */
+export const SLAM_HEIGHT_RATIO: number = CONFIG.collisions.slamHeightRatio;
 
 /** Ingombro verticale e in profondità di ogni tipo di entità. La larghezza non
  *  serve: deriva dalle corsie occupate (`entityHalfWidth`). */
-export const ENTITY_BOX: Record<EntityKind, { height: number; depth: number }> = {
-  /** Masso basso e tozzo: si scavalca solo saltando. */
-  rock: { height: 1.4, depth: 1.4 },
-  /** Albero: troppo alto per essere saltato, va aggirato o sfondato da taglia 3. */
-  tree: { height: 3, depth: 1.2 },
-  /** Staccionata: bassa e sottile, il salto ci passa sopra comodamente. */
-  fence: { height: 1.2, depth: 0.8 },
-  /** Baita: muro invalicabile, profondo, che occupa due corsie. */
-  cabin: { height: 3.5, depth: 4 },
-  /** Crepaccio: praticamente piatto, quindi collide solo con chi è a terra;
-   *  molto profondo, così va anticipato con il salto. */
-  crevasse: { height: 0.1, depth: 3 },
-  /** Ramo sospeso: base a 1.6 (vedi BRANCH_Y), spesso quanto una staccionata. */
-  branch: { height: 1.2, depth: 0.8 },
-  /** Fiocco di neve: piccolo, ma la raccolta è generosa. */
-  snowflake: { height: 0.8, depth: 0.8 },
-  /** Balla di fieno: cubo di un metro. */
-  hay: { height: 1, depth: 1 },
-  /** Altra mucca: stesse proporzioni del giocatore a taglia 1. */
-  cow: { height: 1.4, depth: 1.6 },
-};
+export const ENTITY_BOX: Record<EntityKind, { height: number; depth: number }> =
+  CONFIG.collisions.entityBox;
 
 /** Box del giocatore. `slamming` (estensione additiva del contratto) riduce
  *  l'altezza: è così che si passa sotto al ramo sospeso. */

@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { createRng } from '../core/rng';
 import { CONFIG } from '../game/config';
 import {
   cameraDistanceFor,
@@ -6,6 +7,12 @@ import {
   cameraHeightFor,
   decayShake,
 } from './camera-rig';
+
+/** Seed fisso del jitter dello shake: l'unica sorgente di casualità della vista
+ *  passa anche lei dall'unico meccanismo di casualità della codebase (l'Rng con
+ *  seed), invece di Math.random(). Non è l'Rng di gioco: uno shake non deve
+ *  consumarne la sequenza né renderla dipendente dal frame rate della resa. */
+const SHAKE_SEED = 0x5eed_c0de;
 
 export interface SceneContext {
   renderer: THREE.WebGLRenderer;
@@ -107,6 +114,7 @@ export function createScene(canvas: HTMLCanvasElement): SceneContext {
   scene.add(sun.target);
 
   const lookAt = new THREE.Vector3(0, LOOK_AT_Y, LOOK_AHEAD_Z);
+  const shakeRng = createRng(SHAKE_SEED);
   let shakeAmount = 0;
   let fovT = 1;
   let lastAvalanche = false;
@@ -142,8 +150,8 @@ export function createScene(canvas: HTMLCanvasElement): SceneContext {
     height += (cameraHeightFor(size) - height) * k;
 
     shakeAmount = decayShake(shakeAmount, dt);
-    const offsetX = (Math.random() * 2 - 1) * shakeAmount;
-    const offsetY = (Math.random() * 2 - 1) * shakeAmount;
+    const offsetX = (shakeRng.next() * 2 - 1) * shakeAmount;
+    const offsetY = (shakeRng.next() * 2 - 1) * shakeAmount;
     camera.position.set(offsetX, height + offsetY, -distance);
     camera.lookAt(lookAt);
   }

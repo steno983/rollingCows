@@ -1,4 +1,5 @@
 import './style.css';
+import { createAudio } from './audio/audio';
 import { createEventBus } from './core/events';
 import { createLoop } from './core/loop';
 import { createStateMachine } from './core/state-machine';
@@ -11,10 +12,12 @@ import { worldToViewX } from './render/camera-rig';
 import { avalancheTrail, burstFromModel, resetDebris } from './render/debris';
 import { createEntitiesView } from './render/entities-view';
 import { MODELS } from './render/models';
+import { createPerfMonitor } from './render/perf-monitor';
 import { createPlayerView } from './render/player-view';
-import { createScene, type SceneContext } from './render/scene';
+import { createScene } from './render/scene';
 import { createTerrain } from './render/terrain';
 import { createVoxelPool } from './render/voxel-pool';
+import { isWebGLAvailable, showWebGLError } from './render/webgl-support';
 import { createHud } from './ui/hud';
 import { createScreens } from './ui/screens';
 
@@ -40,26 +43,19 @@ function getUiRoot(): HTMLElement {
   return root;
 }
 
-function showFatal(message: string): void {
-  const box = document.createElement('div');
-  box.style.cssText =
-    'position:fixed;inset:0;display:flex;align-items:center;justify-content:center;' +
-    'font:16px/1.5 system-ui,sans-serif;color:#123;background:#e8f4ff;text-align:center;padding:24px;z-index:9;';
-  box.textContent = message;
-  document.body.appendChild(box);
-}
-
 function main(): void {
   const canvas = getCanvas();
   const uiRoot = getUiRoot();
 
-  let view: SceneContext;
-  try {
-    view = createScene(canvas);
-  } catch {
-    showFatal('WebGL non è disponibile su questo browser: Rolling Cows non può partire.');
+  // Rilevamento esplicito invece del try/catch attorno a createScene: un
+  // messaggio pulito e selezionabile al posto dello schermo nero, prima
+  // ancora di provare ad allocare renderer o scena.
+  if (!isWebGLAvailable()) {
+    showWebGLError(uiRoot);
     return;
   }
+
+  const view = createScene(canvas);
 
   const terrain = createTerrain();
   const entitiesView = createEntitiesView();
@@ -74,11 +70,36 @@ function main(): void {
   const hud = createHud(uiRoot);
   const screens = createScreens(uiRoot);
   const machine = createStateMachine();
+  const perf = createPerfMonitor();
 
   const bus = createEventBus();
   const game = createGame(Date.now(), bus);
 
+  const audio = createAudio();
+  audio.attach(bus);
+
+  /**
+   * Sblocco dell'audio al primo gesto reale dell'utente: è l'unico momento in cui
+   * iOS/Safari accetta il resume dell'AudioContext. I listener si tolgono da soli.
+   */
+  const unlockAudio = (): void => {
+    audio.unlock();
+    window.removeEventListener('pointerdown', unlockAudio);
+    window.removeEventListener('touchend', unlockAudio);
+    window.removeEventListener('keydown', unlockAudio);
+  };
+  window.addEventListener('pointerdown', unlockAudio);
+  window.addEventListener('touchend', unlockAudio);
+  window.addEventListener('keydown', unlockAudio);
+
   let record = loadRecord();
+  /** Scala applicata a burst e scia quando il monitor perf chiede il degrado. */
+  let particleScale = 1;
+  let statsTimer = 0;
+
+  /** Rallentatore alla morte: si continua a renderizzare, poi arriva il game over. */
+  let dyingSeconds = 0;
+  let pendingGameOver: { points: number; distance: number; isRecord: boolean } | null = null;
 
   function goToMenu(): void {
     if (machine.transition('menu')) {
@@ -92,6 +113,9 @@ function main(): void {
     startRun(game, Date.now());
     pool.reset();
     resetDebris();
+    dyingSeconds = 0;
+    pendingGameOver = null;
+    playerView.group.visible = true;
     screens.show('playing');
   }
 
@@ -105,49 +129,63 @@ function main(): void {
     }
   }
 
+  function showGameOver(): void {
+    const payload = pendingGameOver;
+    pendingGameOver = null;
+    if (payload === null || !machine.transition('gameover')) return;
+    screens.setGameOver(payload.points, record, payload.isRecord);
+    screens.show('gameover');
+  }
+
   screens.onStart(beginRun);
   screens.onRestart(beginRun);
   screens.onResume(togglePause);
   screens.onMenu(goToMenu);
-  screens.onToggleMute(() => {
-    // L'audio arriva in un task successivo: qui il toggle esiste già e non fa nulla.
+  screens.onToggleMute((isMuted) => {
+    audio.setMuted(isMuted);
   });
 
   bus.on('obstacle:hit', (payload) => {
     const width = payload.kind === 'cabin' ? 2 : 1;
     const hitX = worldToViewX(entityCenterX(payload.lane, width));
-    const cowX = worldToViewX(game.player.x);
 
     if (payload.outcome === 'smashed') {
-      burstFromModel(pool, MODELS[payload.kind], hitX, 0.4, payload.z, 9);
-      view.shake(0.28);
+      burstFromModel(pool, MODELS[payload.kind], hitX, 0.4, payload.z, CONFIG.feel.smashBurstPower * particleScale);
+      view.shake(CONFIG.feel.impactShake);
       return;
     }
     if (payload.outcome === 'forgiven') {
-      burstFromModel(pool, MODELS[payload.kind], hitX, 0.4, payload.z, 6);
-      view.shake(0.45);
+      burstFromModel(pool, MODELS[payload.kind], hitX, 0.4, payload.z, CONFIG.feel.smashBurstPower * particleScale);
+      view.shake(CONFIG.feel.impactShake);
       return;
     }
-    // morte: la mucca si disintegra e l'ostacolo con lei
-    burstFromModel(pool, MODELS.cow, cowX, 0.6, 0, 16);
-    burstFromModel(pool, MODELS[payload.kind], hitX, 0.4, payload.z, 10);
-    view.shake(0.7);
+    // morte: l'ostacolo si disintegra subito, la mucca segue al via del rallentatore.
+    burstFromModel(pool, MODELS[payload.kind], hitX, 0.4, payload.z, CONFIG.feel.deathBurstPower * particleScale);
+    view.shake(CONFIG.feel.impactShake);
   });
 
   bus.on('pickup:collected', (payload) => {
-    burstFromModel(pool, MODELS[payload.kind], worldToViewX(game.player.x), 0.8, 0, 4);
+    burstFromModel(pool, MODELS[payload.kind], worldToViewX(game.player.x), 0.8, 0, 4 * particleScale);
   });
 
   bus.on('avalanche:triggered', () => {
-    view.shake(0.6);
+    view.shake(CONFIG.feel.avalancheShake);
   });
 
   bus.on('run:ended', (payload) => {
     record = Math.max(record, payload.points);
-    if (machine.transition('gameover')) {
-      screens.setGameOver(payload.points, record, payload.isRecord);
-      screens.show('gameover');
-    }
+    pendingGameOver = payload;
+    dyingSeconds = CONFIG.feel.deathSlowSeconds;
+    view.shake(CONFIG.feel.deathShake);
+    burstFromModel(
+      pool,
+      MODELS.cow,
+      worldToViewX(game.player.x),
+      0.6,
+      0,
+      CONFIG.feel.deathBurstPower * particleScale,
+    );
+    playerView.group.visible = false;
   });
 
   document.addEventListener('visibilitychange', () => {
@@ -173,14 +211,57 @@ function main(): void {
     hud.setAvalanche(game.avalanche.phase !== 'idle', game.avalanche.phase === 'warning');
   }
 
+  /** Logga draw call e triangoli ogni CONFIG.perf.statsLogSeconds: aiuta a
+   *  scovare a occhio un tipo di entità sfuggito all'istanziazione. */
+  function logStats(dt: number): void {
+    statsTimer += dt;
+    if (statsTimer < CONFIG.perf.statsLogSeconds) return;
+    statsTimer = 0;
+    const info = view.renderer.info.render;
+    console.info(`[perf] draw call: ${info.calls} | triangoli: ${info.triangles} | budget: <60 / <150000`);
+  }
+
+  /**
+   * Il loop interno gira a step fisso (vedi core/loop.ts): dt qui è sempre lo
+   * stesso valore, quindi non basta per misurare il framerate reale dello
+   * schermo. Il tempo vero fra due frame renderizzati si misura a parte, in
+   * render(), con performance.now().
+   */
+  let lastFrameMs: number | null = null;
+  function samplePerf(): void {
+    const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+    if (lastFrameMs !== null) {
+      const realDt = (now - lastFrameMs) / 1000;
+      if (perf.sample(realDt) && particleScale === 1) {
+        particleScale = CONFIG.perf.lowQualityParticleScale;
+        view.setQuality(true);
+        console.info('[perf] frame rate basso: qualità ridotta (ombre off, meno particelle)');
+      }
+    }
+    lastFrameMs = now;
+  }
+
   const loop = createLoop({
     update(dt: number): void {
       // PAUSE va letto in qualunque stato, altrimenti da fermi Esc non riprende.
       const action = input.consume();
       if (action === 'PAUSE') {
         togglePause();
-      } else if (action !== null && machine.current === 'playing') {
+      } else if (action !== null && machine.current === 'playing' && dyingSeconds <= 0) {
         handleAction(game, action);
+      }
+
+      // Rallentatore alla morte: la logica di gioco resta ferma (game.alive è
+      // già false), ma detriti e camera continuano ad animarsi al rallenty
+      // finché non scade dyingSeconds, poi si passa al game over.
+      if (dyingSeconds > 0) {
+        dyingSeconds -= dt;
+        const slowDt = dt * CONFIG.feel.deathTimeScale;
+        pool.update(slowDt, game.world.speed * CONFIG.feel.deathTimeScale);
+        view.update(slowDt, game.avalanche.size, false);
+        logStats(dt);
+        if (dyingSeconds <= 0) showGameOver();
+        return;
       }
 
       const playing = machine.current === 'playing';
@@ -190,7 +271,7 @@ function main(): void {
       }
 
       const avalancheOn = playing && game.avalanche.phase !== 'idle';
-      const intensity = avalancheOn ? game.avalanche.size / CONFIG.avalanche.maxSize : 0;
+      const intensity = avalancheOn ? (game.avalanche.size / CONFIG.avalanche.maxSize) * particleScale : 0;
       avalancheTrail(pool, dt, worldToViewX(game.player.x), 0.2, -1.5, intensity);
       pool.update(dt, game.world.speed);
 
@@ -200,8 +281,10 @@ function main(): void {
       entitiesView.sync(game.entities);
       playerView.sync(game.player, game.avalanche.size, game.world.speed, playing ? dt : 0);
       view.update(dt, game.avalanche.size, avalancheOn);
+      logStats(dt);
     },
     render(): void {
+      samplePerf();
       view.render();
     },
   });

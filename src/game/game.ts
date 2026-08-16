@@ -85,6 +85,25 @@ export function startRun(game: GameState, seed?: number): void {
   game.alive = true;
   game.forgivenessUsed = false;
 
+  // I chunk esistono già ma sono vuoti: senza questo, il primo riciclo (dopo
+  // ~60 unità) è l'unica occasione di generazione, e la partenza è un pendio
+  // vuoto per ~15 secondi. Popoliamo subito con la difficoltà a distanza 0,
+  // poi ripuliamo la zona franca davanti al giocatore per non nascere addosso
+  // a un ostacolo.
+  const difficulty = difficultyAt(game.world.distance);
+  const chunks = game.world.chunks;
+  for (let i = 0; i < chunks.length; i++) {
+    const chunk = chunks[i];
+    if (chunk === undefined) continue;
+    game.spawner.populateChunk(chunk.z, difficulty, game.entities);
+  }
+  const spawnSafeZ = CONFIG.world.spawnSafeZ;
+  for (let i = 0; i < game.entities.length; i++) {
+    const entity = game.entities[i];
+    if (entity !== undefined && entity.z < spawnSafeZ) entity.alive = false;
+  }
+  compactEntities(game.entities);
+
   game.bus.emit('run:started', { seed: game.seed });
 }
 
@@ -120,13 +139,18 @@ export function updateGame(game: GameState, dt: number): void {
   updateAvalanche(game.avalanche, dt, game.bus);
 
   const difficulty = difficultyAt(game.world.distance);
-  for (const chunk of game.world.recycled) {
+  const recycled = game.world.recycled;
+  for (let i = 0; i < recycled.length; i++) {
+    const chunk = recycled[i];
+    if (chunk === undefined) continue;
     game.spawner.populateChunk(chunk.z, difficulty, game.entities);
   }
 
   const moved = game.world.distance - distanceBefore;
-  for (const entity of game.entities) {
-    if (!entity.alive) continue;
+  const entities = game.entities;
+  for (let i = 0; i < entities.length; i++) {
+    const entity = entities[i];
+    if (entity === undefined || !entity.alive) continue;
     entity.z -= moved;
     if (entity.z < CONFIG.world.despawnBehindZ) entity.alive = false;
   }
@@ -137,8 +161,9 @@ export function updateGame(game: GameState, dt: number): void {
     game.avalanche.size,
     game.player.slamming,
   );
-  for (const entity of game.entities) {
-    if (!entity.alive) continue;
+  for (let i = 0; i < entities.length; i++) {
+    const entity = entities[i];
+    if (entity === undefined || !entity.alive) continue;
     if (Math.abs(entity.z) > COLLISION_Z_WINDOW) continue;
     if (!boxesOverlap(box, entityBox(entity))) continue;
 

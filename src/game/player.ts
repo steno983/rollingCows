@@ -3,7 +3,7 @@ import { clampLane, laneToX } from './lanes';
 import type { Lane } from './types';
 
 /** Durata della finestra di schiacciata a terra: quanto la mucca resta abbassata. */
-export const SLAM_GROUND_SECONDS = 0.25;
+export const SLAM_GROUND_SECONDS: number = CONFIG.player.slamGroundSeconds;
 
 /** Velocità iniziale e gravità del salto scriptato. Da y(t) = v0*t - g*t^2/2, per
  *  durare T = jumpSeconds e culminare a h = jumpHeight servono v0 = 4h/T e g = 8h/T^2. */

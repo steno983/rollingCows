@@ -11,11 +11,21 @@ export interface TerrainView {
 const SNOW_COLOR = 0xf4fbff;
 const BANK_WIDTH = 3;
 const BANK_TILT = 0.3;
-/** Più segmenti di prima (12): la salita del rilievo procedurale fra il bordo
- *  del corridoio e il plateau (vedi MAX_LATERAL_RISE) va su una mesh molto
- *  più larga di prima, e con pochi segmenti diventerebbe a faccette grezze. */
-const SEGMENTS_X = 40;
+/** Segmenti in z per il rilievo laterale: invariato, serve solo a rendere
+ *  leggibile l'ondulazione (il termine `wave` di heightAt) lungo la
+ *  profondità del chunk. */
 const SEGMENTS_Z = 24;
+/** Segmenti in x per il PAVIMENTO del corridoio: 1 solo basta, perché è
+ *  piatto per costruzione (vedi corridorFloor in createChunkGeometry, che
+ *  NON chiama displaceGround) — con MeshLambertMaterial l'illuminazione è
+ *  per-vertice, ma su una normale costante (0,1,0) l'interpolazione non
+ *  introduce alcun errore, e le ombre sono per-frammento (shadow map), non
+ *  per-vertice: più segmenti qui non migliorerebbero nulla, solo più
+ *  triangoli a vuoto. */
+const CORRIDOR_SEGMENTS_X = 1;
+/** Segmenti in x per il rilievo laterale, PER LATO (non più su tutta la
+ *  larghezza: vedi il difetto che questo sostituisce, sotto). */
+const OUTER_SEGMENTS_X = 32;
 /** Semilarghezza del corridoio percorribile: 3 unità con la config di default. */
 const CORRIDOR_HALF = (CONFIG.world.laneCount * CONFIG.world.laneWidth) / 2;
 /** Margine originale fra corridoio e banco: invariato, i banchi restano dove
@@ -50,20 +60,35 @@ const MAX_LATERAL_RISE = CONFIG.render.groundMaxLateralRise;
 const WAVE_COEF = 2;
 const RISE_COEF = 2.2;
 
+/**
+ * Altezza del pendio in un punto (x, z), fuori dal corridoio: 0 se |x| è
+ * dentro il corridoio (lateral <= 1), cresce con la distanza laterale fino
+ * al tetto MAX_LATERAL_RISE, modulata dall'ondulazione periodica in z.
+ * Logica pura (nessun three.js): usata sia da displaceGround sia dai test.
+ * NON è la fonte della piattezza del corridoio — quella è garantita a monte,
+ * in createChunkGeometry, dal fatto che il pavimento del corridoio è una
+ * geometria a parte che non chiama mai questa funzione (vedi il commento
+ * lì): qui sotto il valore risulterebbe comunque 0 per |x| <= CORRIDOR_HALF,
+ * ma non è quello a cui ci si affida.
+ */
+export function heightAt(x: number, z: number): number {
+  const length = CONFIG.world.chunkLength;
+  const lateral = Math.abs(x) / CORRIDOR_HALF;
+  const outside = Math.min(MAX_LATERAL_RISE, Math.max(0, lateral - 1));
+  // Periodica su chunkLength: a z = 0 e a z = chunkLength il seno vale 0,
+  // quindi i bordi di due chunk adiacenti combaciano esattamente.
+  const wave =
+    Math.sin((z / length) * Math.PI * 2) * 0.18 +
+    Math.sin((z / length) * Math.PI * 6 + x * 0.6) * 0.09;
+  return wave * outside * WAVE_COEF + outside * outside * RISE_COEF;
+}
+
 function displaceGround(geometry: THREE.BufferGeometry): void {
   const position = geometry.getAttribute('position');
-  const length = CONFIG.world.chunkLength;
   for (let i = 0; i < position.count; i += 1) {
     const x = position.getX(i);
     const z = position.getZ(i);
-    const lateral = Math.abs(x) / CORRIDOR_HALF;
-    const outside = Math.min(MAX_LATERAL_RISE, Math.max(0, lateral - 1));
-    // Periodica su chunkLength: a z = 0 e a z = chunkLength il seno vale 0,
-    // quindi i bordi di due chunk adiacenti combaciano esattamente.
-    const wave =
-      Math.sin((z / length) * Math.PI * 2) * 0.18 +
-      Math.sin((z / length) * Math.PI * 6 + x * 0.6) * 0.09;
-    position.setY(i, wave * outside * WAVE_COEF + outside * outside * RISE_COEF);
+    position.setY(i, heightAt(x, z));
   }
   position.needsUpdate = true;
   geometry.computeVertexNormals();
@@ -71,11 +96,42 @@ function displaceGround(geometry: THREE.BufferGeometry): void {
 
 function createChunkGeometry(): THREE.BufferGeometry {
   const length = CONFIG.world.chunkLength;
+  // Larghezza del rilievo laterale, per lato: dal bordo del corridoio al
+  // bordo del terreno.
+  const outerWidth = GROUND_WIDTH / 2 - CORRIDOR_HALF;
 
-  const ground = new THREE.PlaneGeometry(GROUND_WIDTH, length, SEGMENTS_X, SEGMENTS_Z);
-  ground.rotateX(-Math.PI / 2);
-  ground.translate(0, 0, length / 2);
-  displaceGround(ground);
+  // BUG CORRETTO: prima il corridoio e il rilievo laterale erano un'unica
+  // PlaneGeometry larga GROUND_WIDTH con soli SEGMENTS_X segmenti: a quella
+  // larghezza (226 unità) i vertici cadevano ogni 5.65 unità, ben più radi
+  // del corridoio (6 unità). Senza un vertice esattamente al bordo del
+  // corridoio (|x| = CORRIDOR_HALF = 3), la mesh INTERPOLAVA linearmente fra
+  // il vertice centrale (x=0, y=0) e quello successivo (x=±5.65, già dentro
+  // il rilievo, y fino a ~2.2): il pavimento del corridoio risultava
+  // "gonfiato" fino a ~1.2 unità proprio al suo bordo, seppellendo a metà
+  // ostacoli bassi come la staccionata (altezza 1.2). Verificato
+  // numericamente prima di questa correzione: a x=3 l'altezza interpolata
+  // arrivava fino a 1.165 (contro lo 0 atteso).
+  //
+  // Ora il corridoio è una geometria A PARTE che non chiama MAI
+  // displaceGround/heightAt: resta piatta per costruzione, non perché la
+  // formula valuti a 0 lì. Il rilievo laterale è un pezzo per lato, che
+  // parte esattamente dal bordo del corridoio (heightAt(±CORRIDOR_HALF, z) =
+  // 0 per costruzione: outside = 0 a quella distanza), quindi la saldatura
+  // fra i due pezzi è continua per costruzione, non per una densità di
+  // vertici scelta a occhio.
+  const corridorFloor = new THREE.PlaneGeometry(CORRIDOR_HALF * 2, length, CORRIDOR_SEGMENTS_X, 1);
+  corridorFloor.rotateX(-Math.PI / 2);
+  corridorFloor.translate(0, 0, length / 2);
+
+  const leftOuter = new THREE.PlaneGeometry(outerWidth, length, OUTER_SEGMENTS_X, SEGMENTS_Z);
+  leftOuter.rotateX(-Math.PI / 2);
+  leftOuter.translate(-(CORRIDOR_HALF + outerWidth / 2), 0, length / 2);
+  displaceGround(leftOuter);
+
+  const rightOuter = new THREE.PlaneGeometry(outerWidth, length, OUTER_SEGMENTS_X, SEGMENTS_Z);
+  rightOuter.rotateX(-Math.PI / 2);
+  rightOuter.translate(CORRIDOR_HALF + outerWidth / 2, 0, length / 2);
+  displaceGround(rightOuter);
 
   const leftBank = new THREE.BoxGeometry(BANK_WIDTH, BANK_HEIGHT, length, 1, 1, 2);
   leftBank.rotateZ(BANK_TILT);
@@ -85,11 +141,13 @@ function createChunkGeometry(): THREE.BufferGeometry {
   rightBank.rotateZ(-BANK_TILT);
   rightBank.translate(BANK_OFFSET, BANK_BOTTOM_Y + BANK_HEIGHT / 2, length / 2);
 
-  const merged = mergeGeometries([ground, leftBank, rightBank], false);
+  const merged = mergeGeometries([corridorFloor, leftOuter, rightOuter, leftBank, rightBank], false);
   if (merged === null) {
     throw new Error('Impossibile unire le geometrie del chunk di terreno');
   }
-  ground.dispose();
+  corridorFloor.dispose();
+  leftOuter.dispose();
+  rightOuter.dispose();
   leftBank.dispose();
   rightBank.dispose();
   merged.computeBoundingSphere();

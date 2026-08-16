@@ -1,0 +1,181 @@
+import { CONFIG } from '../game/config';
+import type { Action } from '../game/types';
+import { gestureToAction } from './gesture';
+
+export interface InputSource {
+  /** Consuma e restituisce l'azione in buffer, se presente e non scaduta. */
+  consume(): Action | null;
+  dispose(): void;
+}
+
+/**
+ * Tastiera desktop: frecce + WASD, spazio per saltare, Esc (o P) per la pausa.
+ * Le chiavi sono i valori di KeyboardEvent.key.
+ */
+const KEY_ACTIONS: Readonly<Record<string, Action>> = {
+  ArrowLeft: 'MOVE_LEFT',
+  a: 'MOVE_LEFT',
+  A: 'MOVE_LEFT',
+  ArrowRight: 'MOVE_RIGHT',
+  d: 'MOVE_RIGHT',
+  D: 'MOVE_RIGHT',
+  ArrowUp: 'JUMP',
+  w: 'JUMP',
+  W: 'JUMP',
+  ' ': 'JUMP',
+  Spacebar: 'JUMP',
+  ArrowDown: 'SLAM',
+  s: 'SLAM',
+  S: 'SLAM',
+  Escape: 'PAUSE',
+  Esc: 'PAUSE',
+  p: 'PAUSE',
+  P: 'PAUSE',
+};
+
+/**
+ * Sorgente di input unificata: swipe (touch), trascinamento (mouse/penna) e
+ * tastiera producono le stesse azioni astratte. Il resto del gioco non sa da
+ * dove arriva l'azione.
+ *
+ * Il buffer contiene UNA sola azione: l'ultima ricevuta. Serve a non perdere un
+ * comando dato un istante prima che sia eseguibile (swipe appena prima
+ * dell'atterraggio). Scade dopo CONFIG.input.bufferSeconds per non eseguire
+ * comandi ormai vecchi.
+ *
+ * `nowMs` è iniettabile: i test controllano il tempo senza timer reali.
+ */
+export function createInput(target: HTMLElement, nowMs: () => number = () => performance.now()): InputSource {
+  const view: Window = target.ownerDocument.defaultView ?? window;
+
+  let buffered: Action | null = null;
+  let bufferedAt = 0;
+
+  let startX = 0;
+  let startY = 0;
+  let startedAt = 0;
+  let tracking = false;
+
+  function push(action: Action): void {
+    buffered = action;
+    bufferedAt = nowMs();
+  }
+
+  function begin(x: number, y: number): void {
+    startX = x;
+    startY = y;
+    startedAt = nowMs();
+    tracking = true;
+  }
+
+  function end(x: number, y: number): void {
+    if (!tracking) {
+      return;
+    }
+    tracking = false;
+    const action = gestureToAction(x - startX, y - startY, nowMs() - startedAt);
+    if (action !== null) {
+      push(action);
+    }
+  }
+
+  const onKeyDown = (event: KeyboardEvent): void => {
+    if (event.repeat) {
+      return;
+    }
+    const action = KEY_ACTIONS[event.key];
+    if (action === undefined) {
+      return;
+    }
+    // Evita lo scroll della pagina con spazio e frecce.
+    event.preventDefault();
+    push(action);
+  };
+
+  const onTouchStart = (event: TouchEvent): void => {
+    const touch = event.changedTouches[0];
+    if (touch === undefined) {
+      return;
+    }
+    // preventDefault su touchstart/touchmove: niente scroll, niente
+    // pull-to-refresh, niente zoom a doppio tap durante il gioco.
+    event.preventDefault();
+    begin(touch.clientX, touch.clientY);
+  };
+
+  const onTouchMove = (event: TouchEvent): void => {
+    event.preventDefault();
+  };
+
+  const onTouchEnd = (event: TouchEvent): void => {
+    const touch = event.changedTouches[0];
+    if (touch === undefined) {
+      return;
+    }
+    event.preventDefault();
+    end(touch.clientX, touch.clientY);
+  };
+
+  const onTouchCancel = (): void => {
+    tracking = false;
+  };
+
+  const onPointerDown = (event: PointerEvent): void => {
+    // Su mobile i pointer event arrivano DUPLICATI insieme ai touch event:
+    // ignoriamo qui il touch, che è già gestito sopra.
+    if (event.pointerType === 'touch') {
+      return;
+    }
+    begin(event.clientX, event.clientY);
+  };
+
+  const onPointerUp = (event: PointerEvent): void => {
+    if (event.pointerType === 'touch') {
+      return;
+    }
+    end(event.clientX, event.clientY);
+  };
+
+  const onPointerCancel = (): void => {
+    tracking = false;
+  };
+
+  const active = { passive: false } as const;
+
+  target.addEventListener('touchstart', onTouchStart, active);
+  target.addEventListener('touchmove', onTouchMove, active);
+  target.addEventListener('touchend', onTouchEnd, active);
+  target.addEventListener('touchcancel', onTouchCancel);
+  target.addEventListener('pointerdown', onPointerDown);
+  target.addEventListener('pointerup', onPointerUp);
+  target.addEventListener('pointercancel', onPointerCancel);
+  view.addEventListener('keydown', onKeyDown);
+
+  return {
+    consume(): Action | null {
+      if (buffered === null) {
+        return null;
+      }
+      if (nowMs() - bufferedAt > CONFIG.input.bufferSeconds * 1000) {
+        buffered = null;
+        return null;
+      }
+      const action = buffered;
+      buffered = null;
+      return action;
+    },
+
+    dispose(): void {
+      target.removeEventListener('touchstart', onTouchStart);
+      target.removeEventListener('touchmove', onTouchMove);
+      target.removeEventListener('touchend', onTouchEnd);
+      target.removeEventListener('touchcancel', onTouchCancel);
+      target.removeEventListener('pointerdown', onPointerDown);
+      target.removeEventListener('pointerup', onPointerUp);
+      target.removeEventListener('pointercancel', onPointerCancel);
+      view.removeEventListener('keydown', onKeyDown);
+      buffered = null;
+      tracking = false;
+    },
+  };
+}

@@ -1,0 +1,208 @@
+/*
+ * index.html porta già in linea le regole di base del layout (html/body,
+ * #app, #game-canvas, #ui-root: touch-action, overscroll-behavior, safe-area,
+ * incluso #ui-root { pointer-events: none }). Questo file aggiunge solo lo
+ * stile dell'interfaccia vera e propria (HUD, schermate): le regole restano
+ * su classi, mai sull'id del contenitore, così restano valide qualunque sia
+ * l'elemento passato a createHud/createScreens.
+ */
+
+/* ------------------------------------------------------------------ HUD -- */
+
+.hud {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: calc(12px + env(safe-area-inset-top)) calc(16px + env(safe-area-inset-right))
+    calc(12px + env(safe-area-inset-bottom)) calc(16px + env(safe-area-inset-left));
+  /* Ridondante ma voluto: nemmeno per errore l'HUD deve prendere i touch. */
+  pointer-events: none;
+}
+
+.hud__points {
+  font-size: clamp(28px, 9vw, 56px);
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  font-variant-numeric: tabular-nums;
+  text-shadow: 0 2px 0 rgba(0, 0, 0, 0.35);
+}
+
+.hud__charge {
+  width: min(420px, 70%);
+  height: 14px;
+  border-radius: 7px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.18);
+  box-shadow: inset 0 0 0 2px rgba(255, 255, 255, 0.25);
+}
+
+.hud__charge-fill {
+  width: 0%;
+  height: 100%;
+  border-radius: 7px;
+  background: linear-gradient(90deg, #7fd7ff, #ffffff);
+  transition: width 90ms linear;
+}
+
+.hud__size {
+  padding: 4px 12px;
+  border-radius: 999px;
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  background: rgba(11, 28, 44, 0.45);
+}
+
+.hud--avalanche .hud__points {
+  animation: hud-pulse 0.6s ease-in-out infinite;
+}
+
+.hud--avalanche .hud__charge-fill {
+  background: linear-gradient(90deg, #ffd166, #ff7b3d);
+}
+
+.hud--warning .hud__charge,
+.hud--warning .hud__size {
+  animation: hud-blink 0.35s steps(2, end) infinite;
+}
+
+@keyframes hud-pulse {
+  0%,
+  100% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(1.12);
+  }
+}
+
+@keyframes hud-blink {
+  0% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0.25;
+  }
+}
+
+/* ----------------------------------------------------------- schermate -- */
+
+.screens {
+  position: absolute;
+  inset: 0;
+}
+
+.screen {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: calc(16px + env(safe-area-inset-top)) calc(16px + env(safe-area-inset-right))
+    calc(16px + env(safe-area-inset-bottom)) calc(16px + env(safe-area-inset-left));
+  background: radial-gradient(circle at 50% 35%, rgba(11, 28, 44, 0.55), rgba(4, 12, 20, 0.9));
+  /* Solo la schermata a video riceve i tap. */
+  pointer-events: auto;
+}
+
+.screen--hidden {
+  display: none;
+}
+
+.panel {
+  display: flex;
+  width: min(420px, 100%);
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  padding: 28px 24px;
+  border-radius: 22px;
+  text-align: center;
+  background: rgba(8, 22, 36, 0.72);
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.45);
+}
+
+.title {
+  margin: 0;
+  font-size: clamp(34px, 12vw, 60px);
+  font-weight: 900;
+  line-height: 1;
+  letter-spacing: 0.01em;
+  text-shadow: 0 3px 0 rgba(0, 0, 0, 0.35);
+}
+
+.title--small {
+  font-size: clamp(26px, 8vw, 40px);
+}
+
+.subtitle {
+  margin: 0;
+  font-size: 16px;
+  opacity: 0.75;
+}
+
+.score,
+.record {
+  margin: 0;
+  font-size: 18px;
+  font-variant-numeric: tabular-nums;
+}
+
+.record--new {
+  font-size: 20px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  color: #ffd166;
+}
+
+.button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  /* Area di tap comoda anche col pollice: mai sotto i 44px. */
+  min-height: 56px;
+  min-width: 200px;
+  padding: 0 24px;
+  border: 0;
+  border-radius: 14px;
+  font: inherit;
+  font-size: 20px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.button--primary {
+  color: #06202f;
+  background: linear-gradient(180deg, #ffffff, #bfe6ff);
+  box-shadow: 0 6px 0 rgba(0, 0, 0, 0.3);
+}
+
+.button--ghost {
+  min-height: 44px;
+  min-width: 160px;
+  font-size: 16px;
+  color: #f7fbff;
+  background: rgba(255, 255, 255, 0.12);
+  box-shadow: inset 0 0 0 2px rgba(255, 255, 255, 0.25);
+}
+
+.button:active {
+  transform: translateY(2px);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hud--avalanche .hud__points,
+  .hud--warning .hud__charge,
+  .hud--warning .hud__size {
+    animation: none;
+  }
+
+  .hud__charge-fill {
+    transition: none;
+  }
+}

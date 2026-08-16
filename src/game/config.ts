@@ -12,6 +12,16 @@ export const CONFIG = {
     /** Zona franca davanti al giocatore alla partenza: nessuna entità nasce sotto questa z. */
     spawnSafeZ: 25,
   },
+  /** Cintura subito dopo la zona franca in cui deve SEMPRE esserci qualcosa da
+   *  incontrare (vedi startRun in game/game.ts): senza questa garanzia, misurato
+   *  su 3000 seed, l'11,1% delle run non incontrava nulla entro 4 secondi
+   *  simulati (il 2,7% entro 6s), perché il popolamento delle righe iniziali
+   *  resta probabilistico (spawn.rowFillChanceMin) e a difficoltà 0 può mancare
+   *  più righe di fila per sfortuna. */
+  startBelt: {
+    /** Quante rowSpacing di ampiezza ha la cintura, a partire da spawnSafeZ. */
+    rows: 2,
+  },
   player: {
     laneChangeSeconds: 0.12,
     jumpSeconds: 0.55,
@@ -106,8 +116,12 @@ export const CONFIG = {
   },
   render: {
     maxPixelRatio: 2,
-    fogNear: 40,
-    fogFar: 120,
+    // Nebbia spostata più lontano insieme alla camera rialzata (vedi
+    // render/camera-rig.ts, CAMERA_HEIGHT_RATIO): a fogNear=40 il pendio
+    // sbiancava proprio dove iniziava a leggersi un ostacolo lontano, lasciando
+    // meno di un secondo di preavviso a velocità di crociera.
+    fogNear: 75,
+    fogFar: 200,
     voxelPoolSize: 4000,
     voxelSize: 0.25,
     cameraBaseDistance: 9,
@@ -115,6 +129,24 @@ export const CONFIG = {
     cameraBaseFov: 60,
     cameraAvalancheFov: 78,
     shakeDecay: 4,
+    /** Quanto il terreno si estende oltre le corsie giocabili (banchi inclusi),
+     *  per lato. Con fov 60 e camera a ~9 unità di distanza il frustum è largo
+     *  circa 26 unità a z=40 e 64 a z=120: senza questo margine, sotto ai banchi
+     *  laterali (sospesi, base a y≈-1) si vedeva il cielo. Il corridoio
+     *  giocabile (vedi world.laneCount/laneWidth) resta invariato: questo
+     *  numero allarga solo ciò che sta oltre le corsie. */
+    groundExtraWidth: 220,
+    /** Oltre questa distanza laterale dal corridoio (in unità di CORRIDOR_HALF)
+     *  il rilievo procedurale del terreno smette di crescere e resta un pendio
+     *  pieno: senza un tetto, il termine quadratico dell'ondulazione produce
+     *  altezze assurde ai bordi di una mesh larga groundExtraWidth. */
+    groundMaxLateralRise: 6,
+    /** Altezza e posizione verticale (base) dei banchi laterali: la base deve
+     *  restare sempre sotto il punto più basso plausibile del pendio adiacente,
+     *  qualunque sia l'ondulazione in quel punto, altrimenti si vede la sua
+     *  base fluttuare nel vuoto. */
+    bankHeight: 8,
+    bankBottomY: -6,
   },
   input: {
     swipeMinPixels: 24,
@@ -145,6 +177,12 @@ export const CONFIG = {
     lowQualityParticleScale: 0.35,
     /** Ogni quanti secondi loggare draw call e triangoli in console. */
     statsLogSeconds: 5,
+    /** Tetto al contributo di UN SINGOLO campione (in secondi), sia nel monitor
+     *  sia nel clamp lato main.ts prima di passargli il dt reale: senza questo,
+     *  il primo frame dopo una tab sospesa vale l'intera durata della pausa e da
+     *  solo supera lowFpsSeconds, spegnendo ombre e particelle per sempre su un
+     *  dispositivo che non è mai stato lento. */
+    maxSampleSeconds: 0.1,
   },
   feel: {
     /** Rallentatore alla morte: quanto dura e quanto rallenta. */

@@ -3,6 +3,10 @@ export interface Hud {
   setCharge(ratio: number): void;
   setSize(size: number): void;
   setAvalanche(on: boolean, warning: boolean): void;
+  /** L'HUD deve stare visibile SOLO in 'playing': senza questo, punteggio,
+   *  barra di carica e taglia restano leggibili sopra menu, pausa e game
+   *  over, spesso sovrapposti allo stesso numero mostrato dalla schermata. */
+  setVisible(visible: boolean): void;
 }
 
 /**
@@ -36,7 +40,9 @@ export function createHud(root: HTMLElement): Hud {
 
   return {
     setPoints(p: number): void {
-      pointsEl.textContent = String(Math.round(p));
+      // Math.floor, non Math.round: come dichiarato in game/score.ts, la vista
+      // non deve mai mostrare un punto non ancora davvero guadagnato.
+      pointsEl.textContent = String(Math.floor(p));
     },
 
     setCharge(ratio: number): void {
@@ -52,6 +58,10 @@ export function createHud(root: HTMLElement): Hud {
     setAvalanche(on: boolean, warning: boolean): void {
       container.classList.toggle('hud--avalanche', on);
       container.classList.toggle('hud--warning', warning);
+    },
+
+    setVisible(visible: boolean): void {
+      container.classList.toggle('hud--hidden', !visible);
     },
   };
 }

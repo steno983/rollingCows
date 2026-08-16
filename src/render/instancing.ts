@@ -13,8 +13,9 @@ export const MAX_INSTANCES_PER_KIND = 32;
 export function instanceCountFor(entities: Entity[], kind: EntityKind, max: number): number {
   if (max <= 0) return 0;
   let count = 0;
-  for (const entity of entities) {
-    if (!entity.alive || entity.kind !== kind) continue;
+  for (let i = 0; i < entities.length; i++) {
+    const entity = entities[i];
+    if (entity === undefined || !entity.alive || entity.kind !== kind) continue;
     count += 1;
     if (count >= max) return max;
   }

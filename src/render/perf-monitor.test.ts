@@ -53,6 +53,26 @@ describe('createPerfMonitor', () => {
     expect(triggered).toBe(false);
   });
 
+  it('un dt enorme isolato dopo campioni sani non fa scattare il degrado (tab ripresa da sospensione)', () => {
+    const monitor = createPerfMonitor();
+
+    for (let i = 0; i < 300; i += 1) monitor.sample(FRAME_60);
+
+    // 8 secondi: la tab è stata sospesa e ripresa. Prima della correzione un
+    // solo campione così superava da solo lowFpsSeconds (3s) e spegneva la
+    // qualità per sempre.
+    const triggeredByHugeSample = monitor.sample(8);
+    expect(triggeredByHugeSample).toBe(false);
+    expect(monitor.degraded).toBe(false);
+
+    let triggered = false;
+    for (let i = 0; i < 300; i += 1) {
+      triggered = monitor.sample(FRAME_60) || triggered;
+    }
+    expect(triggered).toBe(false);
+    expect(monitor.degraded).toBe(false);
+  });
+
   it('ignora i delta non positivi', () => {
     const monitor = createPerfMonitor();
 

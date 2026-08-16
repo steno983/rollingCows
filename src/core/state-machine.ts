@@ -14,7 +14,13 @@ const TRANSITIONS: Record<GameStateName, readonly GameStateName[]> = {
   boot: ['menu'],
   menu: ['playing'],
   playing: ['paused', 'gameover'],
-  paused: ['playing', 'menu'],
+  // paused → gameover è uno stato legittimo, non un buco nella tabella: il
+  // rallentatore alla morte (dyingSeconds) può scadere mentre si è in pausa
+  // (notifica, cambio finestra), e in quel momento deve poter arrivare a
+  // gameover esattamente come da 'playing'. Prima di questa riga la
+  // transizione falliva e il payload di game over andava perso (vedi
+  // game/flow.ts, che non lo azzera più finché non riesce davvero).
+  paused: ['playing', 'menu', 'gameover'],
   gameover: ['playing', 'menu'],
 };
 

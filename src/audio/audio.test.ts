@@ -184,6 +184,33 @@ describe('createAudio', () => {
     expect(fake.sources[0]?.stopped).toBe(true);
   });
 
+  it('run:started spegne un rombo lasciato acceso da una valanga precedente (si torna al menu o si ricomincia a metà valanga)', () => {
+    const audio = createAudio(factory);
+    const bus = createEventBus();
+    audio.attach(bus);
+
+    bus.emit('avalanche:triggered', { size: CONFIG.avalanche.maxSize });
+    expect(fake.sources.length).toBe(1);
+    expect(fake.sources[0]?.stopped).toBe(false);
+
+    bus.emit('run:started', { seed: 1 });
+
+    expect(fake.sources[0]?.stopped).toBe(true);
+  });
+
+  it('run:ended spegne il rombo se il giocatore muore mentre la valanga sta ancora suonando', () => {
+    const audio = createAudio(factory);
+    const bus = createEventBus();
+    audio.attach(bus);
+
+    bus.emit('avalanche:triggered', { size: CONFIG.avalanche.maxSize });
+    expect(fake.sources.length).toBe(1);
+
+    bus.emit('run:ended', { points: 0, distance: 0, isRecord: false });
+
+    expect(fake.sources[0]?.stopped).toBe(true);
+  });
+
   it('con muted non crea nessun nodo e non apre nemmeno il contesto', () => {
     const audio = createAudio(factory);
     const bus = createEventBus();

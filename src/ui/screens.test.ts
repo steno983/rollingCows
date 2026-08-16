@@ -97,11 +97,11 @@ describe('createScreens', () => {
     expect(onToggleMute).toHaveBeenNthCalledWith(2, false);
   });
 
-  it('scrive record e punteggio finale', () => {
+  it('scrive record e punteggio finale (troncati per difetto)', () => {
     const screens = createScreens(root);
 
     screens.setMenuRecord(1234.6);
-    expect(need('[data-menu-record]').textContent).toBe('1235');
+    expect(need('[data-menu-record]').textContent).toBe('1234');
 
     screens.setGameOver(880.2, 1235, false);
     expect(need('[data-final-points]').textContent).toBe('880');

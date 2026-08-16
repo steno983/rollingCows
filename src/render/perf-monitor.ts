@@ -34,17 +34,26 @@ export function createPerfMonitor(): PerfMonitor {
         return false;
       }
 
-      const fps = 1 / dt;
+      // Un singolo campione anomalo (ripresa da una tab sospesa, un GC molto
+      // lungo) non deve poter contribuire più di un frame "ragionevole": senza
+      // questo tetto, UN solo sample(8) supera da solo lowFpsSeconds e spegne
+      // la qualità per sempre, anche su un dispositivo che non è mai stato
+      // lento. main.ts clampa già il dt reale prima di chiamare sample(), ma il
+      // monitor si difende comunque da sé, per restare fedele al proprio
+      // contratto anche se chiamato altrove con un dt non clampato.
+      const effectiveDt = Math.min(dt, CONFIG.perf.maxSampleSeconds);
+
+      const fps = 1 / effectiveDt;
       if (!seeded) {
         averageFps = fps;
         seeded = true;
       } else {
-        const alpha = Math.min(1, dt / CONFIG.perf.smoothingSeconds);
+        const alpha = Math.min(1, effectiveDt / CONFIG.perf.smoothingSeconds);
         averageFps += (fps - averageFps) * alpha;
       }
 
       if (averageFps < CONFIG.perf.lowFpsThreshold) {
-        belowSeconds += dt;
+        belowSeconds += effectiveDt;
       } else {
         belowSeconds = 0;
       }

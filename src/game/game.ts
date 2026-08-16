@@ -104,6 +104,23 @@ export function startRun(game: GameState, seed?: number): void {
   }
   compactEntities(game.entities);
 
+  // Il popolamento sopra resta probabilistico (rowFillChance): su 3000 seed,
+  // l'11,1% delle run non aveva NULLA entro 4 secondi simulati perché tutte le
+  // righe nella cintura subito dopo la zona franca mancavano per sfortuna. Si
+  // forza quindi sempre almeno una riga lì: mai più una partenza silenziosa.
+  const beltEnd = spawnSafeZ + CONFIG.spawn.rowSpacing * CONFIG.startBelt.rows;
+  let beltHasEntity = false;
+  for (let i = 0; i < game.entities.length; i++) {
+    const entity = game.entities[i];
+    if (entity !== undefined && entity.z >= spawnSafeZ && entity.z < beltEnd) {
+      beltHasEntity = true;
+      break;
+    }
+  }
+  if (!beltHasEntity) {
+    game.spawner.forceRow(spawnSafeZ + CONFIG.spawn.rowSpacing, difficulty, game.entities);
+  }
+
   game.bus.emit('run:started', { seed: game.seed });
 }
 
@@ -176,6 +193,29 @@ export function updateGame(game: GameState, dt: number): void {
   if (game.alive) {
     addDistance(game.score, moved, scoreMultiplier(game.avalanche));
   }
+}
+
+/**
+ * Fa scorrere solo il pendio e le posizioni delle entità esistenti, senza
+ * collisioni, punteggio o nuova generazione: usata da main.ts durante il
+ * rallentatore alla morte (game.alive è già false, updateGame non fa nulla).
+ * Prima di questa funzione il pendio si fermava di colpo mentre i detriti
+ * continuavano a scorrere: un frame congelato in mezzo a un rallentatore
+ * sembra un problema di prestazioni, non un effetto voluto.
+ */
+export function advanceWorldOnly(game: GameState, dt: number): void {
+  const distanceBefore = game.world.distance;
+  updateWorld(game.world, dt);
+  const moved = game.world.distance - distanceBefore;
+
+  const entities = game.entities;
+  for (let i = 0; i < entities.length; i++) {
+    const entity = entities[i];
+    if (entity === undefined || !entity.alive) continue;
+    entity.z -= moved;
+    if (entity.z < CONFIG.world.despawnBehindZ) entity.alive = false;
+  }
+  compactEntities(game.entities);
 }
 
 function resolveCollision(game: GameState, entity: Entity): void {

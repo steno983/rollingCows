@@ -22,6 +22,10 @@
   pointer-events: none;
 }
 
+.hud--hidden {
+  display: none;
+}
+
 .hud__points {
   font-size: clamp(28px, 9vw, 56px);
   font-weight: 800;

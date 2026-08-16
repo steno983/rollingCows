@@ -13,6 +13,14 @@ const PICKUP_BY_ROLL: readonly PickupKind[] = ['cow', 'hay', 'snowflake'];
 export interface Spawner {
   /** Popola un chunk appena riciclato, aggiungendo entità a `out`. */
   populateChunk(chunkZ: number, difficulty: number, out: Entity[]): void;
+  /**
+   * Popola UNA riga a `z`, saltando il tiro di rowFillChance: populateRow
+   * piazza sempre almeno un ostacolo (cabin, oppure ≥1 ostacolo a terra: vedi
+   * il ramo `else` sotto, dove `wanted` è sempre ≥1), quindi basta chiamarla
+   * direttamente per garantire che quella riga non sia mai vuota. Usata da
+   * startRun per la cintura di partenza (vedi CONFIG.startBelt).
+   */
+  forceRow(z: number, difficulty: number, out: Entity[]): void;
   reset(): void;
 }
 
@@ -139,6 +147,10 @@ export function createSpawner(rng: Rng): Spawner {
         if (!rng.chance(fillChance)) continue;
         populateRow(chunkZ + row * rowSpacing, clamped, out);
       }
+    },
+    forceRow(z: number, difficulty: number, out: Entity[]): void {
+      const clamped = Math.min(1, Math.max(0, difficulty));
+      populateRow(z, clamped, out);
     },
     reset(): void {
       nextId = 0;

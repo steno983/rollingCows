@@ -2,9 +2,18 @@ import './style.css';
 import { createAudio } from './audio/audio';
 import { createEventBus } from './core/events';
 import { createLoop } from './core/loop';
-import { createStateMachine } from './core/state-machine';
+import { createStateMachine, type GameStateName } from './core/state-machine';
 import { CONFIG } from './game/config';
-import { createGame, handleAction, startRun, updateGame } from './game/game';
+import {
+  armDeath,
+  commitGameOver,
+  createFlow,
+  isDying,
+  requestExternalPause,
+  resetFlow,
+  tickDeath,
+} from './game/flow';
+import { advanceWorldOnly, createGame, handleAction, startRun, updateGame } from './game/game';
 import { entityCenterX } from './game/lanes';
 import { loadRecord } from './game/score';
 import { createInput } from './input/input';
@@ -98,13 +107,18 @@ function main(): void {
   let statsTimer = 0;
 
   /** Rallentatore alla morte: si continua a renderizzare, poi arriva il game over. */
-  let dyingSeconds = 0;
-  let pendingGameOver: { points: number; distance: number; isRecord: boolean } | null = null;
+  const flow = createFlow();
+
+  /** L'HUD vive SOLO in 'playing': va tenuto sincronizzato a ogni cambio schermata. */
+  function showScreen(name: GameStateName): void {
+    screens.show(name);
+    hud.setVisible(name === 'playing');
+  }
 
   function goToMenu(): void {
     if (machine.transition('menu')) {
       screens.setMenuRecord(record);
-      screens.show('menu');
+      showScreen('menu');
     }
   }
 
@@ -113,28 +127,26 @@ function main(): void {
     startRun(game, Date.now());
     pool.reset();
     resetDebris();
-    dyingSeconds = 0;
-    pendingGameOver = null;
+    resetFlow(flow);
     playerView.group.visible = true;
-    screens.show('playing');
+    showScreen('playing');
   }
 
   function togglePause(): void {
     if (machine.current === 'playing' && machine.transition('paused')) {
-      screens.show('paused');
+      showScreen('paused');
       return;
     }
     if (machine.current === 'paused' && machine.transition('playing')) {
-      screens.show('playing');
+      showScreen('playing');
     }
   }
 
   function showGameOver(): void {
-    const payload = pendingGameOver;
-    pendingGameOver = null;
-    if (payload === null || !machine.transition('gameover')) return;
+    const payload = commitGameOver(machine, flow);
+    if (payload === null) return;
     screens.setGameOver(payload.points, record, payload.isRecord);
-    screens.show('gameover');
+    showScreen('gameover');
   }
 
   screens.onStart(beginRun);
@@ -174,8 +186,7 @@ function main(): void {
 
   bus.on('run:ended', (payload) => {
     record = Math.max(record, payload.points);
-    pendingGameOver = payload;
-    dyingSeconds = CONFIG.feel.deathSlowSeconds;
+    armDeath(flow, payload, CONFIG.feel.deathSlowSeconds);
     view.shake(CONFIG.feel.deathShake);
     burstFromModel(
       pool,
@@ -189,18 +200,26 @@ function main(): void {
   });
 
   document.addEventListener('visibilitychange', () => {
-    if (document.hidden && machine.current === 'playing') {
-      machine.transition('paused');
-      screens.show('paused');
+    // Richiesta di pausa NON generata dal giocatore: va ignorata durante il
+    // rallentatore della morte (vedi game/flow.ts), altrimenti la macchina
+    // finirebbe in 'paused' proprio mentre sta per arrivare il game over.
+    if (document.hidden && requestExternalPause(machine, flow)) {
+      showScreen('paused');
     }
-    if (document.hidden) loop.stop();
-    else loop.start();
+    if (document.hidden) {
+      loop.stop();
+    } else {
+      // Il primo campione dopo una tab sospesa non deve valere l'intera durata
+      // della pausa: si azzera anche il monitor perf, non solo il loop interno
+      // (che si azzera già da sé in loop.start()).
+      resetPerf();
+      loop.start();
+    }
   });
 
   window.addEventListener('blur', () => {
-    if (machine.current === 'playing') {
-      machine.transition('paused');
-      screens.show('paused');
+    if (requestExternalPause(machine, flow)) {
+      showScreen('paused');
     }
   });
 
@@ -232,7 +251,12 @@ function main(): void {
     const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
     if (lastFrameMs !== null) {
       const realDt = (now - lastFrameMs) / 1000;
-      if (perf.sample(realDt) && particleScale === 1) {
+      // Un campione non può contribuire più di un frame "ragionevole": senza
+      // questo clamp, il primo render dopo una tab sospesa vale l'intera durata
+      // della pausa e da solo supera la soglia del degrado (il monitor si
+      // difende a sua volta, vedi render/perf-monitor.ts: doppia protezione).
+      const clampedDt = Math.min(realDt, CONFIG.perf.maxSampleSeconds);
+      if (perf.sample(clampedDt) && particleScale === 1) {
         particleScale = CONFIG.perf.lowQualityParticleScale;
         view.setQuality(true);
         console.info('[perf] frame rate basso: qualità ridotta (ombre off, meno particelle)');
@@ -241,26 +265,45 @@ function main(): void {
     lastFrameMs = now;
   }
 
+  /** Azzera il monitor perf e il riferimento all'ultimo frame: da chiamare
+   *  quando il loop riparte dopo essere stato fermo (tab tornata visibile). */
+  function resetPerf(): void {
+    perf.reset();
+    lastFrameMs = null;
+  }
+
   const loop = createLoop({
     update(dt: number): void {
       // PAUSE va letto in qualunque stato, altrimenti da fermi Esc non riprende.
       const action = input.consume();
       if (action === 'PAUSE') {
         togglePause();
-      } else if (action !== null && machine.current === 'playing' && dyingSeconds <= 0) {
+      } else if (action !== null && machine.current === 'playing' && !isDying(flow)) {
         handleAction(game, action);
       }
 
       // Rallentatore alla morte: la logica di gioco resta ferma (game.alive è
-      // già false), ma detriti e camera continuano ad animarsi al rallenty
-      // finché non scade dyingSeconds, poi si passa al game over.
-      if (dyingSeconds > 0) {
-        dyingSeconds -= dt;
+      // già false), ma pendio, entità, detriti e camera continuano ad animarsi
+      // al rallenty finché non scade il rallentatore, poi si passa al game
+      // over. Prima della correzione il pendio si fermava di colpo (return
+      // prima di terrain.sync/entitiesView.sync) mentre i detriti continuavano
+      // a scorrere: sembrava un problema di prestazioni, non un effetto voluto.
+      if (isDying(flow)) {
+        const done = tickDeath(flow, dt);
         const slowDt = dt * CONFIG.feel.deathTimeScale;
-        pool.update(slowDt, game.world.speed * CONFIG.feel.deathTimeScale);
+        advanceWorldOnly(game, slowDt);
+        // game.world.speed NON va scalato di nuovo: dt è già rallentato
+        // (slowDt), esattamente come lo riceve advanceWorldOnly. Scalarlo due
+        // volte faceva arretrare i detriti a deathTimeScale² (~0.12) mentre il
+        // pendio (via advanceWorldOnly) scorreva a deathTimeScale (~0.35): i
+        // cubetti sembravano galleggiare rispetto al pendio invece di scorrere
+        // insieme, l'artefatto opposto a quello che il fix M1 voleva eliminare.
+        pool.update(slowDt, game.world.speed);
         view.update(slowDt, game.avalanche.size, false);
+        terrain.sync(game.world);
+        entitiesView.sync(game.entities);
         logStats(dt);
-        if (dyingSeconds <= 0) showGameOver();
+        if (done) showGameOver();
         return;
       }
 

@@ -4,8 +4,15 @@ import { CONFIG } from '../game/config';
  * Rapporto fra altezza e distanza della camera. È una scelta di inquadratura,
  * non un numero di bilanciamento: tenendolo costante l'inclinazione della
  * camera resta identica a ogni taglia, e cambia solo quanto mondo si vede.
+ *
+ * A 0.42 la camera era quasi a filo del pendio (pitch ≈ -7.5°): tutto oltre
+ * ~40 unità si schiacciava in pochi pixel verticali proprio dove iniziava la
+ * nebbia, lasciando meno di un secondo di lettura utile su un ostacolo a 40
+ * u/s. Alzata a 0.68 (pitch ≈ -12.7°) si vede più pendio davanti alla mucca:
+ * vedi anche render.fogNear/fogFar in game/config.ts, spostati in coppia con
+ * questo valore.
  */
-export const CAMERA_HEIGHT_RATIO = 0.42;
+export const CAMERA_HEIGHT_RATIO = 0.68;
 
 /** Distanza della camera dietro la mucca per la taglia data (1..maxSize). */
 export function cameraDistanceFor(size: number): number {

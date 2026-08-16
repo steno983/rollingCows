@@ -60,16 +60,19 @@ export function createEntitiesView(): EntitiesView {
   function sync(entities: Entity[]): void {
     const time = nowSeconds();
 
-    for (const kind of ENTITY_KINDS) {
+    for (let k = 0; k < ENTITY_KINDS.length; k++) {
+      const kind = ENTITY_KINDS[k];
+      if (kind === undefined) continue;
       const mesh = meshes.get(kind);
       if (mesh === undefined) continue;
 
       const count = instanceCountFor(entities, kind, MAX_INSTANCES_PER_KIND);
       let index = 0;
 
-      for (const entity of entities) {
+      for (let e = 0; e < entities.length; e++) {
         if (index >= count) break;
-        if (!entity.alive || entity.kind !== kind) continue;
+        const entity = entities[e];
+        if (entity === undefined || !entity.alive || entity.kind !== kind) continue;
 
         const baseScale = entity.width / MODEL_LANES[kind];
         const scale = kind === 'cow' ? baseScale * PICKUP_COW_SCALE : baseScale;

@@ -33,6 +33,14 @@ const KEY_ACTIONS: Readonly<Record<string, Action>> = {
   P: 'PAUSE',
 };
 
+/** Tag su cui il browser gestisce già da solo tastiera/spazio/invio: qui i
+ *  bottoni delle schermate (PARTI, RIGIOCA, MENU, RIPRENDI, Audio). */
+const INTERACTIVE_TAGS = new Set(['BUTTON', 'A', 'INPUT', 'SELECT', 'TEXTAREA']);
+
+function isInteractiveTarget(target: HTMLElement): boolean {
+  return INTERACTIVE_TAGS.has(target.tagName);
+}
+
 /**
  * Sorgente di input unificata: swipe (touch), trascinamento (mouse/penna) e
  * tastiera producono le stesse azioni astratte. Il resto del gioco non sa da
@@ -81,6 +89,14 @@ export function createInput(target: HTMLElement, nowMs: () => number = () => per
 
   const onKeyDown = (event: KeyboardEvent): void => {
     if (event.repeat) {
+      return;
+    }
+    // Se il focus è su un elemento interattivo (i bottoni PARTI/RIGIOCA/MENU),
+    // lasciamo che la tastiera lo attivi normalmente: intercettare qui Spazio a
+    // livello di window (con preventDefault) impedirebbe l'attivazione del
+    // bottone via tastiera, perché lo spazio su un elemento focused attiva il
+    // click di default del browser SOLO se non viene prevenuto.
+    if (event.target instanceof HTMLElement && isInteractiveTarget(event.target)) {
       return;
     }
     const action = KEY_ACTIONS[event.key];

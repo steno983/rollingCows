@@ -7,7 +7,7 @@ import {
 } from '../core/events';
 import { addCharge } from './avalanche';
 import { CONFIG } from './config';
-import { createGame, handleAction, startRun, updateGame, type GameState } from './game';
+import { advanceWorldOnly, createGame, handleAction, startRun, updateGame, type GameState } from './game';
 import type { Entity } from './types';
 
 const STEP = 1 / 60;
@@ -132,20 +132,32 @@ describe('startRun — popolamento iniziale del pendio', () => {
     }
   });
 
-  it('nei primi 3 secondi il giocatore incontra almeno un ostacolo o un raccoglibile', () => {
-    // Prima della correzione i chunk iniziali erano vuoti: il primo riciclo
-    // arriva solo dopo ~3,3s a velocità iniziale, quindi in questa finestra
-    // non poteva succedere nulla.
-    const bus = createEventBus();
-    const game = createGame(2026, bus);
-    startRun(game);
-    const events = recordEvents(bus);
+  it('almeno il 95% delle run ha un-entità raggiungibile entro 3 secondi simulati (300 seed)', () => {
+    // Il vecchio test usava UN SOLO seed (2026): passava, ma nascondeva che
+    // l'11,1% delle run (misurato su 3000 seed) non aveva nulla entro 4
+    // secondi simulati, perché il popolamento delle righe iniziali resta
+    // probabilistico (spawn.rowFillChanceMin) e a difficoltà 0 più righe di
+    // fila possono mancare per sfortuna. Stesso stile del test di
+    // solvibilità dello spawner (spawner.test.ts): tante seed, un percentile
+    // esplicito, nessuna simulazione di collisione — si controlla
+    // direttamente la densità delle entità generate, come nella misura
+    // originale ("la prima riga popolata ha mediana z=40 e p90 z=80").
+    const SEED_COUNT = 300;
+    const REACH_SECONDS = 3;
+    const reachZ = CONFIG.world.startSpeed * REACH_SECONDS;
 
-    runFrames(game, 3 * 60);
+    let withinReach = 0;
+    for (let seed = 1; seed <= SEED_COUNT; seed++) {
+      const bus = createEventBus();
+      const game = createGame(seed, bus);
+      startRun(game);
 
-    const encountered =
-      countOf(events, 'obstacle:hit') + countOf(events, 'pickup:collected');
-    expect(encountered).toBeGreaterThan(0);
+      if (game.entities.some((entity) => entity.z < reachZ)) {
+        withinReach += 1;
+      }
+    }
+
+    expect(withinReach / SEED_COUNT).toBeGreaterThanOrEqual(0.95);
   });
 
   it('resta deterministico: stesso seed produce le stesse entità iniziali', () => {
@@ -197,6 +209,53 @@ describe('updateGame — simulazione lunga', () => {
 
     expect(frames).toBeGreaterThan(0);
     expect(game.score.points).toBeGreaterThan(0);
+  });
+});
+
+describe('advanceWorldOnly', () => {
+  // Usata da main.ts durante il rallentatore alla morte (game.alive è già
+  // false): il pendio e le entità devono continuare a scorrere, senza
+  // punteggio né collisioni, così il mondo non si congela di colpo mentre i
+  // detriti continuano ad animarsi (vedi il difetto M1 nella review finale).
+  it('fa avanzare world.distance anche con game.alive = false', () => {
+    const bus = createEventBus();
+    const game = createGame(2026, bus);
+    startRun(game);
+    game.alive = false;
+
+    const distanceBefore = game.world.distance;
+    advanceWorldOnly(game, 1);
+
+    expect(game.world.distance).toBeGreaterThan(distanceBefore);
+  });
+
+  it('sposta le entità esistenti in avanti, senza generarne di nuove né assegnare punti', () => {
+    const bus = createEventBus();
+    const game = createGame(2026, bus);
+    startRun(game);
+    game.alive = false;
+    const entityCountBefore = game.entities.length;
+    const firstZBefore = game.entities[0]?.z;
+    const pointsBefore = game.score.points;
+
+    advanceWorldOnly(game, 0.1);
+
+    expect(game.entities.length).toBeLessThanOrEqual(entityCountBefore);
+    if (firstZBefore !== undefined && game.entities[0] !== undefined) {
+      expect(game.entities[0].z).toBeLessThan(firstZBefore);
+    }
+    expect(game.score.points).toBe(pointsBefore);
+  });
+
+  it('non lancia mai su una simulazione lunga, anche con entità che escono dietro', () => {
+    const bus = createEventBus();
+    const game = createGame(99, bus);
+    startRun(game);
+    game.alive = false;
+
+    expect(() => {
+      for (let frame = 0; frame < 600; frame += 1) advanceWorldOnly(game, STEP);
+    }).not.toThrow();
   });
 });
 

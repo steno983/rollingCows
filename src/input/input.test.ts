@@ -105,6 +105,26 @@ describe('createInput', () => {
     input.dispose();
   });
 
+  it('non intercetta la tastiera quando il focus è su un bottone (PARTI/RIGIOCA restano attivabili da tastiera)', () => {
+    const input = createInput(target, nowMs);
+    const button = document.createElement('button');
+    document.body.appendChild(button);
+
+    const event = new KeyboardEvent('keydown', {
+      key: ' ',
+      bubbles: true,
+      cancelable: true,
+    });
+    Object.defineProperty(event, 'target', { value: button });
+    window.dispatchEvent(event);
+
+    expect(event.defaultPrevented).toBe(false);
+    expect(input.consume()).toBeNull();
+
+    button.remove();
+    input.dispose();
+  });
+
   it('dopo dispose nessun evento produce più azioni', () => {
     const input = createInput(target, nowMs);
     input.dispose();

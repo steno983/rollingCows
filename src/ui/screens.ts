@@ -120,12 +120,14 @@ export function createScreens(root: HTMLElement): Screens {
     },
 
     setMenuRecord(record: number): void {
-      menuRecordEl.textContent = String(Math.round(record));
+      // Math.floor come in game/score.ts e ui/hud.ts: mai un punto mostrato che
+      // non sia stato davvero guadagnato.
+      menuRecordEl.textContent = String(Math.floor(record));
     },
 
     setGameOver(points: number, record: number, isRecord: boolean): void {
-      finalPointsEl.textContent = String(Math.round(points));
-      finalRecordEl.textContent = String(Math.round(record));
+      finalPointsEl.textContent = String(Math.floor(points));
+      finalRecordEl.textContent = String(Math.floor(record));
       newRecordEl.classList.toggle(HIDDEN, !isRecord);
     },
 

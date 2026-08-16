@@ -213,7 +213,24 @@ export function createAudio(contextFactory: ContextFactory = defaultContextFacto
   return {
     attach(bus: EventBus): void {
       detach();
-      subscriptions.push(bus.on('run:started', () => playMoo()));
+      subscriptions.push(
+        bus.on('run:started', () => {
+          // Il rombo si spegne SOLO su avalanche:ended: se si torna al menu o si
+          // ricomincia mentre una valanga stava rombando (run:started sostituisce
+          // lo stato senza mai emettere avalanche:ended), il BufferSourceNode in
+          // loop continuava a suonare sul menu, sui record e per tutta la run
+          // successiva. L'audio resta un consumatore del bus: si spegne qui,
+          // niente chiamate dirette dal gioco.
+          stopRumble(0);
+          playMoo();
+        }),
+      );
+      subscriptions.push(
+        // Anche la morte durante una valanga deve spegnere subito il rombo:
+        // altrimenti continua a suonare sulla schermata di game over finché non
+        // si comincia una nuova run.
+        bus.on('run:ended', () => stopRumble(0)),
+      );
       subscriptions.push(
         bus.on('pickup:collected', (payload) => {
           playPickup();

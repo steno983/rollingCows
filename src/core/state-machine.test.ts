@@ -23,6 +23,13 @@ describe('createStateMachine', () => {
     expect(machine.current).toBe('playing');
   });
 
+  it('permette paused → gameover (morte durante il rallentatore in pausa)', () => {
+    const machine = createStateMachine('paused');
+
+    expect(machine.transition('gameover')).toBe(true);
+    expect(machine.current).toBe('gameover');
+  });
+
   it('rifiuta una transizione vietata senza cambiare stato', () => {
     const machine = createStateMachine();
 
@@ -61,7 +68,10 @@ describe('createStateMachine', () => {
     const paused = createStateMachine('paused');
     expect(paused.can('playing')).toBe(true);
     expect(paused.can('menu')).toBe(true);
-    expect(paused.can('gameover')).toBe(false);
+    // Si può morire mentre si è in pausa: il rallentatore alla morte continua a
+    // scorrere in background e può scadere dopo che blur/visibilitychange hanno
+    // messo in pausa la partita (vedi game/flow.ts).
+    expect(paused.can('gameover')).toBe(true);
     expect(paused.can('boot')).toBe(false);
 
     const gameover = createStateMachine('gameover');

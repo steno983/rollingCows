@@ -18,6 +18,12 @@ export interface SceneContext {
   renderer: THREE.WebGLRenderer;
   scene: THREE.Scene;
   camera: THREE.PerspectiveCamera;
+  /** Posizione (x, z) della camera SENZA lo shake: oggetto riusato ogni
+   *  frame (zero allocazioni), da leggere dopo update(). Serve ad ancorare
+   *  elementi che devono seguire la camera ma restare immobili quando questa
+   *  trema (vedi render/backdrop.ts): camera.position include lo shake,
+   *  questo no. */
+  rigPosition: { x: number; z: number };
   resize(): void;
   update(dt: number, size: number, avalanche: boolean): void;
   shake(amount: number): void;
@@ -120,6 +126,9 @@ export function createScene(canvas: HTMLCanvasElement): SceneContext {
   let lastAvalanche = false;
   let distance = cameraDistanceFor(1);
   let height = cameraHeightFor(1);
+  // La camera non si sposta mai lateralmente (lookAt è fisso a x = 0): l'unica
+  // sua x diversa da 0 è lo shake, che qui va apposta ignorato.
+  const rigPosition = { x: 0, z: -distance };
 
   function resize(): void {
     const width = Math.max(1, window.innerWidth);
@@ -148,6 +157,7 @@ export function createScene(canvas: HTMLCanvasElement): SceneContext {
     const k = Math.min(1, dt * RIG_RATE);
     distance += (cameraDistanceFor(size) - distance) * k;
     height += (cameraHeightFor(size) - height) * k;
+    rigPosition.z = -distance;
 
     shakeAmount = decayShake(shakeAmount, dt);
     const offsetX = (shakeRng.next() * 2 - 1) * shakeAmount;
@@ -175,5 +185,5 @@ export function createScene(canvas: HTMLCanvasElement): SceneContext {
   camera.position.set(0, height, -distance);
   camera.lookAt(lookAt);
 
-  return { renderer, scene, camera, resize, update, shake, render, setQuality };
+  return { renderer, scene, camera, rigPosition, resize, update, shake, render, setQuality };
 }

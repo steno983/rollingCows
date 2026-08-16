@@ -18,6 +18,7 @@ import { entityCenterX } from './game/lanes';
 import { loadRecord } from './game/score';
 import { createInput } from './input/input';
 import { worldToViewX } from './render/camera-rig';
+import { createBackdrop } from './render/backdrop';
 import { avalancheTrail, burstFromModel, resetDebris } from './render/debris';
 import { createEntitiesView } from './render/entities-view';
 import { MODELS } from './render/models';
@@ -69,7 +70,11 @@ function main(): void {
   const terrain = createTerrain();
   const entitiesView = createEntitiesView();
   const playerView = createPlayerView();
+  const backdrop = createBackdrop();
   const pool = createVoxelPool(CONFIG.render.voxelPoolSize, CONFIG.render.voxelSize);
+  // Il backdrop va aggiunto per primo: è il più lontano, ma l'ordine di scene
+  // graph non incide sull'ordine di disegno (quello lo decide lo z-buffer).
+  view.scene.add(backdrop.group);
   view.scene.add(terrain.group);
   view.scene.add(entitiesView.group);
   view.scene.add(playerView.group);
@@ -310,6 +315,7 @@ function main(): void {
         // insieme, l'artefatto opposto a quello che il fix M1 voleva eliminare.
         pool.update(slowDt, game.world.speed);
         view.update(slowDt, game.avalanche.size, false);
+        backdrop.sync(view.rigPosition.x, view.rigPosition.z);
         terrain.sync(game.world);
         entitiesView.sync(game.entities);
         logStats(dt);
@@ -334,6 +340,7 @@ function main(): void {
       entitiesView.sync(game.entities);
       playerView.sync(game.player, game.avalanche.size, game.world.speed, playing ? dt : 0);
       view.update(dt, game.avalanche.size, avalancheOn);
+      backdrop.sync(view.rigPosition.x, view.rigPosition.z);
       logStats(dt);
     },
     render(): void {

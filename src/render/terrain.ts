@@ -24,8 +24,11 @@ const BANK_INNER_MARGIN = 2;
 const BANK_OFFSET = CORRIDOR_HALF + BANK_INNER_MARGIN + 0.9;
 const BANK_HEIGHT = CONFIG.render.bankHeight;
 /** Base del banco sempre sotto il punto più basso plausibile del pendio
- *  adiacente: chiude il taglio invece di lasciare il banco sospeso nel vuoto
- *  (si vedeva il cielo sotto la base, a y ≈ -1 con i valori precedenti). */
+ *  adiacente (≈0, il pavimento piatto del corridoio, vedi displaceGround):
+ *  chiude il taglio invece di lasciare il banco sospeso nel vuoto (si vedeva
+ *  il cielo sotto la base con valori troppo alti). Il TETTO del banco
+ *  (BANK_BOTTOM_Y + BANK_HEIGHT) va invece tenuto sopra il pendio vicino,
+ *  altrimenti il banco sprofonda sotto la neve e sparisce. */
 const BANK_BOTTOM_Y = CONFIG.render.bankBottomY;
 /** Il corridoio giocabile resta invariato: qui si allarga solo ciò che sta
  *  oltre le corsie, abbastanza da coprire il frustum fino alla nebbia (vedi
@@ -36,6 +39,16 @@ const GROUND_WIDTH = CONFIG.world.laneCount * CONFIG.world.laneWidth + CONFIG.re
  *  smette di crescere e resta un pendio pieno: senza tetto il termine
  *  quadratico produce altezze assurde ai bordi di una mesh così larga. */
 const MAX_LATERAL_RISE = CONFIG.render.groundMaxLateralRise;
+
+/** Coefficiente del termine ondulato (wave * outside * WAVE_COEF) e del
+ *  termine quadratico (outside² * RISE_COEF): col tetto attuale
+ *  (MAX_LATERAL_RISE = 1.2, vedi CONFIG.render.groundMaxLateralRise) danno
+ *  un'altezza massima di ~3.8 unità (0.27 * 1.2 * WAVE_COEF + 1.2² *
+ *  RISE_COEF, nel caso peggiore in cui il seno vale ±1), contro le mucca alta
+ *  ~1.5: una conca larga e bassa, non più una gola alta ~80 unità come prima
+ *  che MAX_LATERAL_RISE fosse abbassato da 6 a 1.2. */
+const WAVE_COEF = 2;
+const RISE_COEF = 2.2;
 
 function displaceGround(geometry: THREE.BufferGeometry): void {
   const position = geometry.getAttribute('position');
@@ -50,7 +63,7 @@ function displaceGround(geometry: THREE.BufferGeometry): void {
     const wave =
       Math.sin((z / length) * Math.PI * 2) * 0.18 +
       Math.sin((z / length) * Math.PI * 6 + x * 0.6) * 0.09;
-    position.setY(i, wave * outside * 3 + outside * outside * 2.2);
+    position.setY(i, wave * outside * WAVE_COEF + outside * outside * RISE_COEF);
   }
   position.needsUpdate = true;
   geometry.computeVertexNormals();

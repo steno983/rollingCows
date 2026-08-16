@@ -211,6 +211,20 @@ describe('createAudio', () => {
     expect(fake.sources[0]?.stopped).toBe(true);
   });
 
+  it('run:stopped spegne il rombo se la run viene abbandonata da viva (Esc → MENU a metà valanga)', () => {
+    const audio = createAudio(factory);
+    const bus = createEventBus();
+    audio.attach(bus);
+
+    bus.emit('avalanche:triggered', { size: CONFIG.avalanche.maxSize });
+    expect(fake.sources.length).toBe(1);
+    expect(fake.sources[0]?.stopped).toBe(false);
+
+    bus.emit('run:stopped', {});
+
+    expect(fake.sources[0]?.stopped).toBe(true);
+  });
+
   it('con muted non crea nessun nodo e non apre nemmeno il contesto', () => {
     const audio = createAudio(factory);
     const bus = createEventBus();

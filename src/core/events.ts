@@ -3,6 +3,12 @@ import type { Lane, ObstacleKind, PickupKind } from '../game/types';
 export interface GameEvents {
   'run:started': { seed: number };
   'run:ended': { points: number; distance: number; isRecord: boolean };
+  /** Run abbandonata da viva (es. il giocatore torna al menu con Esc/MENU
+   *  mentre è ancora vivo): DIVERSO da 'run:ended', che è riservato alla morte
+   *  e fa scattare il rallentatore in main.ts. Serve ai consumatori del bus
+   *  (l'audio, per spegnere il rombo della valanga) per sapere che la run è
+   *  finita anche quando non c'è stata una morte. */
+  'run:stopped': Record<string, never>;
   'pickup:collected': { kind: PickupKind; charge: number };
   'obstacle:hit': {
     kind: ObstacleKind;

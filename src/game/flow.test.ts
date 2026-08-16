@@ -210,3 +210,38 @@ describe('invariante: dopo run:ended il gioco raggiunge sempre gameover', () => 
     });
   }
 });
+
+describe('tornare al menu durante il rallentatore annulla la morte in sospeso', () => {
+  /**
+   * Buco residuo trovato in verifica: pausa manuale (Esc) durante il
+   * rallentatore, poi MENU (paused → menu è permesso, indipendente da
+   * isDying). A quel punto commitGameOver fallirebbe in silenzio perché
+   * 'menu' non ammette 'gameover', e il payload resterebbe orfano in
+   * pendingGameOver finché non arriva un nuovo armDeath. main.ts risolve
+   * chiamando resetFlow in goToMenu: qui si verifica che, dopo il reset, il
+   * rallentatore non produca più nulla.
+   */
+  it('goToMenu (paused → menu) azzera pendingGameOver: nessun payload orfano', () => {
+    const machine = createStateMachine('playing');
+    const flow = createFlow();
+    armDeath(flow, PAYLOAD, DEATH_SLOW_SECONDS);
+
+    // Esc: pausa manuale durante il rallentatore.
+    expect(machine.transition('paused')).toBe(true);
+    // MENU dalla schermata di pausa.
+    expect(machine.transition('menu')).toBe(true);
+
+    // goToMenu() in main.ts chiama resetFlow qui.
+    resetFlow(flow);
+
+    expect(isDying(flow)).toBe(false);
+    expect(flow.pendingGameOver).toBeNull();
+
+    // Anche se il ciclo di update chiamasse ancora tickDeath/commitGameOver
+    // (es. un ultimo frame in volo), non deve più succedere nulla: niente
+    // transizione, niente payload rispuntato dal nulla.
+    expect(tickDeath(flow, 1)).toBe(false);
+    expect(commitGameOver(machine, flow)).toBeNull();
+    expect(machine.current).toBe('menu');
+  });
+});

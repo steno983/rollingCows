@@ -13,7 +13,7 @@ import {
   resetFlow,
   tickDeath,
 } from './game/flow';
-import { advanceWorldOnly, createGame, handleAction, startRun, updateGame } from './game/game';
+import { abandonRun, advanceWorldOnly, createGame, handleAction, startRun, updateGame } from './game/game';
 import { entityCenterX } from './game/lanes';
 import { loadRecord } from './game/score';
 import { createInput } from './input/input';
@@ -117,6 +117,16 @@ function main(): void {
 
   function goToMenu(): void {
     if (machine.transition('menu')) {
+      // Run abbandonata da viva (Esc → MENU, magari a metà valanga): emette
+      // run:stopped, così l'audio spegne il rombo senza che main.ts lo chiami
+      // mai direttamente (no-op se la run era già finita o non era iniziata).
+      abandonRun(game);
+      // Se si torna al menu mentre si era in pausa durante il rallentatore
+      // della morte (Esc → pausa → MENU, entrambe transizioni legittime),
+      // annulla esplicitamente il game over in sospeso: 'menu' non ammette
+      // gameover, quindi senza questo il payload restava orfano in
+      // pendingGameOver finché non arrivava un nuovo armDeath.
+      resetFlow(flow);
       screens.setMenuRecord(record);
       showScreen('menu');
     }

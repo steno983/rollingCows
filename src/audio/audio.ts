@@ -232,6 +232,13 @@ export function createAudio(contextFactory: ContextFactory = defaultContextFacto
         bus.on('run:ended', () => stopRumble(0)),
       );
       subscriptions.push(
+        // Run abbandonata da viva (Esc → MENU a metà valanga): nessun
+        // run:started né run:ended viene emesso in questo percorso, quindi
+        // senza questo listener il rombo continuava a suonare sul menu finché
+        // non partiva una run nuova.
+        bus.on('run:stopped', () => stopRumble(0)),
+      );
+      subscriptions.push(
         bus.on('pickup:collected', (payload) => {
           playPickup();
           if (payload.kind === 'cow') {

@@ -124,6 +124,21 @@ export function startRun(game: GameState, seed?: number): void {
   game.bus.emit('run:started', { seed: game.seed });
 }
 
+/**
+ * Interrompe la run corrente SENZA che sia stata una morte: es. il giocatore
+ * torna al menu (Esc → MENU) mentre è ancora vivo, magari a metà valanga.
+ * Emette 'run:stopped', non 'run:ended' — quest'ultimo è riservato alla morte
+ * e in main.ts fa scattare il rallentatore: riusarlo qui farebbe partire un
+ * game over fasullo. L'audio (consumatore puro del bus) ascolta 'run:stopped'
+ * per spegnere il rombo della valanga senza che main.ts lo chiami mai
+ * direttamente.
+ */
+export function abandonRun(game: GameState): void {
+  if (!game.alive) return;
+  game.alive = false;
+  game.bus.emit('run:stopped', {});
+}
+
 export function handleAction(game: GameState, action: Action): void {
   if (!game.alive) return;
 

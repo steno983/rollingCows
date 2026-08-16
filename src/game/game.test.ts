@@ -7,7 +7,7 @@ import {
 } from '../core/events';
 import { addCharge } from './avalanche';
 import { CONFIG } from './config';
-import { advanceWorldOnly, createGame, handleAction, startRun, updateGame, type GameState } from './game';
+import { abandonRun, advanceWorldOnly, createGame, handleAction, startRun, updateGame, type GameState } from './game';
 import type { Entity } from './types';
 
 const STEP = 1 / 60;
@@ -20,6 +20,7 @@ interface Recorded {
 const ALL_EVENTS: EventName[] = [
   'run:started',
   'run:ended',
+  'run:stopped',
   'pickup:collected',
   'obstacle:hit',
   'size:changed',
@@ -256,6 +257,38 @@ describe('advanceWorldOnly', () => {
     expect(() => {
       for (let frame = 0; frame < 600; frame += 1) advanceWorldOnly(game, STEP);
     }).not.toThrow();
+  });
+});
+
+describe('abandonRun', () => {
+  // Percorso "Esc → MENU" mentre il giocatore è ancora vivo: diverso dalla
+  // morte, deve emettere run:stopped (non run:ended, che in main.ts fa
+  // scattare il rallentatore) così l'audio spegne il rombo della valanga
+  // senza una chiamata diretta da main.ts (vedi il difetto residuo I2).
+  it('emette run:stopped e segna la run come non più viva', () => {
+    const bus = createEventBus();
+    const game = createGame(2026, bus);
+    startRun(game);
+    const events = recordEvents(bus);
+    expect(game.alive).toBe(true);
+
+    abandonRun(game);
+
+    expect(game.alive).toBe(false);
+    expect(countOf(events, 'run:stopped')).toBe(1);
+    expect(countOf(events, 'run:ended')).toBe(0);
+  });
+
+  it('è un no-op se la run non era già viva (nessun evento duplicato)', () => {
+    const bus = createEventBus();
+    const game = createGame(2026, bus);
+    startRun(game);
+    const events = recordEvents(bus);
+
+    abandonRun(game);
+    abandonRun(game);
+
+    expect(countOf(events, 'run:stopped')).toBe(1);
   });
 });
 

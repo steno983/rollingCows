@@ -25,6 +25,14 @@ export const CONFIG = {
      *  questo tempo e, se il bivio compare entro tale finestra, vale come
      *  scelta già data (design §4). */
     earlyChoiceSeconds: 0.6,
+    /** Distanza del PRIMISSIMO bivio di una corsa, diversa da minGap: a
+     *  minGap (120 unità, ~6,5 s a velocità di partenza) il giocatore deve
+     *  superare tre ostacoli prima di vedere un bivio, e spesso muore prima
+     *  di arrivarci. A 55 unità (~3 s) la meccanica dei bivi si incontra
+     *  quasi subito. Vale SOLO per il bivio con cui si apre la corsa: quelli
+     *  successivi tornano a usare minGap/gapPerSpeed (vedi la chiusura del
+     *  riallineamento in path.ts). */
+    firstForkIn: 55,
     /** Distanza minima fra due bivi, a velocità di partenza. */
     minGap: 120,
     /** Quanto la distanza minima cresce con la velocità (unità per u/s). */
@@ -104,6 +112,14 @@ export const CONFIG = {
   },
   forgiveness: {
     enabled: true,
+    /** Il primissimo impatto di ogni corsa è perdonato indipendentemente
+     *  dalla carica: a inizio corsa la carica è sempre zero, quindi
+     *  minChargeRatio non è mai soddisfatto e il primo errore chiuderebbe
+     *  sempre la corsa mentre il giocatore sta ancora imparando i comandi.
+     *  Vale una volta sola per corsa esattamente come il perdono normale
+     *  (stesso `forgivenessUsed`, stessa penalità): questo flag toglie solo
+     *  il requisito di carica per quella prima occasione. */
+    firstHitFree: true,
     minChargeRatio: 0.5,
     sizePenalty: 1,
   },

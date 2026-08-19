@@ -43,10 +43,12 @@ export function createPath(): PathState {
     richBranch: 'left',
     activeBranch: 'main',
     offsetX: 0,
-    // Prima del primissimo bivio non esiste ancora una velocità "di prima" da
-    // usare nella formula gapPerSpeed: si parte dal solo margine minimo, come
-    // se la run fosse appena ripartita da un riallineamento a velocità nulla.
-    nextForkIn: CONFIG.path.minGap,
+    // Il primissimo bivio di una corsa usa la sua distanza dedicata
+    // (firstForkIn), più vicina di minGap: senza questo, per vedere il primo
+    // bivio bisognerebbe superare tre ostacoli, e chi non conosce ancora i
+    // comandi spesso muore prima di arrivarci. I bivi successivi, alla
+    // chiusura del riallineamento qui sotto, tornano a minGap/gapPerSpeed.
+    nextForkIn: CONFIG.path.firstForkIn,
     pendingChoice: null,
     pendingChoiceTimeLeft: 0,
     realignProgress: 0,

@@ -56,6 +56,17 @@ export function createSpawner(rng: Rng): Spawner {
   const gapSpread = maxObstacleGap - minObstacleGap;
 
   let nextId = 0;
+  // ONBOARDING: il primo ostacolo che il giocatore INCONTRA DAVVERO in una
+  // corsa deve essere saltabile: il salto è il gesto più istintivo, e i
+  // sospesi (che chiedono la scivolata) arrivano dopo. Un game state crea
+  // uno spawner nuovo a ogni startRun (vedi game.ts), quindi questo flag
+  // identifica l'inizio corsa senza che il chiamante lo dichiari
+  // esplicitamente. Resta true anche oltre il primo ostacolo emesso in
+  // assoluto: quello nasce sempre a cursorZ 0, dentro la zona franca
+  // (world.spawnSafeZ) che startRun cancella subito dopo, quindi da solo non
+  // è ciò che il giocatore vede. Il flag si spegne solo al primo ostacolo
+  // che nasce OLTRE la zona franca, cioè quello davvero raggiunto.
+  let firstObstaclePending = true;
 
   /** z del PROSSIMO ostacolo di ciascun ramo. -Infinity = ramo mai popolato,
    *  quindi il primo ostacolo cade sul bordo del segmento richiesto. */
@@ -181,7 +192,8 @@ export function createSpawner(rng: Rng): Spawner {
       let previousObstacleZ = lastObstacleZ[branch];
 
       while (cursorZ < endZ) {
-        const kind = pickObstacleKind();
+        const kind = firstObstaclePending ? rng.pick(GROUND_OBSTACLES) : pickObstacleKind();
+        if (firstObstaclePending && cursorZ >= CONFIG.world.spawnSafeZ) firstObstaclePending = false;
         const overhead = isOverhead(kind);
 
         // La distanza scelta cala con la difficoltà, ma non scende MAI sotto il
@@ -242,6 +254,7 @@ export function createSpawner(rng: Rng): Spawner {
     },
     reset(): void {
       nextId = 0;
+      firstObstaclePending = true;
       nextObstacleZ.main = -Infinity;
       nextObstacleZ.left = -Infinity;
       nextObstacleZ.right = -Infinity;

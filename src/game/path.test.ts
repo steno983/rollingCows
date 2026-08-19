@@ -58,7 +58,7 @@ describe('updatePath — comparsa del bivio', () => {
     const { bus } = recordedBus('fork:appeared');
     const path = createPath();
     const rng = createRng(1);
-    travel(path, CONFIG.path.minGap - 1, CONFIG.world.startSpeed, rng, bus);
+    travel(path, CONFIG.path.firstForkIn - 1, CONFIG.world.startSpeed, rng, bus);
     expect(path.phase).toBe('none');
   });
 
@@ -66,7 +66,7 @@ describe('updatePath — comparsa del bivio', () => {
     const { bus, payloads } = recordedBus('fork:appeared');
     const path = createPath();
     const rng = createRng(1);
-    travel(path, CONFIG.path.minGap + 1, CONFIG.world.startSpeed, rng, bus);
+    travel(path, CONFIG.path.firstForkIn + 1, CONFIG.world.startSpeed, rng, bus);
     expect(path.phase).toBe('approaching');
     expect(payloads.length).toBe(1);
     expect(['left', 'right']).toContain(payloads[0]?.richBranch);
@@ -92,7 +92,7 @@ describe('chooseBranch', () => {
     const bus = createEventBus();
     const path = createPath();
     const rng = createRng(1);
-    travel(path, CONFIG.path.minGap + 1, CONFIG.world.startSpeed, rng, bus);
+    travel(path, CONFIG.path.firstForkIn + 1, CONFIG.world.startSpeed, rng, bus);
     expect(path.phase).toBe('approaching');
 
     expect(chooseBranch(path, 'left')).toBe(true);
@@ -109,7 +109,7 @@ describe('chooseBranch', () => {
     const bus = createEventBus();
     const path = createPath();
     const rng = createRng(1);
-    travel(path, CONFIG.path.minGap + 1, CONFIG.world.startSpeed, rng, bus);
+    travel(path, CONFIG.path.firstForkIn + 1, CONFIG.world.startSpeed, rng, bus);
     chooseBranch(path, 'left');
     travel(
       path,
@@ -137,7 +137,7 @@ describe('senza scelta', () => {
     const { bus, payloads } = recordedBus('fork:resolved');
     const path = createPath();
     const rng = createRng(7);
-    travel(path, CONFIG.path.minGap + 1, CONFIG.world.startSpeed, rng, bus);
+    travel(path, CONFIG.path.firstForkIn + 1, CONFIG.world.startSpeed, rng, bus);
     const rich = path.richBranch;
     const expectedChoice = rich === 'left' ? 'right' : 'left';
 
@@ -163,7 +163,7 @@ describe('branchIsSolid', () => {
     expect(branchIsSolid(path, 'main')).toBe(true);
 
     const rng = createRng(1);
-    travel(path, CONFIG.path.minGap + 1, CONFIG.world.startSpeed, rng, bus);
+    travel(path, CONFIG.path.firstForkIn + 1, CONFIG.world.startSpeed, rng, bus);
     expect(branchIsSolid(path, 'main')).toBe(true);
   });
 
@@ -171,7 +171,7 @@ describe('branchIsSolid', () => {
     const bus = createEventBus();
     const path = createPath();
     const rng = createRng(1);
-    travel(path, CONFIG.path.minGap + 1, CONFIG.world.startSpeed, rng, bus);
+    travel(path, CONFIG.path.firstForkIn + 1, CONFIG.world.startSpeed, rng, bus);
     expect(path.phase).toBe('approaching');
     expect(branchIsSolid(path, 'left')).toBe(false);
     expect(branchIsSolid(path, 'right')).toBe(false);
@@ -181,7 +181,7 @@ describe('branchIsSolid', () => {
     const bus = createEventBus();
     const path = createPath();
     const rng = createRng(1);
-    travel(path, CONFIG.path.minGap + 1, CONFIG.world.startSpeed, rng, bus);
+    travel(path, CONFIG.path.firstForkIn + 1, CONFIG.world.startSpeed, rng, bus);
     chooseBranch(path, 'left');
     travel(
       path,
@@ -202,7 +202,7 @@ describe('riallineamento', () => {
     const bus = createEventBus();
     const path = createPath();
     const rng = createRng(3);
-    travel(path, CONFIG.path.minGap + 1, CONFIG.world.startSpeed, rng, bus);
+    travel(path, CONFIG.path.firstForkIn + 1, CONFIG.world.startSpeed, rng, bus);
     chooseBranch(path, 'right');
     travel(
       path,
@@ -221,7 +221,7 @@ describe('riallineamento', () => {
     const bus = createEventBus();
     const path = createPath();
     const rng = createRng(3);
-    travel(path, CONFIG.path.minGap + 1, CONFIG.world.startSpeed, rng, bus);
+    travel(path, CONFIG.path.firstForkIn + 1, CONFIG.world.startSpeed, rng, bus);
     chooseBranch(path, 'right');
     travel(path, CONFIG.path.previewZ, CONFIG.world.startSpeed, rng, bus);
     expect(path.phase === 'committed' || path.phase === 'realigning').toBe(true);
@@ -294,7 +294,16 @@ describe('simulazione lunga', () => {
     // Ogni bivio si chiude, salvo eventualmente l'ultimo se la simulazione
     // finisce a metà del suo riallineamento.
     expect(closedCount).toBeGreaterThanOrEqual(appearedCount - 1);
-    for (const gap of gapsSinceLastClose) {
+    // Il PRIMO bivio della corsa usa firstForkIn, più vicino di minGap
+    // (design onboarding): il primo elemento di gapsSinceLastClose misura
+    // quella distanza, non lo spazio fra due bivi, quindi si confronta con
+    // firstForkIn. Solo dal secondo in poi il gap è "fra due bivi" e vale il
+    // vincolo minGap.
+    const [firstGap, ...laterGaps] = gapsSinceLastClose;
+    if (firstGap !== undefined) {
+      expect(firstGap).toBeGreaterThanOrEqual(CONFIG.path.firstForkIn - 1);
+    }
+    for (const gap of laterGaps) {
       expect(gap).toBeGreaterThanOrEqual(CONFIG.path.minGap - 1);
     }
   });

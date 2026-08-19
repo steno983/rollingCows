@@ -321,6 +321,11 @@ describe('abandonRun', () => {
 describe('updateGame — ostacoli a terra e sospesi', () => {
   it('un ostacolo a terra uccide chi resta fermo', () => {
     const { game, events } = scenario(1, groundObstacle());
+    // Il primo impatto di ogni corsa è perdonato (onboarding): per isolare la
+    // domanda "un ostacolo a terra uccide chi resta fermo?" dal perdono si
+    // disattiva a mano, come già fanno gli altri test di morte "genuina" qui
+    // sotto.
+    game.forgivenessUsed = true;
 
     runFrames(game, 60);
 
@@ -382,6 +387,35 @@ describe('updateGame — ostacoli a terra e sospesi', () => {
     }
   });
 
+  it('ONBOARDING: il primo impatto della corsa è sempre perdonato, anche a carica zero', () => {
+    const { game, events } = scenario(1, groundObstacle());
+    expect(game.avalanche.charge).toBe(0);
+
+    runFrames(game, 60);
+
+    expect(game.alive).toBe(true);
+    expect(game.forgivenessUsed).toBe(true);
+    expect(payloadsOf(events, 'obstacle:hit').map((hit) => hit.outcome)).toEqual(['forgiven']);
+    expect(countOf(events, 'run:ended')).toBe(0);
+  });
+
+  it('ONBOARDING: il secondo impatto della corsa uccide, anche se il primo (a carica zero) era stato perdonato', () => {
+    const { game, events } = scenario(1, groundObstacle());
+    runFrames(game, 60);
+    expect(game.alive).toBe(true);
+    expect(game.forgivenessUsed).toBe(true);
+
+    game.entities.length = 0;
+    game.entities.push(groundObstacle());
+    runFrames(game, 60);
+
+    expect(game.alive).toBe(false);
+    expect(payloadsOf(events, 'obstacle:hit').map((hit) => hit.outcome)).toEqual([
+      'forgiven',
+      'death',
+    ]);
+  });
+
   it('con carica al 60% perdona il primo impatto invece di uccidere', () => {
     const { game, events } = scenario(1, groundObstacle());
     addCharge(game.avalanche, 60, game.bus);
@@ -428,6 +462,10 @@ describe('updateGame — ostacoli a terra e sospesi', () => {
 
   it('senza scudo (e senza carica da perdonare) lo stesso impatto uccide', () => {
     const { game, events } = scenario(11, groundObstacle());
+    // Vedi il commento nel test "un ostacolo a terra uccide chi resta
+    // fermo": senza disattivarlo a mano, il perdono del primo impatto
+    // (onboarding) assorbirebbe questo colpo invece di ucciderlo.
+    game.forgivenessUsed = true;
 
     runFrames(game, 60);
 

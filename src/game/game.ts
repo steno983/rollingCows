@@ -486,10 +486,17 @@ function hitObstacle(game: GameState, entity: Entity, kind: ObstacleKind): void 
   }
 
   const chargeRatio = game.avalanche.charge / CONFIG.avalanche.threshold;
+  // ONBOARDING: il primissimo impatto di ogni corsa passa sempre, anche a
+  // carica zero (CONFIG.forgiveness.firstHitFree) — è l'unica occasione in
+  // cui il perdono ignora minChargeRatio. `!game.forgivenessUsed` è anche il
+  // modo in cui si riconosce "primissimo impatto": un impatto non perdonato
+  // finisce sempre in game.alive = false qui sotto, quindi il flusso non può
+  // mai arrivare una seconda volta a questo punto con forgivenessUsed
+  // ancora false.
   const forgivable =
     CONFIG.forgiveness.enabled &&
     !game.forgivenessUsed &&
-    chargeRatio >= CONFIG.forgiveness.minChargeRatio;
+    (chargeRatio >= CONFIG.forgiveness.minChargeRatio || CONFIG.forgiveness.firstHitFree);
 
   if (forgivable) {
     game.forgivenessUsed = true;

@@ -14,17 +14,17 @@ import {
   tickDeath,
 } from './game/flow';
 import { abandonRun, advanceWorldOnly, createGame, handleAction, startRun, updateGame } from './game/game';
-import { branchOffsetX } from './game/path';
 import { loadRecord } from './game/score';
 import { createInput } from './input/input';
 import { worldToViewX } from './render/camera-rig';
 import { createBackdrop } from './render/backdrop';
 import { avalancheTrail, burstFromModel, resetDebris } from './render/debris';
-import { createEntitiesView } from './render/entities-view';
+import { createEntitiesView, entityWorldOffsetX } from './render/entities-view';
 import { MODELS } from './render/models';
 import { createPerfMonitor } from './render/perf-monitor';
 import { createPlayerView } from './render/player-view';
 import { createScene } from './render/scene';
+import { createScenery } from './render/scenery';
 import { createTerrain } from './render/terrain';
 import { createVoxelPool } from './render/voxel-pool';
 import { isWebGLAvailable, showWebGLError } from './render/webgl-support';
@@ -68,6 +68,7 @@ function main(): void {
   const view = createScene(canvas);
 
   const terrain = createTerrain();
+  const scenery = createScenery();
   const entitiesView = createEntitiesView();
   const playerView = createPlayerView();
   const backdrop = createBackdrop();
@@ -76,6 +77,7 @@ function main(): void {
   // graph non incide sull'ordine di disegno (quello lo decide lo z-buffer).
   view.scene.add(backdrop.group);
   view.scene.add(terrain.group);
+  view.scene.add(scenery.group);
   view.scene.add(entitiesView.group);
   view.scene.add(playerView.group);
   view.scene.add(pool.mesh);
@@ -173,14 +175,16 @@ function main(): void {
   });
 
   bus.on('obstacle:hit', (payload) => {
-    const hitX = worldToViewX(branchOffsetX(game.path, payload.branch) + game.path.offsetX);
+    const hitX = worldToViewX(entityWorldOffsetX(game.path, { branch: payload.branch }));
 
-    if (payload.outcome === 'smashed' || payload.outcome === 'forgiven' || payload.outcome === 'shielded') {
+    if (payload.outcome === 'smashed' || payload.outcome === 'forgiven') {
       burstFromModel(pool, MODELS[payload.kind], hitX, 0.4, payload.z, CONFIG.feel.smashBurstPower * particleScale);
       view.shake(CONFIG.feel.impactShake);
       return;
     }
-    // morte: l'ostacolo si disintegra subito, la mucca segue al via del rallentatore.
+    // morte E scudo: l'ostacolo si disintegra comunque (il colpo era "vero",
+    // lo scudo lo ha solo assorbito). Il frantumarsi dello scudo stesso ha il
+    // proprio burst separato, vedi bus.on('shield:consumed', ...) più sotto.
     burstFromModel(pool, MODELS[payload.kind], hitX, 0.4, payload.z, CONFIG.feel.deathBurstPower * particleScale);
     view.shake(CONFIG.feel.impactShake);
   });
@@ -189,11 +193,29 @@ function main(): void {
     // Il giocatore è sempre al centro dello schermo (0): non esiste più una
     // x propria del player, è il mondo/i rami a scorrere lateralmente
     // (game.path.offsetX), vedi Note di progetto del task 7.
-    burstFromModel(pool, MODELS[payload.kind], worldToViewX(0), 0.8, 0, 4 * particleScale);
+    burstFromModel(pool, MODELS[payload.kind], 0, 0.8, 0, 4 * particleScale);
   });
 
   bus.on('avalanche:triggered', () => {
     view.shake(CONFIG.feel.avalancheShake);
+  });
+
+  bus.on('fork:appeared', (payload) => {
+    hud.setFork(payload.richBranch);
+  });
+
+  bus.on('fork:resolved', () => {
+    hud.setFork(null);
+  });
+
+  bus.on('buff:gained', () => {
+    burstFromModel(pool, MODELS.crystal, 0, 0.8, 0, 5 * particleScale);
+    view.shake(CONFIG.feel.buffShake);
+  });
+
+  bus.on('shield:consumed', () => {
+    burstFromModel(pool, MODELS.snowflake, 0, 0.8, 0, CONFIG.feel.smashBurstPower * particleScale);
+    view.shake(CONFIG.feel.impactShake);
   });
 
   bus.on('run:ended', (payload) => {
@@ -203,7 +225,7 @@ function main(): void {
     burstFromModel(
       pool,
       MODELS.cow,
-      worldToViewX(0),
+      0,
       0.6,
       0,
       CONFIG.feel.deathBurstPower * particleScale,
@@ -240,6 +262,7 @@ function main(): void {
     hud.setCharge(game.avalanche.charge / CONFIG.avalanche.threshold);
     hud.setSize(game.avalanche.size);
     hud.setAvalanche(game.avalanche.phase !== 'idle', game.avalanche.phase === 'warning');
+    hud.setBuffs(game.buffs.shield, game.buffs.starTimeLeft, game.buffs.magnetTimeLeft);
   }
 
   /** Logga draw call e triangoli ogni CONFIG.perf.statsLogSeconds: aiuta a
@@ -314,6 +337,7 @@ function main(): void {
         view.update(slowDt, game.avalanche.size, false);
         backdrop.sync(view.rigPosition.x, view.rigPosition.z);
         terrain.sync(game.world, game.path);
+        scenery.sync(game.world);
         entitiesView.sync(game.entities, game.path);
         logStats(dt);
         if (done) showGameOver();
@@ -328,12 +352,13 @@ function main(): void {
 
       const avalancheOn = playing && game.avalanche.phase !== 'idle';
       const intensity = avalancheOn ? (game.avalanche.size / CONFIG.avalanche.maxSize) * particleScale : 0;
-      avalancheTrail(pool, dt, worldToViewX(0), 0.2, -1.5, intensity);
+      avalancheTrail(pool, dt, 0, 0.2, -1.5, intensity);
       pool.update(dt, game.world.speed);
 
       // La vista continua a vivere anche in menu, pausa e game over: il pendio
       // e la mucca restano visibili dietro le schermate, ma non avanzano.
       terrain.sync(game.world, game.path);
+      scenery.sync(game.world);
       entitiesView.sync(game.entities, game.path);
       playerView.sync(game.player, game.avalanche.size, game.world.speed, playing ? dt : 0, game.buffs.shield);
       view.update(dt, game.avalanche.size, avalancheOn);

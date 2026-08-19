@@ -253,4 +253,77 @@ describe('createAudio', () => {
     expect(fake.resumeCalls).toBe(1);
     expect(factoryCalls).toBe(1);
   });
+
+  it('buff:gained suona un tono acuto (chime), qualunque sia il buff raccolto', () => {
+    const audio = createAudio(factory);
+    const bus = createEventBus();
+    audio.attach(bus);
+
+    bus.emit('buff:gained', { kind: 'star' });
+
+    expect(fake.oscillators.length).toBe(1);
+    expect(fake.oscillators[0]?.type).toBe('triangle');
+    expect(fake.oscillators[0]?.started).toBe(true);
+  });
+
+  it('buff:gained (crystal) suona un singolo oscillatore triangolare (lo stesso zap breve)', () => {
+    const audio = createAudio(factory);
+    const bus = createEventBus();
+    audio.attach(bus);
+
+    bus.emit('buff:gained', { kind: 'crystal' });
+
+    expect(fake.oscillators.length).toBe(1);
+    expect(fake.oscillators[0]?.type).toBe('triangle');
+  });
+
+  it('buff:gained (magnet) suona un oscillatore sinusoidale che scende invece di salire', () => {
+    const audio = createAudio(factory);
+    const bus = createEventBus();
+    audio.attach(bus);
+
+    bus.emit('buff:gained', { kind: 'magnet' });
+
+    expect(fake.oscillators.length).toBe(1);
+    expect(fake.oscillators[0]?.type).toBe('sine');
+    expect(fake.oscillators[0]?.frequency.value).toBe(CONFIG.audio.magnetPull.lowHz);
+  });
+
+  it('buff:gained (bell) suona come un campanaccio: due oscillatori non armonici, non il chime generico', () => {
+    const audio = createAudio(factory);
+    const bus = createEventBus();
+    audio.attach(bus);
+
+    bus.emit('buff:gained', { kind: 'bell' });
+
+    expect(fake.oscillators.length).toBe(2);
+    expect(fake.oscillators[0]?.type).toBe('square');
+    expect(fake.oscillators[1]?.type).toBe('triangle');
+    expect(fake.oscillators[1]?.frequency.value).toBe(
+      CONFIG.audio.cowbell.fundamentalHz * CONFIG.audio.cowbell.overtoneRatio,
+    );
+  });
+
+  it('shield:consumed suona un rumore passa-alto, distinto dall impatto normale (passa-basso)', () => {
+    const audio = createAudio(factory);
+    const bus = createEventBus();
+    audio.attach(bus);
+
+    bus.emit('shield:consumed', {});
+
+    expect(fake.sources.length).toBe(1);
+    expect(fake.sources[0]?.started).toBe(true);
+    expect(fake.filters[0]?.type).toBe('highpass');
+  });
+
+  it('fork:appeared suona un richiamo, distinto dai suoni di raccolta', () => {
+    const audio = createAudio(factory);
+    const bus = createEventBus();
+    audio.attach(bus);
+
+    bus.emit('fork:appeared', { richBranch: 'left' });
+
+    expect(fake.oscillators.length).toBe(1);
+    expect(fake.oscillators[0]?.started).toBe(true);
+  });
 });

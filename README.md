@@ -10,23 +10,36 @@ Niente asset esterni: modelli, effetti e suoni sono generati da codice.
 
 ## Come si gioca
 
-Obiettivo: andare il più lontano possibile e riempire la barra di carica.
+Obiettivo: andare il più lontano possibile, riempire in fretta la barra di
+carica e scegliere bene ai bivi.
 
 | Comando | Telefono | Desktop |
 |---|---|---|
-| Cambia corsia | swipe a sinistra / a destra | frecce sinistra/destra, A/D |
 | Salta | swipe verso l'alto | freccia su, W, barra spaziatrice |
-| Schiacciata | swipe verso il basso | freccia giù, S |
+| Scivola / tuffati | swipe verso il basso | freccia giù, S |
+| Scegli un ramo (solo ai bivi) | swipe a sinistra / a destra | frecce sinistra/destra, A/D |
 | Pausa | bottone in pausa | Esc, P |
 
-- Rocce e baite bloccano sempre. Alberi e staccionate si sfondano da taglia 3 in
-  su. I crepacci vanno saltati, i rami sospesi vanno passati con la schiacciata.
-- Fiocco di neve, balla di fieno e altra mucca caricano la barra; l'altra mucca
-  fa anche crescere di una taglia.
-- A barra piena parte la valanga: 8 secondi di invulnerabilità, distruzione
-  totale e punteggio ×4. Negli ultimi 1,5 secondi l'interfaccia lampeggia: è il
-  momento di rimettersi in una corsia libera.
-- Alla fine della valanga carica e taglia tornano a zero. Lo sfogo si paga.
+- Massi, tronchi caduti, staccionate e crepacci si saltano. Rami di abete,
+  archi di roccia e cornicioni di ghiaccio sono sospesi: ci si passa sotto
+  scivolando. Un tuffo (swipe giù mentre si è in aria) concatena salto e
+  scivolata: è la manovra che salva quando due ostacoli sono vicini.
+- Ogni tanto il tracciato si biforca. Il ramo più ricco di fiocchi e buff è
+  anche il più ostacolato; l'altro è sgombro. Si legge il bivio prima di
+  arrivarci, si sceglie con uno swipe laterale (la scelta si può cambiare
+  finché non si supera il punto di non ritorno), e chi non sceglie ottiene
+  automaticamente il ramo più sgombro: l'indecisione costa il premio, non la
+  corsa.
+- I fiocchi in fila caricano la barra (4 punti l'uno) e suggeriscono cosa
+  fare: dritti si corre, ad arco si salta, bassi sotto un ostacolo si scivola.
+- Quattro buff, sul percorso come i fiocchi: il cristallo di ghiaccio dà
+  carica in un colpo, la stella raddoppia i punti per 8 secondi, la calamita
+  attira i fiocchi per 8 secondi, il campanaccio dà uno scudo che assorbe un
+  impatto (non si accumula: raccoglierne un altro lo ricarica soltanto).
+- A barra piena parte la valanga: invulnerabilità e distruzione totale per
+  4,5 secondi, punteggio ×5. Nell'ultimo secondo l'interfaccia lampeggia.
+- Alla fine della valanga carica e taglia tornano a zero: lo sfogo si paga,
+  ma dura poco e torna in fretta.
 - Primo impatto perdonato: se la barra è almeno a metà, il primo colpo non
   uccide ma azzera la carica e toglie una taglia.
 
@@ -50,7 +63,7 @@ Il record è salvato in `localStorage`, sul dispositivo.
 ```
 src/
   core/    # loop a timestep fisso, bus eventi, macchina a stati, PRNG con seed
-  game/    # regole di gioco: TypeScript puro, zero three, zero DOM, tutto testato
+  game/    # regole di gioco: percorso a bivi, buff, niente più corsie — TypeScript puro
   render/  # three.js: scena, terreno, entità, pool di voxel, detriti, perf monitor
   ui/      # HUD e schermate in HTML/CSS sopra al canvas
   input/   # swipe e tastiera tradotti in azioni astratte

@@ -283,6 +283,20 @@ export const CONFIG = {
         roofColor: 0x6c7f91,
       },
     },
+    /** Oggetti decorativi ai lati del tracciato: non sono entità di gioco, non
+     *  collidono mai e non devono MAI entrare nel corridoio giocabile. */
+    scenery: {
+      itemsPerChunk: 7,
+      /** Distanza laterale minima dal centro: deve restare ben oltre il bordo
+       *  del corridoio (world.trackWidth / 2) perché non si confonda con un
+       *  ostacolo da schivare. */
+      minLateral: 9,
+      maxLateral: 46,
+      /** Peso relativo dei tre modelli decorativi. */
+      weights: { tree: 7, cabin: 2, hay: 3 },
+      minScale: 0.8,
+      maxScale: 1.6,
+    },
   },
   input: {
     swipeMinPixels: 24,
@@ -301,6 +315,31 @@ export const CONFIG = {
     impact: { cutoffHz: 700, seconds: 0.28, gain: 1 },
     /** Raccolta: triangolare con salto di frequenza verso l'alto. */
     pickup: { lowHz: 620, highHz: 990, stepRatio: 0.35, seconds: 0.18, gain: 0.5 },
+    /** Cristallo di ghiaccio: carica in un colpo, quindi un timbro breve e
+     *  netto — lo stesso "zap" acuto usato come base per gli altri buff, qui
+     *  al suo taglio più corto e diretto. */
+    chime: { lowHz: 900, highHz: 1400, seconds: 0.22, gain: 0.55 },
+    /** Stella: raddoppia i punti per 8 secondi, quindi un timbro che
+     *  "festeggia" con due note ascendenti invece di una sola — più lungo e
+     *  più mosso del semplice zap del cristallo, per farlo sentire più raro. */
+    sparkle: { lowHz: 700, midHz: 1100, highHz: 1700, noteSeconds: 0.1, gain: 0.5 },
+    /** Calamita: attira i fiocchi per 8 secondi. Un'onda sinusoidale che
+     *  scende invece di salire — l'opposto timbrico del cristallo/stella —
+     *  per suggerire l'attrazione verso il basso/verso il centro piuttosto
+     *  che uno scatto verso l'alto. */
+    magnetPull: { highHz: 1200, lowHz: 500, seconds: 0.24, gain: 0.5 },
+    /** Campanaccio: dà lo scudo. Deve suonare come un vero campanaccio, non
+     *  come gli altri tre buff — due parziali NON armoniche (fondamentale +
+     *  un rapporto non intero) con un decadimento percussivo rapido, la
+     *  tecnica minima per un timbro "di metallo" invece che un tono puro. */
+    cowbell: { fundamentalHz: 520, overtoneRatio: 2.4, seconds: 0.4, gain: 0.6 },
+    /** Comparsa di un bivio: il momento in cui bisogna alzare lo sguardo.
+     *  Un richiamo breve e distinto da tutti i suoni di raccolta. */
+    forkAppear: { lowHz: 500, highHz: 750, seconds: 0.16, gain: 0.4 },
+    /** Lo scudo che assorbe un colpo: rumore passa-alto, un "crac" cristallino
+     *  distinto dal tonfo sordo passa-basso di un impatto normale
+     *  (CONFIG.audio.impact). */
+    shieldBreak: { cutoffHz: 1600, seconds: 0.35, gain: 0.7 },
     /** Rombo della valanga: rumore filtrato in loop. */
     rumble: { cutoffHz: 380, maxGain: 0.8, riseSeconds: 0.4, fadeSeconds: 0.8, endingGainRatio: 0.4 },
   },
@@ -331,5 +370,8 @@ export const CONFIG = {
     /** Potenza dell'esplosione di cubetti. */
     deathBurstPower: 9,
     smashBurstPower: 6,
+    /** Scuotimento leggero alla raccolta di un buff: meno di un impatto, è
+     *  un premio, non un colpo. */
+    buffShake: 0.4,
   },
 } as const;

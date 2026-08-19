@@ -1,5 +1,6 @@
 import type { EventBus } from '../core/events';
 import { CONFIG } from '../game/config';
+import type { BuffKind } from '../game/types';
 
 export interface Audio {
   attach(bus: EventBus): void;
@@ -153,6 +154,191 @@ export function createAudio(contextFactory: ContextFactory = defaultContextFacto
     osc.stop(t + seconds);
   }
 
+  /** Cristallo di ghiaccio: zap acuto e breve, la carica arriva in un colpo. */
+  function playChime(): void {
+    const context = audible();
+    if (context === null || master === null) {
+      return;
+    }
+    const { lowHz, highHz, seconds, gain: level } = CONFIG.audio.chime;
+    const t = context.currentTime;
+    const osc = context.createOscillator();
+    const gain = context.createGain();
+
+    osc.type = 'triangle';
+    osc.frequency.setValueAtTime(lowHz, t);
+    osc.frequency.exponentialRampToValueAtTime(highHz, t + seconds);
+
+    gain.gain.setValueAtTime(level, t);
+    gain.gain.exponentialRampToValueAtTime(0.0001, t + seconds);
+
+    osc.connect(gain);
+    gain.connect(master);
+    osc.start(t);
+    osc.stop(t + seconds);
+  }
+
+  /** Stella: due note ascendenti in un solo oscillatore (stesso trucco a
+   *  "salti" di playPickup), più lunga e più mossa dello zap del cristallo
+   *  per farla sentire come il buff più raro. */
+  function playSparkle(): void {
+    const context = audible();
+    if (context === null || master === null) {
+      return;
+    }
+    const { lowHz, midHz, highHz, noteSeconds, gain: level } = CONFIG.audio.sparkle;
+    const t = context.currentTime;
+    const totalSeconds = noteSeconds * 3;
+    const osc = context.createOscillator();
+    const gain = context.createGain();
+
+    osc.type = 'triangle';
+    osc.frequency.setValueAtTime(lowHz, t);
+    osc.frequency.setValueAtTime(midHz, t + noteSeconds);
+    osc.frequency.setValueAtTime(highHz, t + noteSeconds * 2);
+
+    gain.gain.setValueAtTime(level, t);
+    gain.gain.exponentialRampToValueAtTime(0.0001, t + totalSeconds);
+
+    osc.connect(gain);
+    gain.connect(master);
+    osc.start(t);
+    osc.stop(t + totalSeconds);
+  }
+
+  /** Calamita: una sinusoide che SCENDE (l'opposto degli altri tre buff,
+   *  tutti ascendenti) per suggerire l'attrazione verso il basso/il centro. */
+  function playMagnetPull(): void {
+    const context = audible();
+    if (context === null || master === null) {
+      return;
+    }
+    const { lowHz, highHz, seconds, gain: level } = CONFIG.audio.magnetPull;
+    const t = context.currentTime;
+    const osc = context.createOscillator();
+    const gain = context.createGain();
+
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(highHz, t);
+    osc.frequency.exponentialRampToValueAtTime(lowHz, t + seconds);
+
+    gain.gain.setValueAtTime(level, t);
+    gain.gain.exponentialRampToValueAtTime(0.0001, t + seconds);
+
+    osc.connect(gain);
+    gain.connect(master);
+    osc.start(t);
+    osc.stop(t + seconds);
+  }
+
+  /** Campanaccio: fondamentale + una parziale NON armonica (rapporto non
+   *  intero) con decadimento percussivo rapido — la tecnica minima per un
+   *  timbro di metallo invece di un tono puro. È il buff che dà lo scudo:
+   *  deve suonare come una vera mucca, non come gli altri tre. */
+  function playCowbell(): void {
+    const context = audible();
+    if (context === null || master === null) {
+      return;
+    }
+    const { fundamentalHz, overtoneRatio, seconds, gain: level } = CONFIG.audio.cowbell;
+    const t = context.currentTime;
+
+    const body = context.createOscillator();
+    const bodyGain = context.createGain();
+    body.type = 'square';
+    body.frequency.setValueAtTime(fundamentalHz, t);
+    bodyGain.gain.setValueAtTime(level, t);
+    bodyGain.gain.exponentialRampToValueAtTime(0.0001, t + seconds);
+    body.connect(bodyGain);
+    bodyGain.connect(master);
+    body.start(t);
+    body.stop(t + seconds);
+
+    const overtoneSeconds = seconds * 0.6;
+    const overtone = context.createOscillator();
+    const overtoneGain = context.createGain();
+    overtone.type = 'triangle';
+    overtone.frequency.setValueAtTime(fundamentalHz * overtoneRatio, t);
+    overtoneGain.gain.setValueAtTime(level * 0.6, t);
+    overtoneGain.gain.exponentialRampToValueAtTime(0.0001, t + overtoneSeconds);
+    overtone.connect(overtoneGain);
+    overtoneGain.connect(master);
+    overtone.start(t);
+    overtone.stop(t + overtoneSeconds);
+  }
+
+  /** Dispatcher per raccolta: ogni buff ha un timbro proprio (vedi i
+   *  commenti sui singoli CONFIG.audio.*), il campanaccio in particolare
+   *  suona come un vero campanaccio (playCowbell), non come gli altri tre. */
+  function playBuffSound(kind: BuffKind): void {
+    switch (kind) {
+      case 'crystal':
+        playChime();
+        break;
+      case 'star':
+        playSparkle();
+        break;
+      case 'magnet':
+        playMagnetPull();
+        break;
+      case 'bell':
+        playCowbell();
+        break;
+    }
+  }
+
+  /** Comparsa di un bivio: un richiamo breve, distinto dai suoni di
+   *  raccolta, per il momento in cui il giocatore deve alzare lo sguardo. */
+  function playForkAppear(): void {
+    const context = audible();
+    if (context === null || master === null) {
+      return;
+    }
+    const { lowHz, highHz, seconds, gain: level } = CONFIG.audio.forkAppear;
+    const t = context.currentTime;
+    const osc = context.createOscillator();
+    const gain = context.createGain();
+
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(lowHz, t);
+    osc.frequency.exponentialRampToValueAtTime(highHz, t + seconds);
+
+    gain.gain.setValueAtTime(level, t);
+    gain.gain.exponentialRampToValueAtTime(0.0001, t + seconds);
+
+    osc.connect(gain);
+    gain.connect(master);
+    osc.start(t);
+    osc.stop(t + seconds);
+  }
+
+  /** Lo scudo che assorbe un colpo: rumore passa-alto, un "crac" cristallino
+   *  distinto dal tonfo sordo passa-basso di un impatto normale (playImpact). */
+  function playShieldBreak(): void {
+    const context = audible();
+    if (context === null || master === null || noise === null) {
+      return;
+    }
+    const { cutoffHz, seconds, gain: level } = CONFIG.audio.shieldBreak;
+    const t = context.currentTime;
+    const source = context.createBufferSource();
+    const filter = context.createBiquadFilter();
+    const gain = context.createGain();
+
+    source.buffer = noise;
+    filter.type = 'highpass';
+    filter.frequency.setValueAtTime(cutoffHz, t);
+
+    gain.gain.setValueAtTime(level, t);
+    gain.gain.exponentialRampToValueAtTime(0.0001, t + seconds);
+
+    source.connect(filter);
+    filter.connect(gain);
+    gain.connect(master);
+    source.start(t);
+    source.stop(t + seconds);
+  }
+
   function stopRumble(fadeSeconds: number): void {
     if (rumble === null || ctx === null) {
       return;
@@ -245,6 +431,13 @@ export function createAudio(contextFactory: ContextFactory = defaultContextFacto
         bus.on('pickup:collected', () => {
           playPickup();
         }),
+      );
+      subscriptions.push(bus.on('buff:gained', (payload) => playBuffSound(payload.kind)));
+      subscriptions.push(bus.on('shield:consumed', () => playShieldBreak()));
+      subscriptions.push(
+        // Il bivio è il momento in cui il giocatore deve alzare lo sguardo:
+        // un richiamo sonoro aiuta a non perderlo mentre si guarda l'HUD.
+        bus.on('fork:appeared', () => playForkAppear()),
       );
       subscriptions.push(
         bus.on('obstacle:hit', (payload) => {

@@ -105,7 +105,7 @@ describe('createInput', () => {
     input.dispose();
   });
 
-  it('non intercetta la tastiera quando il focus è su un bottone (PARTI/RIGIOCA restano attivabili da tastiera)', () => {
+  it('lascia Spazio al bottone a fuoco (resta attivabile da tastiera) senza generare JUMP', () => {
     const input = createInput(target, nowMs);
     const button = document.createElement('button');
     document.body.appendChild(button);
@@ -118,10 +118,63 @@ describe('createInput', () => {
     Object.defineProperty(event, 'target', { value: button });
     window.dispatchEvent(event);
 
+    // Niente preventDefault: è quello che permette al browser di attivare il
+    // bottone via tastiera (il click di default su keyup di Spazio/Invio).
     expect(event.defaultPrevented).toBe(false);
     expect(input.consume()).toBeNull();
 
     button.remove();
+    input.dispose();
+  });
+
+  it('Spazio senza focus su un bottone produce comunque JUMP', () => {
+    const input = createInput(target, nowMs);
+    pressKey(' ');
+
+    expect(input.consume()).toBe('JUMP');
+
+    input.dispose();
+  });
+
+  it('BUG: le frecce e Esc devono raggiungere il gioco anche se il focus è rimasto su un bottone dopo un click (PARTI/RIGIOCA)', () => {
+    const input = createInput(target, nowMs);
+    const button = document.createElement('button');
+    document.body.appendChild(button);
+    button.focus();
+
+    function pressOnButton(key: string): void {
+      const event = new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true });
+      Object.defineProperty(event, 'target', { value: button });
+      window.dispatchEvent(event);
+    }
+
+    pressOnButton('ArrowLeft');
+    expect(input.consume()).toBe('CHOOSE_LEFT');
+
+    pressOnButton('ArrowUp');
+    expect(input.consume()).toBe('JUMP');
+
+    pressOnButton('Escape');
+    expect(input.consume()).toBe('PAUSE');
+
+    button.remove();
+    input.dispose();
+  });
+
+  it('non genera azioni di gioco quando il focus è su un campo di testo (input/textarea/select restano digitabili)', () => {
+    const input = createInput(target, nowMs);
+    const textInput = document.createElement('input');
+    textInput.type = 'text';
+    document.body.appendChild(textInput);
+
+    const event = new KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true, cancelable: true });
+    Object.defineProperty(event, 'target', { value: textInput });
+    window.dispatchEvent(event);
+
+    expect(event.defaultPrevented).toBe(false);
+    expect(input.consume()).toBeNull();
+
+    textInput.remove();
     input.dispose();
   });
 

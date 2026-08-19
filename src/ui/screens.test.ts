@@ -72,6 +72,31 @@ describe('createScreens', () => {
     expect(onResume).toHaveBeenCalledTimes(1);
   });
 
+  it('BUG: dopo il click su PARTI/RIGIOCA/RIPRENDI il focus non deve restare sul bottone (altrimenti la tastiera smette di arrivare al gioco)', () => {
+    const screens = createScreens(root);
+    screens.onStart(() => {});
+    screens.onRestart(() => {});
+    screens.onResume(() => {});
+
+    const start = need('[data-action="start"]');
+    start.focus();
+    expect(document.activeElement).toBe(start);
+    start.click();
+    expect(document.activeElement).not.toBe(start);
+
+    const restart = need('[data-action="restart"]');
+    restart.focus();
+    expect(document.activeElement).toBe(restart);
+    restart.click();
+    expect(document.activeElement).not.toBe(restart);
+
+    const resume = need('[data-action="resume"]');
+    resume.focus();
+    expect(document.activeElement).toBe(resume);
+    resume.click();
+    expect(document.activeElement).not.toBe(resume);
+  });
+
   it('invoca onMenu da entrambi i bottoni MENU', () => {
     const screens = createScreens(root);
     const onMenu = vi.fn();

@@ -95,14 +95,29 @@ export function createScreens(root: HTMLElement): Screens {
     });
   }
 
+  /** Come bind(), ma toglie anche il focus dal bottone dopo il click: PARTI,
+   *  RIGIOCA e RIPRENDI riportano tutti alla schermata 'playing', e il focus
+   *  del browser resterebbe altrimenti appeso al bottone, facendo scartare a
+   *  input.ts ogni tasto premuto per la corsa (vedi input/input.ts). */
+  function bindAndBlur(action: string, handler: () => void): void {
+    bind(action, () => {
+      handler();
+      layer.querySelectorAll<HTMLButtonElement>(`[data-action="${action}"]`).forEach((button) => {
+        if (document.activeElement === button) {
+          button.blur();
+        }
+      });
+    });
+  }
+
   function renderMuteButton(): void {
     muteButton.textContent = muted ? 'Audio: OFF' : 'Audio: ON';
     muteButton.setAttribute('aria-pressed', muted ? 'true' : 'false');
   }
 
-  bind('start', () => startFn());
-  bind('restart', () => restartFn());
-  bind('resume', () => resumeFn());
+  bindAndBlur('start', () => startFn());
+  bindAndBlur('restart', () => restartFn());
+  bindAndBlur('resume', () => resumeFn());
   bind('menu', () => menuFn());
   bind('mute', () => {
     muted = !muted;

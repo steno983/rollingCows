@@ -33,12 +33,20 @@ const KEY_ACTIONS: Readonly<Record<string, Action>> = {
   P: 'PAUSE',
 };
 
-/** Tag su cui il browser gestisce già da solo tastiera/spazio/invio: qui i
- *  bottoni delle schermate (PARTI, RIGIOCA, MENU, RIPRENDI, Audio). */
-const INTERACTIVE_TAGS = new Set(['BUTTON', 'A', 'INPUT', 'SELECT', 'TEXTAREA']);
+/** Tag su cui il browser lascia digitare l'utente: qui la tastiera è del
+ *  campo, non del gioco (niente scelte di bivio mentre si scrive un nome). */
+const TEXT_INPUT_TAGS = new Set(['INPUT', 'TEXTAREA', 'SELECT']);
 
-function isInteractiveTarget(target: HTMLElement): boolean {
-  return INTERACTIVE_TAGS.has(target.tagName);
+function isTextEditingTarget(target: HTMLElement): boolean {
+  return target.isContentEditable || TEXT_INPUT_TAGS.has(target.tagName);
+}
+
+/** Tag su cui Spazio/Invio attivano il default del browser (i bottoni delle
+ *  schermate: PARTI, RIGIOCA, MENU, RIPRENDI, Audio, ed eventuali link). */
+const ACTIVATABLE_TAGS = new Set(['BUTTON', 'A']);
+
+function isActivationKey(key: string): boolean {
+  return key === ' ' || key === 'Spacebar' || key === 'Enter';
 }
 
 /**
@@ -91,13 +99,23 @@ export function createInput(target: HTMLElement, nowMs: () => number = () => per
     if (event.repeat) {
       return;
     }
-    // Se il focus è su un elemento interattivo (i bottoni PARTI/RIGIOCA/MENU),
-    // lasciamo che la tastiera lo attivi normalmente: intercettare qui Spazio a
-    // livello di window (con preventDefault) impedirebbe l'attivazione del
-    // bottone via tastiera, perché lo spazio su un elemento focused attiva il
-    // click di default del browser SOLO se non viene prevenuto.
-    if (event.target instanceof HTMLElement && isInteractiveTarget(event.target)) {
-      return;
+    const target = event.target;
+    if (target instanceof HTMLElement) {
+      // Un campo di testo (input, textarea, select, contenteditable) tiene la
+      // tastiera per sé: qui non va intercettato nulla.
+      if (isTextEditingTarget(target)) {
+        return;
+      }
+      // Dopo un click su PARTI/RIGIOCA/RIPRENDI il focus del browser resta sul
+      // bottone: se qui scartassimo OGNI tasto (come faceva la versione
+      // precedente) il gioco diventerebbe ingiocabile da tastiera subito dopo
+      // il primo click. Le frecce e gli altri comandi devono arrivare
+      // comunque; solo Spazio/Invio restano riservati, per lasciare che il
+      // browser attivi il bottone via tastiera (attivazione di default sul
+      // keyup, che scatta SOLO se non viene prevenuto qui).
+      if (ACTIVATABLE_TAGS.has(target.tagName) && isActivationKey(event.key)) {
+        return;
+      }
     }
     const action = KEY_ACTIONS[event.key];
     if (action === undefined) {

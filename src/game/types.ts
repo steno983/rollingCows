@@ -1,23 +1,37 @@
-export type Lane = 0 | 1 | 2;
+/** Ramo del tracciato a cui appartiene un'entità. */
+export type Branch = 'main' | 'left' | 'right';
 
-export type ObstacleKind = 'rock' | 'tree' | 'fence' | 'cabin' | 'crevasse' | 'branch';
-export type PickupKind = 'snowflake' | 'hay' | 'cow';
+/** Ostacoli a terra: si saltano. */
+export type GroundObstacleKind = 'rock' | 'log' | 'fence' | 'crevasse';
+/** Ostacoli sospesi: ci si passa sotto scivolando. */
+export type OverheadObstacleKind = 'branch' | 'arch' | 'cornice';
+export type ObstacleKind = GroundObstacleKind | OverheadObstacleKind;
+
+/** Raccoglibili. 'snowflake' è il fiocco; gli altri sono buff. */
+export type BuffKind = 'crystal' | 'star' | 'magnet' | 'bell';
+export type PickupKind = 'snowflake' | BuffKind;
+
 export type EntityKind = ObstacleKind | PickupKind;
 
-export type Action = 'MOVE_LEFT' | 'MOVE_RIGHT' | 'JUMP' | 'SLAM' | 'PAUSE';
+export type Action = 'CHOOSE_LEFT' | 'CHOOSE_RIGHT' | 'JUMP' | 'SLIDE' | 'PAUSE';
 
-/** Un ostacolo o raccoglibile posizionato sul pendio. */
+/** Un ostacolo o raccoglibile posizionato sul percorso. */
 export interface Entity {
   id: number;
   kind: EntityKind;
   category: 'obstacle' | 'pickup';
-  /** Corsia occupata. Per entità larghe 2, è la corsia più a sinistra. */
-  lane: Lane;
-  /** Corsie occupate. Solo 'cabin' usa 2. */
-  width: 1 | 2;
+  /** Ramo di appartenenza. Le entità 'main' sono sempre solide. */
+  branch: Branch;
   /** Distanza davanti al giocatore lungo l'asse di scorrimento. Cala nel tempo. */
   z: number;
-  /** Quota della base dell'entità (0 = a terra). 'branch' è sospeso. */
+  /** Quota della base dell'entità (0 = a terra). Gli ostacoli sospesi stanno in alto. */
   y: number;
   alive: boolean;
+}
+
+const OVERHEAD_KINDS: ReadonlySet<EntityKind> = new Set<EntityKind>(['branch', 'arch', 'cornice']);
+
+/** Vero per gli ostacoli sospesi, che richiedono la scivolata. */
+export function isOverhead(kind: EntityKind): boolean {
+  return OVERHEAD_KINDS.has(kind);
 }

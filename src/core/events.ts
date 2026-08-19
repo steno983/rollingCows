@@ -1,4 +1,4 @@
-import type { Lane, ObstacleKind, PickupKind } from '../game/types';
+import type { Branch, BuffKind, ObstacleKind, PickupKind } from '../game/types';
 
 export interface GameEvents {
   'run:started': { seed: number };
@@ -13,13 +13,22 @@ export interface GameEvents {
   'obstacle:hit': {
     kind: ObstacleKind;
     outcome: 'death' | 'forgiven' | 'smashed';
-    lane: Lane;
+    branch: Branch;
     z: number;
   };
   'size:changed': { size: number; previous: number };
   'avalanche:triggered': { size: number };
   'avalanche:ending': Record<string, never>;
   'avalanche:ended': Record<string, never>;
+  /** Un bivio è appena diventato visibile all'orizzonte del giocatore. */
+  'fork:appeared': { richBranch: 'left' | 'right' };
+  /** Il giocatore ha scelto (o cambiato scelta) un ramo prima del punto di non ritorno. */
+  'fork:chosen': { side: 'left' | 'right' };
+  /** Il bivio è stato risolto (dal giocatore o imposto): il ramo `side` è ora solido. */
+  'fork:resolved': { side: 'left' | 'right' };
+  'buff:gained': { kind: BuffKind };
+  'buff:expired': { kind: BuffKind };
+  'shield:consumed': Record<string, never>;
 }
 
 export type EventName = keyof GameEvents;

@@ -239,11 +239,11 @@ export function createAudio(contextFactory: ContextFactory = defaultContextFacto
         bus.on('run:stopped', () => stopRumble(0)),
       );
       subscriptions.push(
-        bus.on('pickup:collected', (payload) => {
+        // In v2 la mucca non è più un raccoglibile (era 'cow', ora sostituita
+        // da crystal/star/magnet/bell): nessuno di questi fa muggire, quindi
+        // qui resta solo il suono di raccolta generico.
+        bus.on('pickup:collected', () => {
           playPickup();
-          if (payload.kind === 'cow') {
-            playMoo();
-          }
         }),
       );
       subscriptions.push(

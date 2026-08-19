@@ -313,7 +313,7 @@ function main(): void {
         pool.update(slowDt, game.world.speed);
         view.update(slowDt, game.avalanche.size, false);
         backdrop.sync(view.rigPosition.x, view.rigPosition.z);
-        terrain.sync(game.world);
+        terrain.sync(game.world, game.path);
         entitiesView.sync(game.entities);
         logStats(dt);
         if (done) showGameOver();
@@ -333,7 +333,7 @@ function main(): void {
 
       // La vista continua a vivere anche in menu, pausa e game over: il pendio
       // e la mucca restano visibili dietro le schermate, ma non avanzano.
-      terrain.sync(game.world);
+      terrain.sync(game.world, game.path);
       entitiesView.sync(game.entities);
       playerView.sync(game.player, game.avalanche.size, game.world.speed, playing ? dt : 0);
       view.update(dt, game.avalanche.size, avalancheOn);

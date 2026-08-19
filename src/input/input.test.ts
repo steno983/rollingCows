@@ -33,11 +33,11 @@ function pointer(type: 'pointerdown' | 'pointerup', x: number, y: number): void 
 }
 
 describe('createInput', () => {
-  it('traduce ArrowLeft in MOVE_LEFT e consuma il buffer una sola volta', () => {
+  it('traduce ArrowLeft in CHOOSE_LEFT e consuma il buffer una sola volta', () => {
     const input = createInput(target, nowMs);
     pressKey('ArrowLeft');
 
-    expect(input.consume()).toBe('MOVE_LEFT');
+    expect(input.consume()).toBe('CHOOSE_LEFT');
     expect(input.consume()).toBeNull();
 
     input.dispose();
@@ -47,13 +47,13 @@ describe('createInput', () => {
     const input = createInput(target, nowMs);
 
     pressKey('ArrowRight');
-    expect(input.consume()).toBe('MOVE_RIGHT');
+    expect(input.consume()).toBe('CHOOSE_RIGHT');
     pressKey('d');
-    expect(input.consume()).toBe('MOVE_RIGHT');
+    expect(input.consume()).toBe('CHOOSE_RIGHT');
     pressKey(' ');
     expect(input.consume()).toBe('JUMP');
     pressKey('ArrowDown');
-    expect(input.consume()).toBe('SLAM');
+    expect(input.consume()).toBe('SLIDE');
     pressKey('Escape');
     expect(input.consume()).toBe('PAUSE');
 
@@ -77,7 +77,7 @@ describe('createInput', () => {
 
     now = CONFIG.input.bufferSeconds * 1000 - 1;
 
-    expect(input.consume()).toBe('MOVE_LEFT');
+    expect(input.consume()).toBe('CHOOSE_LEFT');
 
     input.dispose();
   });
@@ -87,7 +87,7 @@ describe('createInput', () => {
     pressKey('ArrowLeft');
     pressKey('ArrowRight');
 
-    expect(input.consume()).toBe('MOVE_RIGHT');
+    expect(input.consume()).toBe('CHOOSE_RIGHT');
     expect(input.consume()).toBeNull();
 
     input.dispose();
@@ -100,7 +100,7 @@ describe('createInput', () => {
     now = 80;
     pointer('pointerup', 200 + CONFIG.input.swipeMinPixels * 3, 205);
 
-    expect(input.consume()).toBe('MOVE_RIGHT');
+    expect(input.consume()).toBe('CHOOSE_RIGHT');
 
     input.dispose();
   });

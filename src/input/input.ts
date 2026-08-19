@@ -9,24 +9,24 @@ export interface InputSource {
 }
 
 /**
- * Tastiera desktop: frecce + WASD, spazio per saltare, Esc (o P) per la pausa.
+ * Tastiera desktop: frecce + WASD (sinistra/destra scelgono un ramo, solo utile a un bivio), spazio per saltare, Esc (o P) per la pausa.
  * Le chiavi sono i valori di KeyboardEvent.key.
  */
 const KEY_ACTIONS: Readonly<Record<string, Action>> = {
-  ArrowLeft: 'MOVE_LEFT',
-  a: 'MOVE_LEFT',
-  A: 'MOVE_LEFT',
-  ArrowRight: 'MOVE_RIGHT',
-  d: 'MOVE_RIGHT',
-  D: 'MOVE_RIGHT',
+  ArrowLeft: 'CHOOSE_LEFT',
+  a: 'CHOOSE_LEFT',
+  A: 'CHOOSE_LEFT',
+  ArrowRight: 'CHOOSE_RIGHT',
+  d: 'CHOOSE_RIGHT',
+  D: 'CHOOSE_RIGHT',
   ArrowUp: 'JUMP',
   w: 'JUMP',
   W: 'JUMP',
   ' ': 'JUMP',
   Spacebar: 'JUMP',
-  ArrowDown: 'SLAM',
-  s: 'SLAM',
-  S: 'SLAM',
+  ArrowDown: 'SLIDE',
+  s: 'SLIDE',
+  S: 'SLIDE',
   Escape: 'PAUSE',
   Esc: 'PAUSE',
   p: 'PAUSE',

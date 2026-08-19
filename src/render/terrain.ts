@@ -1,82 +1,63 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { CONFIG } from '../game/config';
+import { branchOffsetX, type PathState } from '../game/path';
 import type { WorldState } from '../game/world';
 
 export interface TerrainView {
-  sync(world: WorldState): void;
+  sync(world: WorldState, path: PathState): void;
   group: THREE.Group;
 }
 
+/** Neve non battuta: la base sempre-piatta che deve poter ospitare qualunque
+ *  ramo, anche quando non è la pista "ufficiale" del momento. */
+const VERGE_COLOR = 0xdce9f2;
+/** Neve battuta: il colore della pista vera e propria, invariato da v1. */
 const SNOW_COLOR = 0xf4fbff;
 const BANK_WIDTH = 3;
 const BANK_TILT = 0.3;
-/** Segmenti in z per il rilievo laterale: invariato, serve solo a rendere
- *  leggibile l'ondulazione (il termine `wave` di heightAt) lungo la
- *  profondità del chunk. */
 const SEGMENTS_Z = 24;
-/** Segmenti in x per il PAVIMENTO del corridoio: 1 solo basta, perché è
- *  piatto per costruzione (vedi corridorFloor in createChunkGeometry, che
- *  NON chiama displaceGround) — con MeshLambertMaterial l'illuminazione è
- *  per-vertice, ma su una normale costante (0,1,0) l'interpolazione non
- *  introduce alcun errore, e le ombre sono per-frammento (shadow map), non
- *  per-vertice: più segmenti qui non migliorerebbero nulla, solo più
- *  triangoli a vuoto. */
+/** Segmenti in x per il PAVIMENTO piatto: 1 solo basta, è piatto per
+ *  costruzione (non chiama mai displaceGround). */
 const CORRIDOR_SEGMENTS_X = 1;
-/** Segmenti in x per il rilievo laterale, PER LATO (non più su tutta la
- *  larghezza: vedi il difetto che questo sostituisce, sotto). */
 const OUTER_SEGMENTS_X = 32;
-/** Semilarghezza del corridoio percorribile: 3 unità con la config di default. */
-const CORRIDOR_HALF = (CONFIG.world.laneCount * CONFIG.world.laneWidth) / 2;
-/** Margine originale fra corridoio e banco: invariato, i banchi restano dove
- *  erano. Solo il terreno OLTRE i banchi si allarga (vedi GROUND_WIDTH). */
-const BANK_INNER_MARGIN = 2;
-const BANK_OFFSET = CORRIDOR_HALF + BANK_INNER_MARGIN + 0.9;
-const BANK_HEIGHT = CONFIG.render.bankHeight;
-/** Base del banco sempre sotto il punto più basso plausibile del pendio
- *  adiacente (≈0, il pavimento piatto del corridoio, vedi displaceGround):
- *  chiude il taglio invece di lasciare il banco sospeso nel vuoto (si vedeva
- *  il cielo sotto la base con valori troppo alti). Il TETTO del banco
- *  (BANK_BOTTOM_Y + BANK_HEIGHT) va invece tenuto sopra il pendio vicino,
- *  altrimenti il banco sprofonda sotto la neve e sparisce. */
-const BANK_BOTTOM_Y = CONFIG.render.bankBottomY;
-/** Il corridoio giocabile resta invariato: qui si allarga solo ciò che sta
- *  oltre le corsie, abbastanza da coprire il frustum fino alla nebbia (vedi
- *  render.fogFar) anche alla taglia massima, così sotto i banchi non si vede
- *  più il cielo. */
-const GROUND_WIDTH = CONFIG.world.laneCount * CONFIG.world.laneWidth + CONFIG.render.groundExtraWidth;
-/** Oltre questa distanza laterale (in unità di CORRIDOR_HALF) il rilievo
- *  smette di crescere e resta un pendio pieno: senza tetto il termine
- *  quadratico produce altezze assurde ai bordi di una mesh così larga. */
-const MAX_LATERAL_RISE = CONFIG.render.groundMaxLateralRise;
 
-/** Coefficiente del termine ondulato (wave * outside * WAVE_COEF) e del
- *  termine quadratico (outside² * RISE_COEF): col tetto attuale
- *  (MAX_LATERAL_RISE = 1.2, vedi CONFIG.render.groundMaxLateralRise) danno
- *  un'altezza massima di ~3.8 unità (0.27 * 1.2 * WAVE_COEF + 1.2² *
- *  RISE_COEF, nel caso peggiore in cui il seno vale ±1), contro le mucca alta
- *  ~1.5: una conca larga e bassa, non più una gola alta ~80 unità come prima
- *  che MAX_LATERAL_RISE fosse abbassato da 6 a 1.2. */
+/**
+ * Semilarghezza della zona SEMPRE piatta: non è più la sola larghezza del
+ * tracciato (world.trackWidth), ma quella più la separazione massima di un
+ * ramo durante un bivio (path.branchSeparation). Motivo: durante un bivio le
+ * entità del ramo sinistro/destro vivono a ±branchSeparation (vedi
+ * game/path.ts, branchOffsetX) e devono poter contare su suolo piatto tanto
+ * quanto il tracciato centrale — altrimenti un ramo affonderebbe nella neve
+ * rialzata, esattamente il difetto già corretto una volta in v1 (vedi il
+ * commento storico più sotto, in createChunkGeometry). Restando una costante
+ * FISSA (non dipendente dallo stato del bivio), heightAt resta una funzione
+ * pura di (x, z) sola, e il pendio esterno resta un sistema statico a chunk
+ * come in v1: solo la PISTA (vedi trackCenterOffsets più sotto) è dinamica.
+ */
+const FLAT_HALF_WIDTH = CONFIG.path.branchSeparation + CONFIG.world.trackWidth / 2;
+const BANK_INNER_MARGIN = 2;
+const BANK_OFFSET = FLAT_HALF_WIDTH + BANK_INNER_MARGIN + 0.9;
+const BANK_HEIGHT = CONFIG.render.bankHeight;
+const BANK_BOTTOM_Y = CONFIG.render.bankBottomY;
+const GROUND_WIDTH = FLAT_HALF_WIDTH * 2 + CONFIG.render.groundExtraWidth;
+const MAX_LATERAL_RISE = CONFIG.render.groundMaxLateralRise;
 const WAVE_COEF = 2;
 const RISE_COEF = 2.2;
 
 /**
- * Altezza del pendio in un punto (x, z), fuori dal corridoio: 0 se |x| è
- * dentro il corridoio (lateral <= 1), cresce con la distanza laterale fino
- * al tetto MAX_LATERAL_RISE, modulata dall'ondulazione periodica in z.
- * Logica pura (nessun three.js): usata sia da displaceGround sia dai test.
- * NON è la fonte della piattezza del corridoio — quella è garantita a monte,
- * in createChunkGeometry, dal fatto che il pavimento del corridoio è una
- * geometria a parte che non chiama mai questa funzione (vedi il commento
- * lì): qui sotto il valore risulterebbe comunque 0 per |x| <= CORRIDOR_HALF,
- * ma non è quello a cui ci si affida.
+ * Altezza del pendio in un punto (x, z), fuori dalla zona sempre piatta: 0 se
+ * |x| è dentro FLAT_HALF_WIDTH, cresce con la distanza laterale fino al
+ * tetto MAX_LATERAL_RISE, modulata dall'ondulazione periodica in z. Logica
+ * pura (nessun three.js): usata sia da displaceGround sia dai test.
+ * NON è la fonte della piattezza della zona centrale — quella è garantita a
+ * monte, in createChunkGeometry, dal fatto che il pavimento (corridorFloor)
+ * è una geometria a parte che non chiama mai questa funzione.
  */
 export function heightAt(x: number, z: number): number {
   const length = CONFIG.world.chunkLength;
-  const lateral = Math.abs(x) / CORRIDOR_HALF;
+  const lateral = Math.abs(x) / FLAT_HALF_WIDTH;
   const outside = Math.min(MAX_LATERAL_RISE, Math.max(0, lateral - 1));
-  // Periodica su chunkLength: a z = 0 e a z = chunkLength il seno vale 0,
-  // quindi i bordi di due chunk adiacenti combaciano esattamente.
   const wave =
     Math.sin((z / length) * Math.PI * 2) * 0.18 +
     Math.sin((z / length) * Math.PI * 6 + x * 0.6) * 0.09;
@@ -96,41 +77,28 @@ function displaceGround(geometry: THREE.BufferGeometry): void {
 
 function createChunkGeometry(): THREE.BufferGeometry {
   const length = CONFIG.world.chunkLength;
-  // Larghezza del rilievo laterale, per lato: dal bordo del corridoio al
-  // bordo del terreno.
-  const outerWidth = GROUND_WIDTH / 2 - CORRIDOR_HALF;
+  const outerWidth = GROUND_WIDTH / 2 - FLAT_HALF_WIDTH;
 
-  // BUG CORRETTO: prima il corridoio e il rilievo laterale erano un'unica
-  // PlaneGeometry larga GROUND_WIDTH con soli SEGMENTS_X segmenti: a quella
-  // larghezza (226 unità) i vertici cadevano ogni 5.65 unità, ben più radi
-  // del corridoio (6 unità). Senza un vertice esattamente al bordo del
-  // corridoio (|x| = CORRIDOR_HALF = 3), la mesh INTERPOLAVA linearmente fra
-  // il vertice centrale (x=0, y=0) e quello successivo (x=±5.65, già dentro
-  // il rilievo, y fino a ~2.2): il pavimento del corridoio risultava
-  // "gonfiato" fino a ~1.2 unità proprio al suo bordo, seppellendo a metà
-  // ostacoli bassi come la staccionata (altezza 1.2). Verificato
-  // numericamente prima di questa correzione: a x=3 l'altezza interpolata
-  // arrivava fino a 1.165 (contro lo 0 atteso).
-  //
-  // Ora il corridoio è una geometria A PARTE che non chiama MAI
-  // displaceGround/heightAt: resta piatta per costruzione, non perché la
-  // formula valuti a 0 lì. Il rilievo laterale è un pezzo per lato, che
-  // parte esattamente dal bordo del corridoio (heightAt(±CORRIDOR_HALF, z) =
-  // 0 per costruzione: outside = 0 a quella distanza), quindi la saldatura
-  // fra i due pezzi è continua per costruzione, non per una densità di
-  // vertici scelta a occhio.
-  const corridorFloor = new THREE.PlaneGeometry(CORRIDOR_HALF * 2, length, CORRIDOR_SEGMENTS_X, 1);
+  // BUG CORRETTO IN V1, INVARIANTE CONSERVATA IN V2: corridoio e rilievo
+  // laterale sono geometrie SEPARATE apposta. Un'unica PlaneGeometry larga
+  // quanto tutto il terreno, con pochi segmenti, interpolerebbe linearmente
+  // fra il centro piatto e il rilievo esterno e "gonfierebbe" il pavimento
+  // proprio al suo bordo (misurato una volta: fino a 1.165 contro lo 0
+  // atteso). Qui il pavimento (verge, larghezza FLAT_HALF_WIDTH * 2) NON
+  // chiama mai displaceGround/heightAt: resta piatto per costruzione, non
+  // perché la formula valuti a 0 lì.
+  const corridorFloor = new THREE.PlaneGeometry(FLAT_HALF_WIDTH * 2, length, CORRIDOR_SEGMENTS_X, 1);
   corridorFloor.rotateX(-Math.PI / 2);
   corridorFloor.translate(0, 0, length / 2);
 
   const leftOuter = new THREE.PlaneGeometry(outerWidth, length, OUTER_SEGMENTS_X, SEGMENTS_Z);
   leftOuter.rotateX(-Math.PI / 2);
-  leftOuter.translate(-(CORRIDOR_HALF + outerWidth / 2), 0, length / 2);
+  leftOuter.translate(-(FLAT_HALF_WIDTH + outerWidth / 2), 0, length / 2);
   displaceGround(leftOuter);
 
   const rightOuter = new THREE.PlaneGeometry(outerWidth, length, OUTER_SEGMENTS_X, SEGMENTS_Z);
   rightOuter.rotateX(-Math.PI / 2);
-  rightOuter.translate(CORRIDOR_HALF + outerWidth / 2, 0, length / 2);
+  rightOuter.translate(FLAT_HALF_WIDTH + outerWidth / 2, 0, length / 2);
   displaceGround(rightOuter);
 
   const leftBank = new THREE.BoxGeometry(BANK_WIDTH, BANK_HEIGHT, length, 1, 1, 2);
@@ -154,9 +122,87 @@ function createChunkGeometry(): THREE.BufferGeometry {
   return merged;
 }
 
+/** Righe della pista dinamica: una ogni 4 unità, per tutta la profondità
+ *  visibile. Più fine non cambierebbe la sagoma percepita (la pista resta
+ *  dritta a tratti), più grosso arrotonderebbe visibilmente lo spigolo del
+ *  bivio. */
+const TRACK_SEGMENTS = 60;
+const TRACK_DEPTH = CONFIG.world.chunkLength * CONFIG.world.chunkCount;
+const TRACK_STEP = TRACK_DEPTH / TRACK_SEGMENTS;
+/** Solleva la pista battuta appena sopra la neve non battuta sottostante,
+ *  per evitare z-fighting quando i due nastri coincidono esattamente
+ *  (fuori bivio, sono alla stessa X). */
+const TRACK_Y_BIAS = 0.02;
+const TRACK_ROWS = TRACK_SEGMENTS + 1;
+const TRACK_VERTS_PER_RIBBON = TRACK_ROWS * 2;
+
+/**
+ * Scostamento laterale del CENTRO di ciascuno dei due nastri della pista, a
+ * una distanza z data, secondo lo stato del percorso: coincidono (nastro
+ * unico) prima della biforcazione o quando non c'è alcun bivio; si separano
+ * ai due rami da path.forkZ in poi. Logica pura, testabile senza three.
+ */
+export function trackCenterOffsets(path: PathState, z: number): readonly [number, number] {
+  if (path.phase === 'none' || z <= path.forkZ) {
+    return [path.offsetX, path.offsetX];
+  }
+  return [
+    branchOffsetX(path, 'left') + path.offsetX,
+    branchOffsetX(path, 'right') + path.offsetX,
+  ];
+}
+
+function createTrackGeometry(): THREE.BufferGeometry {
+  const totalVerts = TRACK_VERTS_PER_RIBBON * 2;
+  const positions = new Float32Array(totalVerts * 3);
+  const normals = new Float32Array(totalVerts * 3);
+  for (let v = 0; v < totalVerts; v += 1) {
+    normals[v * 3 + 1] = 1;
+  }
+
+  const indices: number[] = [];
+  for (let ribbon = 0; ribbon < 2; ribbon += 1) {
+    const base = ribbon * TRACK_VERTS_PER_RIBBON;
+    for (let i = 0; i < TRACK_ROWS - 1; i += 1) {
+      const a = base + i * 2;
+      const b = a + 1;
+      const c = a + 2;
+      const d = a + 3;
+      indices.push(a, c, b, b, c, d);
+    }
+  }
+
+  const geometry = new THREE.BufferGeometry();
+  const positionAttribute = new THREE.BufferAttribute(positions, 3);
+  positionAttribute.setUsage(THREE.DynamicDrawUsage);
+  geometry.setAttribute('position', positionAttribute);
+  geometry.setAttribute('normal', new THREE.BufferAttribute(normals, 3));
+  geometry.setIndex(indices);
+  return geometry;
+}
+
+/** Half-width del tracciato: ogni nastro è largo trackWidth, centrato sul
+ *  proprio centro corrente. */
+const HALF_TRACK = CONFIG.world.trackWidth / 2;
+
+function updateTrackGeometry(geometry: THREE.BufferGeometry, path: PathState): void {
+  const position = geometry.getAttribute('position');
+  for (let i = 0; i < TRACK_ROWS; i += 1) {
+    const z = i * TRACK_STEP;
+    const [leftCenter, rightCenter] = trackCenterOffsets(path, z);
+    const leftBase = i * 2;
+    const rightBase = TRACK_VERTS_PER_RIBBON + i * 2;
+    position.setXYZ(leftBase, leftCenter - HALF_TRACK, TRACK_Y_BIAS, z);
+    position.setXYZ(leftBase + 1, leftCenter + HALF_TRACK, TRACK_Y_BIAS, z);
+    position.setXYZ(rightBase, rightCenter - HALF_TRACK, TRACK_Y_BIAS, z);
+    position.setXYZ(rightBase + 1, rightCenter + HALF_TRACK, TRACK_Y_BIAS, z);
+  }
+  position.needsUpdate = true;
+}
+
 export function createTerrain(): TerrainView {
   const geometry = createChunkGeometry();
-  const material = new THREE.MeshLambertMaterial({ color: SNOW_COLOR });
+  const material = new THREE.MeshLambertMaterial({ color: VERGE_COLOR });
   const group = new THREE.Group();
   const meshes: THREE.Mesh[] = [];
 
@@ -169,13 +215,21 @@ export function createTerrain(): TerrainView {
     group.add(mesh);
   }
 
-  function sync(world: WorldState): void {
+  const trackGeometry = createTrackGeometry();
+  const trackMaterial = new THREE.MeshLambertMaterial({ color: SNOW_COLOR });
+  const trackMesh = new THREE.Mesh(trackGeometry, trackMaterial);
+  trackMesh.receiveShadow = true;
+  trackMesh.castShadow = false;
+  group.add(trackMesh);
+
+  function sync(world: WorldState, path: PathState): void {
     for (let i = 0; i < meshes.length; i += 1) {
       const mesh = meshes[i];
       const chunk = world.chunks[i];
       if (mesh === undefined || chunk === undefined) continue;
       mesh.position.z = chunk.z;
     }
+    updateTrackGeometry(trackGeometry, path);
   }
 
   return { sync, group };

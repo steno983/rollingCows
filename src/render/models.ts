@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import type { ObstacleKind, PickupKind } from '../game/types';
+import type { EntityKind } from '../game/types';
 
 export interface VoxelModel {
   /** [x, y, z, colorIndex] per cubetto */
@@ -22,6 +22,13 @@ export const PALETTE: readonly number[] = [
   0xe0c060, // 10 fieno
   0x123048, // 11 buio del crepaccio
   0x9fd8ff, // 12 ghiaccio
+  0x2fe6d0, // 13 cristallo di ghiaccio (buff)
+  0xd8fffa, // 14 riflesso del cristallo
+  0xffcf3d, // 15 stella (buff), oro acceso
+  0xfff3b0, // 16 nucleo della stella, oro chiaro
+  0xe6483c, // 17 calamita (buff), rosso
+  0xd7dde3, // 18 punte della calamita, acciaio
+  0xc98f36, // 19 campanaccio (buff), ottone
 ];
 
 const SNOW = 0;
@@ -37,6 +44,13 @@ const ROOF = 9;
 const HAY = 10;
 const VOID = 11;
 const ICE = 12;
+const CRYSTAL = 13;
+const CRYSTAL_LIGHT = 14;
+const GOLD = 15;
+const GOLD_LIGHT = 16;
+const MAGNET_RED = 17;
+const STEEL = 18;
+const BRASS = 19;
 
 /**
  * Griglia logica in cui vivono i modelli: 64³ celle centrate sull'origine.
@@ -268,21 +282,172 @@ function buildHay(): VoxelModel {
   return b.build();
 }
 
+/** Tronco caduto: cilindro orizzontale, con gli anelli di crescita segnati
+ *  ai due tagli e due monconi di rami spezzati sul dorso. */
+function buildLog(): VoxelModel {
+  const b = createBuilder();
+  const half = 7;
+  const ry = 2;
+  const rz = 2;
+  for (let x = -half; x <= half; x += 1) {
+    for (let y = 0; y <= ry * 2; y += 1) {
+      for (let z = -rz; z <= rz; z += 1) {
+        const dy = (y - ry) / (ry + 0.5);
+        const dz = z / (rz + 0.5);
+        if (dy * dy + dz * dz > 1) continue;
+        const cutEnd = x === -half || x === half;
+        const ring = Math.round(Math.hypot(y - ry, z)) % 2 === 0;
+        b.set(x, y, z, cutEnd && ring ? LIGHT_WOOD : WOOD);
+      }
+    }
+  }
+  b.box(-3, ry * 2, -1, 1, 2, 2, WOOD);
+  b.box(2, ry * 2, -1, 1, 2, 2, WOOD);
+  return b.build();
+}
+
 /**
- * `cow` è una voce sola: la mucca del giocatore e il raccoglibile "altra mucca"
- * condividono il modello, il raccoglibile viene solo disegnato in scala ridotta
- * da entities-view.ts.
+ * Arco di roccia: architrave che si ispessisce verso il centro. È SOLO
+ * l'architrave (nessun pilastro): come `branch`, il modello vive vicino a
+ * y = 0 nel proprio spazio locale, e la vista lo alza in quota con
+ * `entity.y` (CONFIG.spawn.overheadY). Un pilastro che tocchi terra andrebbe
+ * disegnato appeso a mezz'aria per qualunque `entity.y` diverso da 0, che è
+ * esattamente il difetto da evitare.
  */
-export const MODELS: Record<'cow' | ObstacleKind | PickupKind, VoxelModel> = {
+function buildArch(): VoxelModel {
+  const b = createBuilder();
+  const half = 8;
+  for (let x = -half; x <= half; x += 1) {
+    const rise = Math.round(Math.cos((x / half) * (Math.PI / 2)) * 2);
+    const thickness = 2 + rise;
+    for (let y = 0; y < thickness; y += 1) {
+      for (let z = -2; z <= 2; z += 1) {
+        b.set(x, y, z, (x + y + z) % 4 === 0 ? ROCK_DARK : ROCK);
+      }
+    }
+  }
+  return b.build();
+}
+
+/** Cornicione di ghiaccio: mensola larga con una fila di ghiaccioli di
+ *  lunghezza variabile che pendono verso il basso. */
+function buildCornice(): VoxelModel {
+  const b = createBuilder();
+  const half = 8;
+  b.box(-half, 2, -2, half * 2 + 1, 2, 4, ICE);
+  for (let x = -half + 1; x <= half - 1; x += 2) {
+    const spike = 1 + (Math.abs(x * 7) % 3);
+    for (let d = 0; d < spike; d += 1) {
+      b.set(x, 1 - d, 0, ICE);
+    }
+  }
+  return b.build();
+}
+
+/** Cristallo di ghiaccio (buff): tre schegge affusolate di taglia diversa,
+ *  a sezione romboidale, con la punta più chiara. */
+function buildCrystal(): VoxelModel {
+  const b = createBuilder();
+  const shards: readonly [number, number, number][] = [
+    [0, 0, 5],
+    [-2, 0, 3],
+    [2, 1, 4],
+  ];
+  for (const [ox, oz, height] of shards) {
+    for (let y = 0; y < height; y += 1) {
+      const radius = Math.max(1, Math.round((height - y) * 0.4));
+      for (let x = -radius; x <= radius; x += 1) {
+        for (let z = -radius; z <= radius; z += 1) {
+          if (Math.abs(x) + Math.abs(z) > radius) continue;
+          b.set(ox + x, y, oz + z, y === height - 1 ? CRYSTAL_LIGHT : CRYSTAL);
+        }
+      }
+    }
+  }
+  return b.build();
+}
+
+/** Stella (buff): nucleo dorato con quattro punte lunghe (cardinali) e
+ *  quattro corte (diagonali), come una scintilla a otto raggi. */
+function buildStar(): VoxelModel {
+  const b = createBuilder();
+  b.box(-1, -1, -1, 3, 3, 3, GOLD_LIGHT);
+  const long: readonly [number, number][] = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+  const short: readonly [number, number][] = [[1, 1], [1, -1], [-1, 1], [-1, -1]];
+  for (const [dx, dy] of long) {
+    for (let i = 1; i <= 4; i += 1) {
+      b.set(dx * (i + 1), dy * (i + 1), 0, i === 4 ? GOLD_LIGHT : GOLD);
+    }
+  }
+  for (const [dx, dy] of short) {
+    for (let i = 1; i <= 2; i += 1) {
+      b.set(dx * (i + 1), dy * (i + 1), 0, GOLD);
+    }
+  }
+  return b.build();
+}
+
+/** Calamita a ferro di cavallo (buff): due gambe piene, una curva alla base
+ *  che le unisce (più bassa verso il centro, per leggersi come un arco), e
+ *  punte in acciaio sulle due gambe. */
+function buildMagnet(): VoxelModel {
+  const b = createBuilder();
+  const legHeight = 6;
+  b.box(-3, 0, -1, 2, legHeight, 2, MAGNET_RED);
+  b.box(1, 0, -1, 2, legHeight, 2, MAGNET_RED);
+  for (let x = -3; x <= 2; x += 1) {
+    const dx = (x + 0.5) / 3;
+    const height = Math.max(1, Math.round((1 - dx * dx) * 3));
+    b.box(x, 0, -1, 1, height, 2, MAGNET_RED);
+  }
+  b.box(-3, legHeight, -1, 2, 1, 2, STEEL);
+  b.box(1, legHeight, -1, 2, 1, 2, STEEL);
+  return b.build();
+}
+
+/** Campanaccio (buff scudo): corpo troncopiramidale in ottone, maniglia e
+ *  batacchio in vista sotto l'apertura. */
+function buildBell(): VoxelModel {
+  const b = createBuilder();
+  for (let layer = 0; layer < 4; layer += 1) {
+    const radius = Math.max(1, 3 - layer);
+    for (let x = -radius; x <= radius; x += 1) {
+      for (let z = -radius; z <= radius; z += 1) {
+        if (Math.abs(x) + Math.abs(z) > radius + 1) continue;
+        b.set(x, layer, z, BRASS);
+      }
+    }
+  }
+  b.box(-1, 4, 0, 3, 1, 1, BLACK);
+  b.set(-1, 5, 0, BLACK);
+  b.set(1, 5, 0, BLACK);
+  b.set(0, -1, 0, BLACK);
+  return b.build();
+}
+
+/**
+ * `cow` resta per la mucca del giocatore e per l'eventuale scenografia
+ * laterale: NON è più un raccoglibile (in v2 `PickupKind` non la contiene).
+ * `cabin`, `tree` e `hay` restano per lo stesso motivo — scenografia, non
+ * entità di gioco. Tutti gli altri kind sono gli `EntityKind` di v2.
+ */
+export const MODELS: Record<'cow' | 'cabin' | 'tree' | 'hay' | EntityKind, VoxelModel> = {
   cow: buildCow(),
-  rock: buildRock(),
-  tree: buildTree(),
-  fence: buildFence(),
   cabin: buildCabin(),
+  tree: buildTree(),
+  hay: buildHay(),
+  rock: buildRock(),
+  log: buildLog(),
+  fence: buildFence(),
   crevasse: buildCrevasse(),
   branch: buildBranch(),
+  arch: buildArch(),
+  cornice: buildCornice(),
   snowflake: buildSnowflake(),
-  hay: buildHay(),
+  crystal: buildCrystal(),
+  star: buildStar(),
+  magnet: buildMagnet(),
+  bell: buildBell(),
 };
 
 /**

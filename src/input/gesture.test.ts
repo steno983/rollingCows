@@ -6,20 +6,20 @@ const LONG = CONFIG.input.swipeMinPixels * 3;
 const FAST = CONFIG.input.swipeMaxMs / 2;
 
 describe('gestureToAction', () => {
-  it('riconosce uno swipe netto verso destra come MOVE_RIGHT', () => {
-    expect(gestureToAction(LONG, 0, FAST)).toBe('MOVE_RIGHT');
+  it('riconosce uno swipe netto verso destra come CHOOSE_RIGHT', () => {
+    expect(gestureToAction(LONG, 0, FAST)).toBe('CHOOSE_RIGHT');
   });
 
-  it('riconosce uno swipe netto verso sinistra come MOVE_LEFT', () => {
-    expect(gestureToAction(-LONG, 0, FAST)).toBe('MOVE_LEFT');
+  it('riconosce uno swipe netto verso sinistra come CHOOSE_LEFT', () => {
+    expect(gestureToAction(-LONG, 0, FAST)).toBe('CHOOSE_LEFT');
   });
 
   it('riconosce lo swipe verso l alto come JUMP (dy negativo in coordinate schermo)', () => {
     expect(gestureToAction(0, -LONG, FAST)).toBe('JUMP');
   });
 
-  it('riconosce lo swipe verso il basso come SLAM (dy positivo in coordinate schermo)', () => {
-    expect(gestureToAction(0, LONG, FAST)).toBe('SLAM');
+  it('riconosce lo swipe verso il basso come SLIDE (dy positivo in coordinate schermo)', () => {
+    expect(gestureToAction(0, LONG, FAST)).toBe('SLIDE');
   });
 
   it('ignora uno spostamento sotto la soglia minima in pixel', () => {
@@ -32,11 +32,11 @@ describe('gestureToAction', () => {
   });
 
   it('sceglie l asse dominante in un gesto diagonale', () => {
-    expect(gestureToAction(LONG, -LONG / 2, FAST)).toBe('MOVE_RIGHT');
-    expect(gestureToAction(-LONG / 2, LONG, FAST)).toBe('SLAM');
+    expect(gestureToAction(LONG, -LONG / 2, FAST)).toBe('CHOOSE_RIGHT');
+    expect(gestureToAction(-LONG / 2, LONG, FAST)).toBe('SLIDE');
   });
 
   it('accetta un gesto esattamente alla soglia di distanza e di durata', () => {
-    expect(gestureToAction(CONFIG.input.swipeMinPixels, 0, CONFIG.input.swipeMaxMs)).toBe('MOVE_RIGHT');
+    expect(gestureToAction(CONFIG.input.swipeMinPixels, 0, CONFIG.input.swipeMaxMs)).toBe('CHOOSE_RIGHT');
   });
 });

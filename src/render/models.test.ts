@@ -1,7 +1,19 @@
 import * as THREE from 'three';
 import { describe, expect, it } from 'vitest';
 import { CONFIG } from '../game/config';
+import type { EntityKind } from '../game/types';
 import { MODELS, PALETTE, buildGeometry, type VoxelModel } from './models';
+
+type ModelKind = 'cow' | 'cabin' | 'tree' | 'hay' | EntityKind;
+
+const ALL_KINDS: readonly ModelKind[] = [
+  'cow', 'cabin', 'tree', 'hay',
+  'rock', 'log', 'fence', 'crevasse', 'branch', 'arch', 'cornice',
+  'snowflake', 'crystal', 'star', 'magnet', 'bell',
+];
+
+const OBSTACLE_KINDS = ['rock', 'log', 'fence', 'crevasse', 'branch', 'arch', 'cornice'] as const;
+const BUFF_KINDS = ['crystal', 'star', 'magnet', 'bell'] as const;
 
 function solidCube(size: number, colorIndex = 0): VoxelModel {
   const voxels: number[][] = [];
@@ -19,10 +31,29 @@ function faceCount(geometry: THREE.BufferGeometry): number {
   return (index?.count ?? 0) / 6;
 }
 
+/** Il colore più frequente di un modello: usato per verificare che i buff si
+ *  distinguano a colpo d'occhio, non solo che abbiano una palette diversa. */
+function dominantColorHex(kind: ModelKind): number {
+  const model = MODELS[kind];
+  const counts = new Map<number, number>();
+  for (const voxel of model.voxels) {
+    const index = voxel[3] ?? 0;
+    counts.set(index, (counts.get(index) ?? 0) + 1);
+  }
+  let best = 0;
+  let bestCount = -1;
+  for (const [index, count] of counts) {
+    if (count > bestCount) {
+      bestCount = count;
+      best = index;
+    }
+  }
+  return model.palette[best] ?? 0;
+}
+
 describe('buildGeometry — omissione delle facce interne', () => {
   it('un cubo pieno 2x2x2 genera esattamente 24 facce esterne e nessuna interna', () => {
     const geometry = buildGeometry(solidCube(2), 1);
-    // 8 cubetti x 3 facce esposte ciascuno = 24 facce (senza culling sarebbero 48).
     expect(faceCount(geometry)).toBe(24);
     expect(geometry.getAttribute('position').count).toBe(24 * 4);
     expect(geometry.getIndex()?.count).toBe(24 * 6);
@@ -41,8 +72,8 @@ describe('buildGeometry — omissione delle facce interne', () => {
 
 describe('buildGeometry — forma degli attributi', () => {
   it('ogni modello ha 4 vertici per faccia e 6 indici per faccia', () => {
-    for (const model of Object.values(MODELS)) {
-      const geometry = buildGeometry(model, CONFIG.render.voxelSize);
+    for (const kind of ALL_KINDS) {
+      const geometry = buildGeometry(MODELS[kind], CONFIG.render.voxelSize);
       const faces = faceCount(geometry);
       expect(faces).toBeGreaterThan(0);
       expect(geometry.getAttribute('position').count).toBe(faces * 4);
@@ -53,8 +84,8 @@ describe('buildGeometry — forma degli attributi', () => {
   });
 
   it('nessun modello sfora il budget di triangoli per istanza', () => {
-    for (const model of Object.values(MODELS)) {
-      const geometry = buildGeometry(model, CONFIG.render.voxelSize);
+    for (const kind of ALL_KINDS) {
+      const geometry = buildGeometry(MODELS[kind], CONFIG.render.voxelSize);
       expect(faceCount(geometry) * 2).toBeLessThan(4000);
     }
   });
@@ -62,8 +93,8 @@ describe('buildGeometry — forma degli attributi', () => {
 
 describe('buildGeometry — centratura', () => {
   it('ogni modello è centrato su X e Z e appoggiato a y = 0', () => {
-    for (const model of Object.values(MODELS)) {
-      const geometry = buildGeometry(model, CONFIG.render.voxelSize);
+    for (const kind of ALL_KINDS) {
+      const geometry = buildGeometry(MODELS[kind], CONFIG.render.voxelSize);
       const box = geometry.boundingBox;
       expect(box).not.toBeNull();
       if (box === null) continue;
@@ -83,30 +114,19 @@ describe('buildGeometry — centratura', () => {
 });
 
 describe('MODELS', () => {
-  it('la mucca sta dentro una corsia e ha la profondità di un animale', () => {
+  it('espone un modello per ogni kind usato dal gioco, più le scenografie laterali', () => {
+    for (const kind of ALL_KINDS) {
+      expect(MODELS[kind].voxels.length).toBeGreaterThan(0);
+    }
+  });
+
+  it('la mucca resta più stretta del tracciato', () => {
     const geometry = buildGeometry(MODELS.cow, CONFIG.render.voxelSize);
     const box = geometry.boundingBox;
     const width = (box?.max.x ?? 0) - (box?.min.x ?? 0);
     const depth = (box?.max.z ?? 0) - (box?.min.z ?? 0);
-    expect(width).toBeLessThanOrEqual(CONFIG.world.laneWidth);
-    expect(depth).toBeGreaterThan(width);
-  });
-
-  it('la baita occupa due corsie senza sforarle', () => {
-    const geometry = buildGeometry(MODELS.cabin, CONFIG.render.voxelSize);
-    const box = geometry.boundingBox;
-    const width = (box?.max.x ?? 0) - (box?.min.x ?? 0);
-    expect(width).toBeGreaterThan(CONFIG.world.laneWidth);
-    expect(width).toBeLessThanOrEqual(CONFIG.world.laneWidth * 2);
-  });
-
-  it('espone un modello per ogni kind usato dal gioco', () => {
-    const kinds = [
-      'cow', 'rock', 'tree', 'fence', 'cabin', 'crevasse', 'branch', 'snowflake', 'hay',
-    ] as const;
-    for (const kind of kinds) {
-      expect(MODELS[kind].voxels.length).toBeGreaterThan(0);
-    }
+    expect(width).toBeLessThanOrEqual(CONFIG.world.trackWidth);
+    expect(depth).toBeGreaterThan(width * 0.5);
   });
 });
 
@@ -125,11 +145,30 @@ describe('palette', () => {
   });
 
   it('ogni indice colore usato dai modelli esiste nella palette', () => {
-    for (const model of Object.values(MODELS)) {
+    for (const kind of ALL_KINDS) {
+      const model = MODELS[kind];
       for (const voxel of model.voxels) {
         const index = voxel[3] ?? -1;
         expect(model.palette[index]).toBeTypeOf('number');
       }
+    }
+  });
+});
+
+describe('buff: riconoscibilità cromatica', () => {
+  it('ogni buff ha un colore dominante diverso dagli altri tre', () => {
+    const colors = BUFF_KINDS.map(dominantColorHex);
+    for (let i = 0; i < colors.length; i += 1) {
+      for (let j = i + 1; j < colors.length; j += 1) {
+        expect(colors[i]).not.toBe(colors[j]);
+      }
+    }
+  });
+
+  it('il colore dominante di ogni buff non coincide con quello di nessun ostacolo', () => {
+    const obstacleColors = OBSTACLE_KINDS.map(dominantColorHex);
+    for (const buff of BUFF_KINDS) {
+      expect(obstacleColors).not.toContain(dominantColorHex(buff));
     }
   });
 });

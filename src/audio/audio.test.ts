@@ -160,16 +160,6 @@ describe('createAudio', () => {
     expect(fake.oscillators[0]?.started).toBe(true);
   });
 
-  it('aggiunge il muggito quando il raccoglibile è una mucca', () => {
-    const audio = createAudio(factory);
-    const bus = createEventBus();
-    audio.attach(bus);
-
-    bus.emit('pickup:collected', { kind: 'cow', charge: 10 });
-
-    expect(fake.oscillators.length).toBe(2);
-  });
-
   it('avvia il rombo su avalanche:triggered e lo spegne su avalanche:ended', () => {
     const audio = createAudio(factory);
     const bus = createEventBus();
@@ -231,8 +221,8 @@ describe('createAudio', () => {
     audio.setMuted(true);
     audio.attach(bus);
 
-    bus.emit('pickup:collected', { kind: 'hay', charge: 5 });
-    bus.emit('obstacle:hit', { kind: 'rock', outcome: 'death', lane: 1, z: 0 });
+    bus.emit('pickup:collected', { kind: 'snowflake', charge: 5 });
+    bus.emit('obstacle:hit', { kind: 'rock', outcome: 'death', branch: 'main', z: 0 });
 
     expect(audio.muted).toBe(true);
     expect(factoryCalls).toBe(0);

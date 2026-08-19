@@ -60,6 +60,78 @@
   background: rgba(11, 28, 44, 0.45);
 }
 
+.hud__buffs {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+.hud__buff {
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  background: rgba(11, 28, 44, 0.35);
+  opacity: 0.4;
+  transition: opacity 120ms ease, background 120ms ease;
+}
+
+.hud__buff--active {
+  opacity: 1;
+}
+
+.hud__buff--shield.hud__buff--active {
+  background: rgba(159, 216, 255, 0.55);
+  color: #06202f;
+}
+
+.hud__buff--star.hud__buff--active {
+  background: rgba(255, 207, 61, 0.65);
+  color: #3a2400;
+}
+
+.hud__buff--magnet.hud__buff--active {
+  background: rgba(230, 72, 60, 0.55);
+  color: #fff6f5;
+}
+
+.hud__fork {
+  position: absolute;
+  top: 50%;
+  left: 0;
+  right: 0;
+  display: flex;
+  justify-content: space-between;
+  padding: 0 12px;
+  opacity: 0;
+  transform: translateY(-50%) scale(0.9);
+  transition: opacity 150ms ease, transform 150ms ease;
+}
+
+.hud__fork--visible {
+  opacity: 1;
+  transform: translateY(-50%) scale(1);
+}
+
+.hud__fork-side {
+  padding: 6px 14px;
+  border-radius: 10px;
+  font-size: 14px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  background: rgba(11, 28, 44, 0.45);
+  opacity: 0.55;
+}
+
+.hud__fork-side--rich {
+  opacity: 1;
+  background: rgba(255, 209, 102, 0.55);
+  color: #3a2400;
+  box-shadow: 0 0 0 2px rgba(255, 209, 102, 0.8);
+}
+
 .hud--avalanche .hud__points {
   animation: hud-pulse 0.6s ease-in-out infinite;
 }
@@ -202,8 +274,10 @@
 @media (prefers-reduced-motion: reduce) {
   .hud--avalanche .hud__points,
   .hud--warning .hud__charge,
-  .hud--warning .hud__size {
+  .hud--warning .hud__size,
+  .hud__fork {
     animation: none;
+    transition: none;
   }
 
   .hud__charge-fill {

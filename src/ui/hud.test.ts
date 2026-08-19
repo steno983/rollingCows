@@ -89,6 +89,56 @@ describe('createHud', () => {
     hud.setVisible(true);
     expect(container.classList.contains('hud--hidden')).toBe(false);
   });
+
+  it('setBuffs accende solo il badge dello scudo quando è attivo', () => {
+    const hud = createHud(root);
+
+    hud.setBuffs(true, 0, 0);
+    expect(need('[data-buff="shield"]').classList.contains('hud__buff--active')).toBe(true);
+    expect(need('[data-buff="star"]').classList.contains('hud__buff--active')).toBe(false);
+    expect(need('[data-buff="magnet"]').classList.contains('hud__buff--active')).toBe(false);
+
+    hud.setBuffs(false, 0, 0);
+    expect(need('[data-buff="shield"]').classList.contains('hud__buff--active')).toBe(false);
+  });
+
+  it('setBuffs mostra il tempo residuo della stella, arrotondato per eccesso', () => {
+    const hud = createHud(root);
+
+    hud.setBuffs(false, 5.4, 0);
+    const star = need('[data-buff="star"]');
+    expect(star.classList.contains('hud__buff--active')).toBe(true);
+    expect(need('[data-buff="star"] .hud__buff-time').textContent).toBe('6');
+
+    hud.setBuffs(false, 0, 0);
+    expect(star.classList.contains('hud__buff--active')).toBe(false);
+  });
+
+  it('setBuffs mostra il tempo residuo della calamita', () => {
+    const hud = createHud(root);
+
+    hud.setBuffs(false, 0, 3.2);
+    const magnet = need('[data-buff="magnet"]');
+    expect(magnet.classList.contains('hud__buff--active')).toBe(true);
+    expect(need('[data-buff="magnet"] .hud__buff-time').textContent).toBe('4');
+  });
+
+  it('setFork evidenzia il ramo ricco e mostra il pannello solo quando c è un bivio', () => {
+    const hud = createHud(root);
+    const fork = need('.hud__fork');
+
+    hud.setFork('left');
+    expect(fork.classList.contains('hud__fork--visible')).toBe(true);
+    expect(need('[data-side="left"]').classList.contains('hud__fork-side--rich')).toBe(true);
+    expect(need('[data-side="right"]').classList.contains('hud__fork-side--rich')).toBe(false);
+
+    hud.setFork('right');
+    expect(need('[data-side="left"]').classList.contains('hud__fork-side--rich')).toBe(false);
+    expect(need('[data-side="right"]').classList.contains('hud__fork-side--rich')).toBe(true);
+
+    hud.setFork(null);
+    expect(fork.classList.contains('hud__fork--visible')).toBe(false);
+  });
 });
 
 describe('HUD e schermate: mutua esclusione', () => {

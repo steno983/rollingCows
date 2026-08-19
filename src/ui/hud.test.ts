@@ -108,7 +108,7 @@ describe('createHud', () => {
     hud.setBuffs(false, 5.4, 0);
     const star = need('[data-buff="star"]');
     expect(star.classList.contains('hud__buff--active')).toBe(true);
-    expect(need('[data-buff="star"] .hud__buff-time').textContent).toBe('6');
+    expect(need('[data-buff="star"] .hud__buff-time').textContent).toBe('6s ');
 
     hud.setBuffs(false, 0, 0);
     expect(star.classList.contains('hud__buff--active')).toBe(false);
@@ -120,7 +120,19 @@ describe('createHud', () => {
     hud.setBuffs(false, 0, 3.2);
     const magnet = need('[data-buff="magnet"]');
     expect(magnet.classList.contains('hud__buff--active')).toBe(true);
-    expect(need('[data-buff="magnet"] .hud__buff-time').textContent).toBe('4');
+    expect(need('[data-buff="magnet"] .hud__buff-time').textContent).toBe('4s ');
+  });
+
+  it('un buff spento mostra solo il proprio nome, senza tempo né "s" spuria', () => {
+    const hud = createHud(root);
+
+    hud.setBuffs(false, 0, 0);
+    expect(need('[data-buff="star"]').textContent).toBe('×2');
+    expect(need('[data-buff="magnet"]').textContent).toBe('CALAMITA');
+
+    hud.setBuffs(false, 5.4, 3.2);
+    expect(need('[data-buff="star"]').textContent).toBe('6s ×2');
+    expect(need('[data-buff="magnet"]').textContent).toBe('4s CALAMITA');
   });
 
   it('setFork evidenzia il ramo ricco e mostra il pannello solo quando c è un bivio', () => {

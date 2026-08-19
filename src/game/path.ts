@@ -20,6 +20,15 @@ export interface PathState {
   offsetX: number;
   /** Distanza ancora da percorrere prima del prossimo bivio. */
   nextForkIn: number;
+  /** Scelta data FUORI dalla finestra di avvicinamento (design §4: "uno swipe
+   *  dato appena prima che il bivio compaia vale come scelta anticipata").
+   *  Vale solo finché `pendingChoiceTimeLeft` è positivo. */
+  pendingChoice: 'left' | 'right' | null;
+  pendingChoiceTimeLeft: number;
+  /** Avanzamento del riallineamento, 0..1. Vale 0 fuori dalla fase
+   *  'realigning'. Serve alla vista per far svanire il nastro scartato invece
+   *  di vederlo saltare al centro nel frame in cui il bivio si chiude. */
+  realignProgress: number;
 }
 
 const SIDES: readonly ('left' | 'right')[] = ['left', 'right'];
@@ -38,6 +47,9 @@ export function createPath(): PathState {
     // usare nella formula gapPerSpeed: si parte dal solo margine minimo, come
     // se la run fosse appena ripartita da un riallineamento a velocità nulla.
     nextForkIn: CONFIG.path.minGap,
+    pendingChoice: null,
+    pendingChoiceTimeLeft: 0,
+    realignProgress: 0,
   };
 }
 
@@ -65,7 +77,20 @@ export function branchIsSolid(path: PathState, branch: Branch): boolean {
 export function chooseBranch(path: PathState, side: 'left' | 'right'): boolean {
   if (path.phase !== 'approaching') return false;
   path.choice = side;
+  path.pendingChoice = null;
+  path.pendingChoiceTimeLeft = 0;
   return true;
+}
+
+/**
+ * Memorizza uno swipe laterale dato quando NON c'è un bivio scegliibile. Se un
+ * bivio compare entro `CONFIG.path.earlyChoiceSeconds` quello swipe vale come
+ * scelta già data (design §4); altrimenti scade e non lascia traccia. Da
+ * chiamare quando `chooseBranch` restituisce false.
+ */
+export function rememberChoice(path: PathState, side: 'left' | 'right'): void {
+  path.pendingChoice = side;
+  path.pendingChoiceTimeLeft = CONFIG.path.earlyChoiceSeconds;
 }
 
 /** Avanza il percorso. `travelled` è la distanza percorsa in questo frame. */
@@ -76,6 +101,16 @@ export function updatePath(
   rng: Rng,
   bus: EventBus,
 ): void {
+  // La scelta anticipata scade nel TEMPO, non nella distanza (design §4: "per
+  // un breve istante"). Il dt non è un parametro perché updatePath ragiona in
+  // distanze, ma si ricava esatto: updateWorld calcola travelled = speed * dt
+  // con la stessa `speed` passata qui.
+  if (path.pendingChoiceTimeLeft > 0) {
+    const dt = speed > 0 ? travelled / speed : 0;
+    path.pendingChoiceTimeLeft = Math.max(0, path.pendingChoiceTimeLeft - dt);
+    if (path.pendingChoiceTimeLeft === 0) path.pendingChoice = null;
+  }
+
   switch (path.phase) {
     case 'none': {
       path.nextForkIn -= travelled;
@@ -89,6 +124,16 @@ export function updatePath(
       path.choice = null;
       path.richBranch = rng.pick(SIDES);
       bus.emit('fork:appeared', { richBranch: path.richBranch });
+      // Scelta anticipata: lo swipe dato poco prima che il bivio comparisse
+      // vale come scelta, ed è a tutti gli effetti una scelta del giocatore,
+      // quindi emette 'fork:chosen' come se fosse arrivata adesso.
+      const pending = path.pendingChoice;
+      path.pendingChoice = null;
+      path.pendingChoiceTimeLeft = 0;
+      if (pending !== null) {
+        path.choice = pending;
+        bus.emit('fork:chosen', { side: pending });
+      }
       return;
     }
     case 'approaching': {
@@ -109,6 +154,12 @@ export function updatePath(
       path.forkZ -= travelled;
       if (path.forkZ > 0) return;
       path.phase = 'realigning';
+      // Nessun return: l'eccedenza di questo passo è già distanza percorsa
+      // OLTRE la biforcazione, quindi appartiene al riallineamento. Uscendo
+      // qui, il primo frame di 'realigning' avrebbe applicato in un colpo solo
+      // due passi di traslazione laterale — uno scatto visibile all'inizio di
+      // ogni chiusura di bivio.
+      applyRealignment(path, speed);
       return;
     }
     case 'realigning': {
@@ -116,19 +167,27 @@ export function updatePath(
       // percorsa OLTRE la biforcazione, che a velocità nota si converte in
       // "quanto tempo è passato" senza bisogno di un campo a parte.
       path.forkZ -= travelled;
-      const distancePast = -path.forkZ;
-      const realignDistance = Math.max(1e-6, speed * CONFIG.path.realignSeconds);
-      const t = Math.min(1, distancePast / realignDistance);
-      path.offsetX = -branchOffsetX(path, path.activeBranch) * t;
-      if (t >= 1) {
-        path.phase = 'none';
-        path.offsetX = 0;
-        path.activeBranch = 'main';
-        path.choice = null;
-        path.forkZ = 0;
-        path.nextForkIn = CONFIG.path.minGap + CONFIG.path.gapPerSpeed * speed;
-      }
+      applyRealignment(path, speed);
       return;
     }
   }
+}
+
+/** Traslazione laterale del mondo durante il riallineamento, e chiusura del
+ *  bivio quando è completa. Legge solo `forkZ`, già aggiornato dal chiamante. */
+function applyRealignment(path: PathState, speed: number): void {
+  const distancePast = -path.forkZ;
+  const realignDistance = Math.max(1e-6, speed * CONFIG.path.realignSeconds);
+  const t = Math.min(1, Math.max(0, distancePast / realignDistance));
+  path.offsetX = -branchOffsetX(path, path.activeBranch) * t;
+  path.realignProgress = t;
+  if (t < 1) return;
+
+  path.phase = 'none';
+  path.offsetX = 0;
+  path.activeBranch = 'main';
+  path.choice = null;
+  path.forkZ = 0;
+  path.realignProgress = 0;
+  path.nextForkIn = CONFIG.path.minGap + CONFIG.path.gapPerSpeed * speed;
 }

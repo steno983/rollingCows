@@ -7,6 +7,7 @@ import {
   branchIsSolid,
   branchOffsetX,
   chooseBranch,
+  rememberChoice,
   createPath,
   updatePath,
 } from './path';
@@ -331,5 +332,102 @@ describe('branchOffsetX', () => {
     expect(branchOffsetX(path, 'main')).toBe(0);
     expect(branchOffsetX(path, 'left')).toBe(-CONFIG.path.branchSeparation);
     expect(branchOffsetX(path, 'right')).toBe(CONFIG.path.branchSeparation);
+  });
+});
+
+describe('scelta anticipata', () => {
+  it('uno swipe dato poco prima che il bivio compaia vale come scelta, ed è annunciato', () => {
+    const { bus, payloads } = recordedBus('fork:chosen');
+    const path = createPath();
+    const rng = createRng(1);
+    const speed = 20;
+
+    // A un passo dal bivio: il tracciato è ancora dritto, quindi lo swipe non
+    // può essere una scelta vera.
+    travel(path, path.nextForkIn - speed * STEP, speed, rng, bus);
+    expect(path.phase).toBe('none');
+    expect(chooseBranch(path, 'right')).toBe(false);
+    rememberChoice(path, 'right');
+    expect(payloads).toEqual([]);
+
+    updatePath(path, speed * STEP, speed, rng, bus);
+
+    expect(path.phase).toBe('approaching');
+    expect(path.choice).toBe('right');
+    expect(payloads).toEqual([{ side: 'right' }]);
+  });
+
+  it('uno swipe più vecchio di earlyChoiceSeconds è dimenticato', () => {
+    const { bus, payloads } = recordedBus('fork:chosen');
+    const path = createPath();
+    const rng = createRng(2);
+    const speed = 20;
+
+    rememberChoice(path, 'left');
+    // Il tempo scorre ben oltre la finestra della scelta anticipata, e comunque
+    // molto prima che il bivio compaia (minGap è 120 unità).
+    travel(path, speed * CONFIG.path.earlyChoiceSeconds * 2, speed, rng, bus);
+    expect(path.pendingChoice).toBeNull();
+
+    travel(path, path.nextForkIn + 1, speed, rng, bus);
+    expect(path.phase).toBe('approaching');
+    expect(path.choice).toBeNull();
+    expect(payloads).toEqual([]);
+  });
+
+  it('una scelta vera cancella quella anticipata ancora in memoria', () => {
+    const path = createPath();
+    rememberChoice(path, 'left');
+    path.phase = 'approaching';
+
+    expect(chooseBranch(path, 'right')).toBe(true);
+    expect(path.pendingChoice).toBeNull();
+    expect(path.pendingChoiceTimeLeft).toBe(0);
+  });
+});
+
+describe('realignProgress', () => {
+  it('vale 0 fuori dal riallineamento, sale da 0 a 1 durante, e torna 0 alla chiusura', () => {
+    const bus = createEventBus();
+    const path = createPath();
+    const rng = createRng(7);
+    const speed = 20;
+
+    travel(path, path.nextForkIn + 1, speed, rng, bus);
+    expect(path.phase).toBe('approaching');
+    expect(path.realignProgress).toBe(0);
+
+    const seen: number[] = [];
+    let guard = 0;
+    while (path.phase !== 'none' && guard < 5000) {
+      updatePath(path, speed * STEP, speed, rng, bus);
+      if (path.phase === 'realigning') seen.push(path.realignProgress);
+      guard += 1;
+    }
+
+    expect(seen.length).toBeGreaterThan(10);
+    // Cresce in modo monotono e a passi regolari: nessun raddoppio nel primo
+    // frame, che è ciò che faceva scattare lateralmente il mondo all'inizio di
+    // ogni riallineamento.
+    const first = seen[0];
+    if (first === undefined) throw new Error('nessun frame di riallineamento');
+    const nominalStep = STEP / CONFIG.path.realignSeconds;
+    expect(first).toBeGreaterThan(0);
+    expect(first).toBeLessThanOrEqual(nominalStep + 1e-9);
+    for (let i = 1; i < seen.length; i++) {
+      const previous = seen[i - 1];
+      const current = seen[i];
+      if (previous === undefined || current === undefined) throw new Error('campione mancante');
+      expect(current).toBeGreaterThan(previous);
+      expect(current - previous).toBeLessThanOrEqual(nominalStep + 1e-9);
+    }
+
+    // Alla chiusura il riallineamento era praticamente completo: è ciò che
+    // permette alla vista di far svanire il nastro scartato senza scatti.
+    const last = seen[seen.length - 1];
+    if (last === undefined) throw new Error('nessun campione finale');
+    expect(last).toBeGreaterThan(1 - nominalStep - 1e-9);
+    expect(path.phase).toBe('none');
+    expect(path.realignProgress).toBe(0);
   });
 });

@@ -10,7 +10,10 @@ export interface PlayerView {
 
 /**
  * Crescita visiva per taglia. È una costante di resa, non di bilanciamento:
- * l'hitbox reale cresce secondo CONFIG.player.halfWidthPerSize e heightPerSize.
+ * la collisione reale (game/collisions.ts, playerBox) non ha affatto una
+ * larghezza laterale — verifica solo quota e profondità, perché il
+ * giocatore è sempre al centro del ramo attivo — quindi non esiste un
+ * equivalente in CONFIG.player da tenere sincronizzato con questa costante.
  */
 const PLAYER_SCALE_PER_SIZE = 0.18;
 /** Quanto il modello si allarga in scivolata, come frazione dell'altezza

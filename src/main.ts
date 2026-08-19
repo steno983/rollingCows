@@ -145,6 +145,11 @@ function main(): void {
     pool.reset();
     resetDebris();
     resetFlow(flow);
+    // Il pannello del bivio è acceso da 'fork:appeared' e spento da
+    // 'fork:resolved': chi muore durante un avvicinamento non riceve mai il
+    // secondo, e senza questo azzeramento ritroverebbe il pannello acceso
+    // nella corsa successiva, che di bivi non ne ha ancora nessuno.
+    hud.setFork(null);
     playerView.group.visible = true;
     showScreen('playing');
   }
@@ -182,9 +187,14 @@ function main(): void {
       view.shake(CONFIG.feel.impactShake);
       return;
     }
-    // morte E scudo: l'ostacolo si disintegra comunque (il colpo era "vero",
-    // lo scudo lo ha solo assorbito). Il frantumarsi dello scudo stesso ha il
-    // proprio burst separato, vedi bus.on('shield:consumed', ...) più sotto.
+    if (payload.outcome === 'shielded') {
+      // Il colpo è assorbito dallo scudo: bus.on('shield:consumed', ...) più
+      // sotto fornisce già il proprio burst e la propria scossa per questo
+      // stesso hit. Aggiungerne un secondo qui raddoppierebbe l'effetto (due
+      // esplosioni e due scosse sommate nello stesso frame per un solo colpo).
+      return;
+    }
+    // morte: l'ostacolo si disintegra.
     burstFromModel(pool, MODELS[payload.kind], hitX, 0.4, payload.z, CONFIG.feel.deathBurstPower * particleScale);
     view.shake(CONFIG.feel.impactShake);
   });
@@ -209,7 +219,11 @@ function main(): void {
   });
 
   bus.on('buff:gained', () => {
-    burstFromModel(pool, MODELS.crystal, 0, 0.8, 0, 5 * particleScale);
+    // Solo la scossa. Il burst di cubetti arriva già da 'pickup:collected',
+    // che scatta per ognuno dei quattro buff e usa il modello GIUSTO
+    // (MODELS[kind]); qui se ne aggiungeva un secondo nello stesso frame e
+    // nello stesso punto, per giunta sempre con i colori del cristallo anche
+    // quando a essere raccolto era un campanaccio.
     view.shake(CONFIG.feel.buffShake);
   });
 

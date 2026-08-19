@@ -190,7 +190,7 @@ function buildFence(): VoxelModel {
 }
 
 /**
- * Baita: 15 largo (3.75 unità, dentro le due corsie), volume PIENO.
+ * Baita: 15 largo (3.75 unità, dentro il tracciato), volume PIENO.
  * Pieno e non cavo di proposito: il culling delle facce interne elimina tutto
  * ciò che non si vede, mentre una scatola cava esporrebbe anche le pareti
  * interne raddoppiando i triangoli senza che nessuno le veda mai.

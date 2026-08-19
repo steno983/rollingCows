@@ -21,9 +21,13 @@ export function resetBuffs(state: BuffState): void {
 }
 
 /**
- * Applica un buff raccolto. 'crystal' NON passa di qui: dà carica alla
- * valanga, non stato (vedi game.ts, che per 'crystal' chiama addCharge
- * direttamente). Raccogliere stella o calamita mentre sono già attive
+ * Applica un buff raccolto ed emette 'buff:gained', per TUTTI e quattro i
+ * buff. 'crystal' non ha stato da aggiornare — il suo effetto è la carica alla
+ * valanga, che è di avalanche.ts — ma è un buff raccolto come gli altri, e
+ * 'buff:gained' è il segnale su cui si accendono il timbro audio e gli effetti
+ * di raccolta: uscire prima dell'emissione rendeva irraggiungibili
+ * playBuffSound('crystal') e CONFIG.audio.chime. Raccogliere stella o calamita
+ * mentre sono già attive
  * RICARICA la durata invece di sommarla: un tetto fisso è leggibile
  * ("hai ancora N secondi"), una somma illimitata no. Il campanaccio è un
  * interruttore, non un contatore: raccoglierne un secondo mentre lo scudo
@@ -41,8 +45,9 @@ export function applyBuff(state: BuffState, kind: BuffKind, bus: EventBus): void
       state.shield = true;
       break;
     case 'crystal':
-      // Nessuno stato da aggiornare qui: niente evento, niente effetto.
-      return;
+      // Nessuno stato da aggiornare, ma l'evento sotto va emesso lo stesso:
+      // vedi il commento sopra.
+      break;
   }
   bus.emit('buff:gained', { kind });
 }

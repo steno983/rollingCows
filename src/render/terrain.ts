@@ -136,6 +136,14 @@ const TRACK_Y_BIAS = 0.02;
 const TRACK_ROWS = TRACK_SEGMENTS + 1;
 const TRACK_VERTS_PER_RIBBON = TRACK_ROWS * 2;
 
+/** Buffer riusato dal valore di ritorno di trackCenterOffsets: la funzione è
+ *  chiamata TRACK_ROWS volte per frame (vedi updateTrackGeometry sotto), e un
+ *  array letterale nuovo a ogni chiamata violerebbe il vincolo di zero
+ *  allocazioni nel loop caldo. Sicuro perché il chiamante destruttura subito
+ *  i due numeri: nessuno trattiene un riferimento a questo array fra una
+ *  chiamata e l'altra. */
+const trackCenterScratch: [number, number] = [0, 0];
+
 /**
  * Scostamento laterale del CENTRO di ciascuno dei due nastri della pista, a
  * una distanza z data, secondo lo stato del percorso: coincidono (nastro
@@ -144,12 +152,13 @@ const TRACK_VERTS_PER_RIBBON = TRACK_ROWS * 2;
  */
 export function trackCenterOffsets(path: PathState, z: number): readonly [number, number] {
   if (path.phase === 'none' || z <= path.forkZ) {
-    return [path.offsetX, path.offsetX];
+    trackCenterScratch[0] = path.offsetX;
+    trackCenterScratch[1] = path.offsetX;
+    return trackCenterScratch;
   }
-  return [
-    branchOffsetX(path, 'left') + path.offsetX,
-    branchOffsetX(path, 'right') + path.offsetX,
-  ];
+  trackCenterScratch[0] = branchOffsetX(path, 'left') + path.offsetX;
+  trackCenterScratch[1] = branchOffsetX(path, 'right') + path.offsetX;
+  return trackCenterScratch;
 }
 
 function createTrackGeometry(): THREE.BufferGeometry {
@@ -185,17 +194,47 @@ function createTrackGeometry(): THREE.BufferGeometry {
  *  proprio centro corrente. */
 const HALF_TRACK = CONFIG.world.trackWidth / 2;
 
+/**
+ * Semi-larghezza dei due nastri, [sinistro, destro]. Vale HALF_TRACK per
+ * entrambi tranne durante il riallineamento, dove il nastro SCARTATO si
+ * assottiglia fino a sparire.
+ *
+ * Non è un vezzo: nel frame in cui il bivio si chiude la fase torna 'none' e i
+ * due nastri tornano a coincidere al centro. Il nastro scelto ci arriva per
+ * gradi (il suo centro è già 0 alla fine del riallineamento), quello scartato
+ * no: il suo centro salterebbe di colpo da 2 * branchSeparation a 0, uno
+ * scatto laterale di 12 unità in un frame, la pista abbandonata che rientra
+ * dentro quella buona. Assottigliato a zero, quel salto non ha più niente da
+ * mostrare. Funzione pura: dipende solo dallo stato del percorso, non da z,
+ * quindi si valuta UNA volta per frame e non per riga. Riusa uno scratch per
+ * lo stesso motivo di trackCenterOffsets: nel loop di frame non si alloca.
+ */
+const trackHalfScratch: [number, number] = [HALF_TRACK, HALF_TRACK];
+
+export function trackHalfWidths(path: PathState): readonly [number, number] {
+  if (path.phase !== 'realigning') {
+    trackHalfScratch[0] = HALF_TRACK;
+    trackHalfScratch[1] = HALF_TRACK;
+    return trackHalfScratch;
+  }
+  const fading = HALF_TRACK * Math.max(0, 1 - path.realignProgress);
+  trackHalfScratch[0] = path.activeBranch === 'left' ? HALF_TRACK : fading;
+  trackHalfScratch[1] = path.activeBranch === 'left' ? fading : HALF_TRACK;
+  return trackHalfScratch;
+}
+
 function updateTrackGeometry(geometry: THREE.BufferGeometry, path: PathState): void {
   const position = geometry.getAttribute('position');
+  const [leftHalf, rightHalf] = trackHalfWidths(path);
   for (let i = 0; i < TRACK_ROWS; i += 1) {
     const z = i * TRACK_STEP;
     const [leftCenter, rightCenter] = trackCenterOffsets(path, z);
     const leftBase = i * 2;
     const rightBase = TRACK_VERTS_PER_RIBBON + i * 2;
-    position.setXYZ(leftBase, leftCenter - HALF_TRACK, TRACK_Y_BIAS, z);
-    position.setXYZ(leftBase + 1, leftCenter + HALF_TRACK, TRACK_Y_BIAS, z);
-    position.setXYZ(rightBase, rightCenter - HALF_TRACK, TRACK_Y_BIAS, z);
-    position.setXYZ(rightBase + 1, rightCenter + HALF_TRACK, TRACK_Y_BIAS, z);
+    position.setXYZ(leftBase, leftCenter - leftHalf, TRACK_Y_BIAS, z);
+    position.setXYZ(leftBase + 1, leftCenter + leftHalf, TRACK_Y_BIAS, z);
+    position.setXYZ(rightBase, rightCenter - rightHalf, TRACK_Y_BIAS, z);
+    position.setXYZ(rightBase + 1, rightCenter + rightHalf, TRACK_Y_BIAS, z);
   }
   position.needsUpdate = true;
 }

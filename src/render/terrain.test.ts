@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { CONFIG } from '../game/config';
-import type { PathState } from '../game/path';
-import { heightAt, trackCenterOffsets } from './terrain';
+import { createPath, type PathState } from '../game/path';
+import { heightAt, trackCenterOffsets, trackHalfWidths } from './terrain';
 
 /** Stessa zona sempre-piatta calcolata in terrain.ts: la separazione dei
  *  rami più mezza larghezza del tracciato, così il pendio resta piatto sotto
@@ -68,17 +68,10 @@ describe('heightAt', () => {
   });
 });
 
+/** Base da createPath, non un letterale scritto a mano: un campo nuovo di
+ *  PathState non deve costringere a toccare le fixture dei test di vista. */
 function fixture(overrides: Partial<PathState> = {}): PathState {
-  return {
-    phase: 'none',
-    forkZ: 0,
-    choice: null,
-    richBranch: 'left',
-    activeBranch: 'main',
-    offsetX: 0,
-    nextForkIn: 100,
-    ...overrides,
-  };
+  return { ...createPath(), nextForkIn: 100, ...overrides };
 }
 
 describe('trackCenterOffsets', () => {
@@ -107,5 +100,42 @@ describe('trackCenterOffsets', () => {
     const [left, right] = trackCenterOffsets(path, 90);
     expect(left).toBeCloseTo(-CONFIG.path.branchSeparation - 2, 6);
     expect(right).toBeCloseTo(CONFIG.path.branchSeparation - 2, 6);
+  });
+});
+
+describe('trackHalfWidths', () => {
+  const full = CONFIG.world.trackWidth / 2;
+
+  it('fuori dal riallineamento i due nastri sono larghi uguale', () => {
+    for (const phase of ['none', 'approaching', 'committed'] as const) {
+      const path = fixture({ phase, activeBranch: 'left', realignProgress: 0 });
+      expect([...trackHalfWidths(path)]).toEqual([full, full]);
+    }
+  });
+
+  it('durante il riallineamento il nastro SCARTATO si assottiglia, quello scelto no', () => {
+    const path = fixture({ phase: 'realigning', activeBranch: 'left', realignProgress: 0.5 });
+    const [left, right] = trackHalfWidths(path);
+    expect(left).toBe(full);
+    expect(right).toBeCloseTo(full * 0.5, 10);
+
+    const mirrored = fixture({ phase: 'realigning', activeBranch: 'right', realignProgress: 0.5 });
+    const [mirroredLeft, mirroredRight] = trackHalfWidths(mirrored);
+    expect(mirroredLeft).toBeCloseTo(full * 0.5, 10);
+    expect(mirroredRight).toBe(full);
+  });
+
+  it('a riallineamento completo il nastro scartato ha larghezza nulla: la sua sparizione non si vede', () => {
+    // Nel frame successivo la fase torna 'none' e i due nastri tornano a
+    // coincidere al centro. Se il nastro scartato fosse ancora largo, quel
+    // ritorno sarebbe uno scatto laterale di 2 * branchSeparation.
+    const path = fixture({ phase: 'realigning', activeBranch: 'right', realignProgress: 1 });
+    expect(trackHalfWidths(path)[0]).toBe(0);
+    expect(trackHalfWidths(path)[1]).toBe(full);
+  });
+
+  it('non scende mai sotto zero, nemmeno con un avanzamento oltre 1', () => {
+    const path = fixture({ phase: 'realigning', activeBranch: 'left', realignProgress: 1.5 });
+    expect(trackHalfWidths(path)[1]).toBe(0);
   });
 });

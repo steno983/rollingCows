@@ -139,4 +139,25 @@ describe('invariante di design: l-azione richiesta resta sempre possibile', () =
     const worstSlideTop = playerBox(0, CONFIG.avalanche.maxSize, true).height;
     expect(worstSlideTop).toBeLessThan(CONFIG.spawn.overheadY);
   });
+
+  it('IN PIEDI, a qualunque taglia da 1 a 5, si colpisce OGNI ostacolo sospeso', () => {
+    // L'altra metà dell'invariante di design §6: se la mucca piccola passasse
+    // sotto ai sospesi restando in piedi, l'azione richiesta cambierebbe con
+    // la taglia e un terzo degli ostacoli non chiederebbe nulla al giocatore.
+    for (const kind of OVERHEAD_KINDS) {
+      const overhead = entityBox(makeEntity(kind, 0, CONFIG.spawn.overheadY));
+      for (const size of ALL_SIZES) {
+        const upright = playerBox(0, size, false);
+        expect(
+          boxesOverlap(upright, overhead),
+          `taglia ${size} dovrebbe colpire ${kind} restando in piedi`,
+        ).toBe(true);
+      }
+    }
+  });
+
+  it('il margine peggiore in piedi (taglia minima) resta strettamente positivo', () => {
+    const smallestUprightTop = playerBox(0, 1, false).height;
+    expect(smallestUprightTop).toBeGreaterThan(CONFIG.spawn.overheadY);
+  });
 });

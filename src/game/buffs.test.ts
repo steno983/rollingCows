@@ -114,7 +114,7 @@ describe('applyBuff', () => {
     expect(consumeShield(state, bus)).toBe(false);
   });
 
-  it('crystal non tocca lo stato dei buff: la carica è gestita altrove (game.ts)', () => {
+  it('crystal non tocca lo stato dei buff (la carica è di avalanche.ts) ma annuncia comunque la raccolta', () => {
     const bus = createEventBus();
     const events = recordEvents(bus);
     const state = createBuffs();
@@ -122,7 +122,9 @@ describe('applyBuff', () => {
     applyBuff(state, 'crystal', bus);
 
     expect(state).toEqual({ shield: false, starTimeLeft: 0, magnetTimeLeft: 0 });
-    expect(events).toHaveLength(0);
+    // Senza questo evento il cristallo sarebbe l'unico raccoglibile muto: il
+    // suo timbro audio (CONFIG.audio.chime) resterebbe codice morto.
+    expect(events).toEqual([{ name: 'buff:gained', payload: { kind: 'crystal' } }]);
   });
 });
 

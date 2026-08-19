@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { createRng, type Rng } from '../core/rng';
 import { CONFIG } from '../game/config';
 
@@ -243,11 +244,26 @@ function buildCampanile(height: number, wallColor: number, roofColor: number): T
   return group;
 }
 
+/**
+ * Villaggio: corpi e tetti/guglie di TUTTI gli edifici (case + campanile)
+ * condividono lo stesso wallColor/roofColor (vedi CONFIG.render.backdrop.
+ * village), quindi si fondono in UNA mesh per parte invece di una coppia di
+ * mesh per edificio (9 edifici × 2 mesh = 18 draw call, contro il budget di
+ * 60 draw call totali della scena). Le forme restano quelle di
+ * buildHouse/buildCampanile, invariate: qui si "cuoce" solo la trasformazione
+ * (posizione, rotazione, scala) di ciascun pezzo nei suoi vertici, PRIMA di
+ * unirli — l'aspetto finale del villaggio non cambia, solo il numero di
+ * draw call per disegnarlo (18 → 2).
+ */
 function buildVillage(rng: Rng): THREE.Group {
   const valleyY = CONFIG.render.backdrop.valleyY;
   const cfg = CONFIG.render.backdrop.village;
   const group = new THREE.Group();
   const layout = generateVillageLayout(rng, cfg.houseCount, cfg.spread);
+  if (layout.length === 0) return group;
+
+  const bodyGeometries: THREE.BufferGeometry[] = [];
+  const roofGeometries: THREE.BufferGeometry[] = [];
 
   for (const house of layout) {
     const targetHeight = (house.isTower ? cfg.towerHeight : cfg.houseHeight) * house.scale;
@@ -257,12 +273,36 @@ function buildVillage(rng: Rng): THREE.Group {
     // Appoggiata sul fondovalle, non sulla linea dell'orizzonte: valleyY è
     // già tarato (vedi config.ts) perché la cima resti sotto l'orizzonte.
     piece.position.set(house.x, valleyY, cfg.distance + house.z);
-    piece.traverse((obj) => {
-      obj.castShadow = false;
-      obj.receiveShadow = false;
-    });
-    group.add(piece);
+    piece.updateMatrixWorld(true);
+
+    // buildHouse/buildCampanile aggiungono sempre corpo e tetto/guglia in
+    // quest'ordine (group.add(body, roof/spire)): vedi le due funzioni sopra.
+    const [body, roof] = piece.children as [THREE.Mesh, THREE.Mesh];
+    bodyGeometries.push((body.geometry as THREE.BufferGeometry).clone().applyMatrix4(body.matrixWorld));
+    roofGeometries.push((roof.geometry as THREE.BufferGeometry).clone().applyMatrix4(roof.matrixWorld));
+    body.geometry.dispose();
+    roof.geometry.dispose();
+    (body.material as THREE.Material).dispose();
+    (roof.material as THREE.Material).dispose();
   }
+
+  const mergedBodies = mergeGeometries(bodyGeometries, false);
+  const mergedRoofs = mergeGeometries(roofGeometries, false);
+  for (const geometry of bodyGeometries) geometry.dispose();
+  for (const geometry of roofGeometries) geometry.dispose();
+  if (mergedBodies === null || mergedRoofs === null) {
+    throw new Error('Impossibile unire le geometrie del villaggio');
+  }
+  mergedBodies.computeBoundingSphere();
+  mergedRoofs.computeBoundingSphere();
+
+  const bodyMesh = new THREE.Mesh(mergedBodies, flatMaterial(cfg.wallColor));
+  const roofMesh = new THREE.Mesh(mergedRoofs, flatMaterial(cfg.roofColor));
+  bodyMesh.castShadow = false;
+  bodyMesh.receiveShadow = false;
+  roofMesh.castShadow = false;
+  roofMesh.receiveShadow = false;
+  group.add(bodyMesh, roofMesh);
 
   return group;
 }

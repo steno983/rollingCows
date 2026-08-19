@@ -46,6 +46,11 @@ function groupArcTrails(entities: Entity[]): number[][] {
   return groups;
 }
 
+function countBuffs(entities: readonly Entity[]): number {
+  return entities.filter((entity) => entity.category === 'pickup' && entity.kind !== 'snowflake')
+    .length;
+}
+
 describe('populateSegment', () => {
   it('posiziona le entità dentro l-intervallo [startZ, startZ + length)', () => {
     for (let seed = 1; seed <= 50; seed++) {
@@ -102,8 +107,9 @@ describe('populateSegment', () => {
     }
   });
 
-  it('il ramo sgombro genera meno entità e nessun buff rispetto al ramo ricco, a parità di seed', () => {
+  it('il ramo sgombro genera meno entità e meno buff del ramo ricco, a parità di seed', () => {
     let richBuffs = 0;
+    let poorBuffs = 0;
     for (let seed = 1; seed <= 30; seed++) {
       const richOut: Entity[] = [];
       createSpawner(createRng(seed)).populateSegment(0, 3000, 0.5, 'left', true, richOut);
@@ -111,15 +117,29 @@ describe('populateSegment', () => {
       createSpawner(createRng(seed)).populateSegment(0, 3000, 0.5, 'right', false, poorOut);
 
       expect(poorOut.length).toBeLessThan(richOut.length);
-      const poorHasBuff = poorOut.some(
-        (entity) => entity.category === 'pickup' && entity.kind !== 'snowflake',
-      );
-      expect(poorHasBuff).toBe(false);
-      richBuffs += richOut.filter(
-        (entity) => entity.category === 'pickup' && entity.kind !== 'snowflake',
-      ).length;
+      richBuffs += countBuffs(richOut);
+      poorBuffs += countBuffs(poorOut);
     }
-    expect(richBuffs).toBeGreaterThan(0);
+    // I buff comuni nascono ovunque (design §7: il cristallo sta "a terra sul
+    // tracciato"), ma il ramo ricco resta nettamente più generoso: è quello il
+    // premio della scelta, non l'esistenza stessa dei buff.
+    expect(poorBuffs).toBeGreaterThan(0);
+    expect(richBuffs).toBeGreaterThan(poorBuffs * 1.5);
+  });
+
+  it('il campanaccio nasce SOLO sul ramo ricco di un bivio', () => {
+    // Design §7: rarità "raro", posizione tipica "ramo difficile di un bivio".
+    let richBells = 0;
+    for (let seed = 1; seed <= 60; seed++) {
+      const poorOut: Entity[] = [];
+      createSpawner(createRng(seed)).populateSegment(0, 4000, 0.5, 'main', false, poorOut);
+      expect(poorOut.some((entity) => entity.kind === 'bell')).toBe(false);
+
+      const richOut: Entity[] = [];
+      createSpawner(createRng(seed)).populateSegment(0, 4000, 0.5, 'left', true, richOut);
+      richBells += richOut.filter((entity) => entity.kind === 'bell').length;
+    }
+    expect(richBells).toBeGreaterThan(0);
   });
 
   it('le file ad arco hanno y crescente e poi decrescente, con apice a trailArcHeight', () => {
@@ -190,7 +210,126 @@ describe('populateSegment', () => {
   });
 });
 
+/** Ostacoli di `out` ordinati per z, con il controllo di esistenza che
+ *  noUncheckedIndexedAccess impone. */
+function obstaclesByZ(out: readonly Entity[]): (Entity & { kind: ObstacleKind })[] {
+  return out
+    .filter((entity): entity is Entity & { kind: ObstacleKind } => entity.category === 'obstacle')
+    .sort((a, b) => a.z - b.z);
+}
+
+function expectGapsTraversable(obstacles: readonly (Entity & { kind: ObstacleKind })[]): number {
+  let pairs = 0;
+  for (let i = 1; i < obstacles.length; i++) {
+    const previous = obstacles[i - 1];
+    const current = obstacles[i];
+    if (previous === undefined || current === undefined) throw new Error('ostacolo mancante');
+    expect(current.z - previous.z).toBeGreaterThanOrEqual(requiredGap(previous.kind));
+    pairs += 1;
+  }
+  return pairs;
+}
+
+describe('cursore che sopravvive fra le chiamate', () => {
+  it("INVARIANTE DI GIOCABILITÀ ATTRAVERSO I CONFINI DI SEGMENTO: chunk contigui popolati uno alla volta, con il mondo che scorre in mezzo", () => {
+    // Riproduce il modo in cui il gioco chiama DAVVERO lo spawner: un chunk
+    // alla volta, sempre allo stesso bordo relativo, con il mondo che scorre
+    // di un chunk fra una chiamata e l'altra. Interrogarlo invece con un unico
+    // segmento da 5000 unità (l'unica configurazione che il gioco non usa mai)
+    // rende il test cieco proprio al caso che rompe la giocabilità.
+    const CHUNK = CONFIG.world.chunkLength;
+    const RECYCLE_Z = 200;
+    let pairsChecked = 0;
+
+    for (let seed = 1; seed <= 50; seed++) {
+      const spawner = createSpawner(createRng(seed));
+      const out: Entity[] = [];
+      for (let step = 0; step < 30; step++) {
+        const before = out.length;
+        spawner.populateSegment(RECYCLE_Z, CHUNK, 1, 'main', false, out);
+        // Riporta in coordinate assolute ciò che è appena nato, così l'intero
+        // percorso si legge come lo attraversa il giocatore.
+        for (let i = before; i < out.length; i++) {
+          const entity = out[i];
+          if (entity === undefined) continue;
+          entity.z += step * CHUNK;
+        }
+        spawner.advance(CHUNK);
+      }
+      pairsChecked += expectGapsTraversable(obstaclesByZ(out));
+    }
+
+    expect(pairsChecked).toBeGreaterThan(500);
+  });
+
+  it('copyCursor fa ripartire un ramo da dove si è fermato il tronco', () => {
+    for (let seed = 1; seed <= 50; seed++) {
+      const spawner = createSpawner(createRng(seed));
+      const trunk: Entity[] = [];
+      spawner.populateSegment(0, 200, 1, 'main', false, trunk);
+
+      const forkZ = 200;
+      spawner.copyCursor('main', 'left', forkZ);
+      const branch: Entity[] = [];
+      spawner.populateSegment(forkZ, 200, 1, 'left', true, branch);
+
+      const trunkObstacles = obstaclesByZ(trunk);
+      const branchObstacles = obstaclesByZ(branch);
+      const last = trunkObstacles[trunkObstacles.length - 1];
+      const first = branchObstacles[0];
+      if (last === undefined || first === undefined) throw new Error('ostacolo mancante');
+      expect(first.z - last.z).toBeGreaterThanOrEqual(requiredGap(last.kind));
+    }
+  });
+
+  it('copyCursor non fa mai arretrare il ramo prima di minZ', () => {
+    const spawner = createSpawner(createRng(1));
+    const trunk: Entity[] = [];
+    spawner.populateSegment(0, 40, 1, 'main', false, trunk);
+    // Il cursore del tronco è fermo poco oltre 40; il ramo nasce a 500.
+    spawner.copyCursor('main', 'right', 500);
+    const branch: Entity[] = [];
+    spawner.populateSegment(500, 100, 1, 'right', false, branch);
+    for (const entity of branch) {
+      expect(entity.z).toBeGreaterThanOrEqual(500);
+    }
+  });
+
+  it('un segmento di lunghezza nulla non sposta il cursore', () => {
+    const spawner = createSpawner(createRng(4));
+    const first: Entity[] = [];
+    spawner.populateSegment(0, 100, 1, 'main', false, first);
+    const cursorProbe: Entity[] = [];
+    spawner.populateSegment(100, 0, 1, 'main', false, cursorProbe);
+    expect(cursorProbe).toHaveLength(0);
+
+    const second: Entity[] = [];
+    spawner.populateSegment(100, 100, 1, 'main', false, second);
+    const all = obstaclesByZ([...first, ...second]);
+    expectGapsTraversable(all);
+  });
+});
+
 describe('reset', () => {
+  it('riporta i cursori dei rami allo stato iniziale', () => {
+    const spawner = createSpawner(createRng(12));
+    const first: Entity[] = [];
+    spawner.populateSegment(0, 400, 1, 'main', false, first);
+
+    spawner.reset();
+    const second: Entity[] = [];
+    spawner.populateSegment(0, 400, 1, 'main', false, second);
+
+    // Senza il reset dei cursori il secondo segmento ripartirebbe da dove si
+    // era fermato il primo, cioè da oltre 400: vuoto. (Il contenuto non è
+    // identico al primo: reset non riavvolge l'rng, che è del chiamante.)
+    expect(first.length).toBeGreaterThan(0);
+    expect(second.length).toBeGreaterThan(0);
+    const firstObstacle = obstaclesByZ(second)[0];
+    if (firstObstacle === undefined) throw new Error('nessun ostacolo dopo il reset');
+    expect(firstObstacle.z).toBe(0);
+  });
+
   it('riporta il contatore degli id a zero', () => {
     const spawner = createSpawner(createRng(8));
     const first: Entity[] = [];

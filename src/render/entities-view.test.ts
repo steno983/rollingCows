@@ -1,19 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { CONFIG } from '../game/config';
-import type { PathState } from '../game/path';
+import { createPath, type PathState } from '../game/path';
 import { entityWorldOffsetX } from './entities-view';
 
+/** Base da createPath, non un letterale scritto a mano: un campo nuovo di
+ *  PathState non deve costringere a toccare le fixture dei test di vista. */
 function fixture(overrides: Partial<PathState> = {}): PathState {
-  return {
-    phase: 'none',
-    forkZ: 0,
-    choice: null,
-    richBranch: 'left',
-    activeBranch: 'main',
-    offsetX: 0,
-    nextForkIn: 100,
-    ...overrides,
-  };
+  return { ...createPath(), nextForkIn: 100, ...overrides };
 }
 
 describe('entityWorldOffsetX', () => {

@@ -49,8 +49,12 @@ describe('instanceCountFor', () => {
     expect(instanceCountFor(entities, 'rock', 32)).toBe(32);
   });
 
-  it('il tetto di default è positivo e ragionevole', () => {
-    expect(MAX_INSTANCES_PER_KIND).toBeGreaterThanOrEqual(16);
-    expect(MAX_INSTANCES_PER_KIND).toBeLessThanOrEqual(128);
+  it('il tetto di default copre la fila di fiocchi più lunga possibile su due rami', () => {
+    // Il numero esatto non conta (è derivato da CONFIG): conta che stia sopra
+    // al massimo che il gioco può davvero produrre — misurato in una corsa
+    // simulata da src/game/run-simulation.test.ts — e sotto a un tetto che
+    // sprecherebbe memoria di istanze per nulla.
+    expect(MAX_INSTANCES_PER_KIND).toBeGreaterThanOrEqual(128);
+    expect(MAX_INSTANCES_PER_KIND).toBeLessThanOrEqual(512);
   });
 });

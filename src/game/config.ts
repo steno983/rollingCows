@@ -20,6 +20,11 @@ export const CONFIG = {
     commitZ: 12,
     /** Durata del riallineamento del ramo scelto verso il centro. */
     realignSeconds: 0.6,
+    /** Per quanto vale una scelta anticipata: uno swipe laterale dato fuori
+     *  dalla finestra di avvicinamento non fa nulla, ma viene ricordato per
+     *  questo tempo e, se il bivio compare entro tale finestra, vale come
+     *  scelta già data (design §4). */
+    earlyChoiceSeconds: 0.6,
     /** Distanza minima fra due bivi, a velocità di partenza. */
     minGap: 120,
     /** Quanto la distanza minima cresce con la velocità (unità per u/s). */
@@ -32,11 +37,26 @@ export const CONFIG = {
     /** Fattore di schiacciamento della sagoma e del modello in scivolata. */
     slideHeightRatio: 0.45,
     diveGravityMultiplier: 3.5,
-    baseHeight: 1.2,
+    /** Altezza della sagoma di collisione a taglia 0, in unità di mondo; la
+     *  sagoma reale è baseHeight + heightPerSize * taglia.
+     *
+     *  Questi due numeri sono vincolati da DUE lati e non si tarano a
+     *  sentimento (design §6, "l'azione richiesta non cambia mai con la
+     *  taglia"):
+     *  - a taglia 1 la mucca IN PIEDI deve toccare un ostacolo sospeso:
+     *    baseHeight + heightPerSize > spawn.overheadY (1.75 > 1.6). Con i
+     *    valori precedenti (1.2 + 0.25 = 1.45) la mucca piccola passava sotto
+     *    ai sospesi restando in piedi, quindi ramo, arco e cornicione erano
+     *    innocui fino alla taglia 2;
+     *  - a taglia 5 la mucca IN SCIVOLATA deve passarci sotto:
+     *    (baseHeight + 5 * heightPerSize) * slideHeightRatio < overheadY
+     *    (2.75 * 0.45 = 1.24 < 1.6).
+     *  1.75 a taglia 1 è anche l'altezza vera del modello voxel della mucca
+     *  (7 cubetti da render.voxelSize): la sagoma ora coincide con ciò che si
+     *  vede, invece di essere più bassa di un terzo. */
+    baseHeight: 1.5,
     heightPerSize: 0.25,
     depth: 1.4,
-    baseHalfWidth: 0.45,
-    halfWidthPerSize: 0.11,
   },
   collisions: {
     /** Ingombro verticale e in profondità di ogni tipo di entità. La X è sparita:
@@ -123,9 +143,20 @@ export const CONFIG = {
     trailArcHeight: 3,
     difficultyRampDistance: 2500,
     overheadY: 1.6,
+    /** Probabilità che dopo un ostacolo nasca un buff, sul RAMO RICCO di un bivio. */
     buffChance: 0.22,
-    /** Peso relativo dei buff quando ne esce uno. */
+    /** Stessa probabilità sul tronco e sul ramo sgombro. Più bassa, ma non
+     *  zero: con i buff confinati al ramo ricco il cristallo — che il design §7
+     *  vuole "comune, a terra sul tracciato" — non nascerebbe mai fuori da un
+     *  bivio, e metà del contenuto del gioco resterebbe legata a un evento che
+     *  capita una volta ogni ~10 secondi. */
+    commonBuffChance: 0.1,
+    /** Peso relativo dei buff quando ne esce uno sul ramo ricco. */
     buffWeights: { crystal: 6, star: 3, magnet: 3, bell: 1 },
+    /** Pesi sul tronco e sul ramo sgombro: domina il cristallo (comune) e il
+     *  campanaccio ha peso zero, perché il design lo vuole solo nel "ramo
+     *  difficile di un bivio". */
+    commonBuffWeights: { crystal: 8, star: 2, magnet: 2, bell: 0 },
   },
   render: {
     maxPixelRatio: 2,
@@ -142,12 +173,12 @@ export const CONFIG = {
     cameraBaseFov: 60,
     cameraAvalancheFov: 78,
     shakeDecay: 4,
-    /** Quanto il terreno si estende oltre le corsie giocabili (banchi inclusi),
-     *  per lato. Con fov 60 e camera a ~9 unità di distanza il frustum è largo
-     *  circa 26 unità a z=40 e 64 a z=120: senza questo margine, sotto ai banchi
-     *  laterali (sospesi, base a y≈-1) si vedeva il cielo. Il corridoio
-     *  giocabile (vedi world.laneCount/laneWidth) resta invariato: questo
-     *  numero allarga solo ciò che sta oltre le corsie. */
+    /** Quanto il terreno si estende oltre il tracciato giocabile (banchi
+     *  inclusi), per lato. Con fov 60 e camera a ~9 unità di distanza il
+     *  frustum è largo circa 26 unità a z=40 e 64 a z=120: senza questo
+     *  margine, sotto ai banchi laterali (sospesi, base a y≈-1) si vedeva il
+     *  cielo. Il corridoio giocabile (vedi world.trackWidth) resta invariato:
+     *  questo numero allarga solo ciò che sta oltre il tracciato. */
     groundExtraWidth: 220,
     /** Oltre questa distanza laterale dal corridoio (in unità di CORRIDOR_HALF)
      *  il rilievo procedurale del terreno smette di crescere e resta un pendio

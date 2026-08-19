@@ -24,6 +24,7 @@ import {
   branchIsSolid,
   chooseBranch,
   createPath,
+  rememberChoice,
   updatePath,
   type ForkPhase,
   type PathState,
@@ -34,6 +35,40 @@ import { createSpawner, type Spawner } from './spawner';
 import { difficultyAt } from './speed';
 import type { Action, Branch, Entity, EntityKind, ObstacleKind, PickupKind } from './types';
 import { createWorld, updateWorld, type WorldState } from './world';
+
+/**
+ * Distanza a cui il tracciato si sdoppia. Durante un bivio è la biforcazione
+ * stessa; fuori da un bivio è la biforcazione che sta arrivando, che si conosce
+ * già (nextForkIn è il residuo di distanza, previewZ la distanza a cui il bivio
+ * diventerà visibile). Serve al tronco per sapere dove FERMARSI: oltre questa
+ * z il mondo si sdoppia, quindi lì non può esistere un ostacolo 'main'.
+ */
+function bifurcationZ(path: PathState): number {
+  if (path.phase === 'none') return path.nextForkIn + CONFIG.path.previewZ;
+  return path.forkZ;
+}
+
+/** Bordo più lontano del mondo già esistente: oltre non c'è terreno da popolare. */
+function worldHorizonZ(world: WorldState): number {
+  const chunks = world.chunks;
+  let maxZ = -Infinity;
+  for (let i = 0; i < chunks.length; i++) {
+    const chunk = chunks[i];
+    if (chunk === undefined) continue;
+    if (chunk.z > maxZ) maxZ = chunk.z;
+  }
+  return maxZ + CONFIG.world.chunkLength;
+}
+
+/** Popola un tratto di TRONCO, troncandolo alla biforcazione che sta
+ *  arrivando: senza questo limite il tronco invaderebbe il tratto in cui il
+ *  mondo si sdoppia, e alla comparsa del bivio quelle entità andrebbero
+ *  cancellate — anche un masso a due unità dal muso del giocatore. */
+function populateTrunk(game: GameState, startZ: number, length: number, difficulty: number): void {
+  const endZ = Math.min(startZ + length, bifurcationZ(game.path));
+  if (endZ <= startZ) return;
+  game.spawner.populateSegment(startZ, endZ - startZ, difficulty, 'main', false, game.entities);
+}
 
 export interface GameState {
   /** Seed della run corrente: va in `run:started` e permette di rigiocarla identica. */
@@ -110,7 +145,7 @@ export function startRun(game: GameState, seed?: number): void {
   for (let i = 0; i < chunks.length; i++) {
     const chunk = chunks[i];
     if (chunk === undefined) continue;
-    game.spawner.populateSegment(chunk.z, CONFIG.world.chunkLength, difficulty, 'main', false, game.entities);
+    populateTrunk(game, chunk.z, CONFIG.world.chunkLength, difficulty);
   }
 
   // Zona franca: nessuna entità nasce addosso al giocatore.
@@ -140,10 +175,10 @@ export function handleAction(game: GameState, action: Action): void {
 
   switch (action) {
     case 'CHOOSE_LEFT':
-      chooseBranch(game.path, 'left');
+      chooseSide(game, 'left');
       break;
     case 'CHOOSE_RIGHT':
-      chooseBranch(game.path, 'right');
+      chooseSide(game, 'right');
       break;
     case 'JUMP':
       jump(game.player);
@@ -155,6 +190,20 @@ export function handleAction(game: GameState, action: Action): void {
       // La pausa è una transizione della macchina a stati, non un'azione di gioco.
       break;
   }
+}
+
+/**
+ * Uno swipe laterale. Dentro la finestra di avvicinamento è una scelta, e va
+ * annunciata: 'fork:chosen' è l'unico riscontro che il giocatore riceve prima
+ * del punto di non ritorno. Fuori dalla finestra non fa nulla, ma resta
+ * ricordata per un istante come scelta anticipata (design §4).
+ */
+function chooseSide(game: GameState, side: 'left' | 'right'): void {
+  if (chooseBranch(game.path, side)) {
+    game.bus.emit('fork:chosen', { side });
+    return;
+  }
+  rememberChoice(game.path, side);
 }
 
 export function updateGame(game: GameState, dt: number): void {
@@ -175,19 +224,11 @@ export function updateGame(game: GameState, dt: number): void {
   updateAvalanche(game.avalanche, dt, game.bus);
   updateBuffs(game.buffs, dt, game.bus);
 
-  // spawn: rifornimento di routine sul tronco, poi le eventuali transizioni
-  // del bivio (nascita, risoluzione, chiusura) che sostituiscono o
-  // rietichettano le entità coinvolte.
-  const difficulty = difficultyAt(game.world.distance);
-  const recycled = game.world.recycled;
-  for (let i = 0; i < recycled.length; i++) {
-    const chunk = recycled[i];
-    if (chunk === undefined) continue;
-    game.spawner.populateSegment(chunk.z, CONFIG.world.chunkLength, difficulty, 'main', false, game.entities);
-  }
-  handleForkTransitions(game, phaseBefore, activeBranchBefore, difficulty);
-
-  // avanzamento entità
+  // Avanzamento del mondo PRIMA della generazione: i chunk sono già stati
+  // spostati da updateWorld, quindi entità e cursori dello spawner vanno
+  // portati nello stesso sistema di riferimento prima di popolare, altrimenti
+  // ciò che nasce in questo frame è sfalsato di `moved` rispetto ai cursori
+  // che ne misurano la distanza.
   const entities = game.entities;
   for (let i = 0; i < entities.length; i++) {
     const entity = entities[i];
@@ -195,6 +236,14 @@ export function updateGame(game: GameState, dt: number): void {
     entity.z -= moved;
     if (entity.z < CONFIG.world.despawnBehindZ) entity.alive = false;
   }
+  game.spawner.advance(moved);
+
+  // spawn: prima le transizioni del bivio (nascita, risoluzione, chiusura),
+  // che rimescolano i rami e i loro cursori, poi il rifornimento di routine sui
+  // chunk riciclati, che deve già vederli nello stato nuovo.
+  const difficulty = difficultyAt(game.world.distance);
+  handleForkTransitions(game, phaseBefore, activeBranchBefore, difficulty);
+  populateRecycledChunks(game, difficulty);
 
   // calamita
   applyMagnet(game);
@@ -222,12 +271,50 @@ export function updateGame(game: GameState, dt: number): void {
 }
 
 /**
+ * Rifornimento di routine: ogni chunk riciclato va popolato sul ramo giusto.
+ * Un chunk riciclato nasce sempre in fondo al mondo, quindi ben OLTRE la
+ * biforcazione: durante un bivio appartiene ai rami, non al tronco.
+ */
+function populateRecycledChunks(game: GameState, difficulty: number): void {
+  const recycled = game.world.recycled;
+  if (recycled.length === 0) return;
+
+  const path = game.path;
+  const length = CONFIG.world.chunkLength;
+  const richLeft = path.richBranch === 'left';
+
+  for (let i = 0; i < recycled.length; i++) {
+    const chunk = recycled[i];
+    if (chunk === undefined) continue;
+
+    if (path.phase === 'none') {
+      populateTrunk(game, chunk.z, length, difficulty);
+      continue;
+    }
+
+    if (path.phase === 'approaching') {
+      game.spawner.populateSegment(chunk.z, length, difficulty, 'left', richLeft, game.entities);
+      game.spawner.populateSegment(chunk.z, length, difficulty, 'right', !richLeft, game.entities);
+      continue;
+    }
+
+    // 'committed' / 'realigning': il ramo scartato è già stato rimosso e non va
+    // ripopolato, o resterebbero entità orfane che nessuno può raccogliere e
+    // che alla chiusura del bivio galleggerebbero a lato del tracciato.
+    const active = path.activeBranch;
+    const rich = active === path.richBranch;
+    game.spawner.populateSegment(chunk.z, length, difficulty, active, rich, game.entities);
+  }
+}
+
+/**
  * Reagisce alle transizioni di fase del bivio appena avvenute in updatePath.
  * Le tre transizioni rilevanti:
- * - 'none' -> 'approaching': nasce un bivio. La finestra [0, previewZ] non è
- *   più tronco: le entità 'main' già lì (da un riciclo di chunk avvenuto
- *   prima, ignaro del bivio) vengono rimosse e la finestra viene ripopolata
- *   due volte, una per ramo.
+ * - 'none' -> 'approaching': nasce un bivio. I rami vivono OLTRE la
+ *   biforcazione (è lì che il terreno si sdoppia, vedi render/terrain.ts):
+ *   il tronco resta intatto fino a `forkZ` e i due rami vengono popolati da
+ *   `forkZ` fino al fondo del mondo. Così il giocatore, mentre si avvicina,
+ *   LEGGE il contenuto dei due rami: è l'informazione su cui decide.
  * - 'approaching' -> 'committed': la scelta è fissata. Le entità del ramo
  *   scartato vengono rimosse subito: nessun leak.
  * - da 'committed'/'realigning' a 'none': il bivio è chiuso, il ramo scelto
@@ -243,10 +330,18 @@ function handleForkTransitions(
   const path = game.path;
 
   if (phaseBefore === 'none' && path.phase === 'approaching') {
-    removeMainEntitiesAhead(game.entities, CONFIG.path.previewZ);
+    // Rete di sicurezza: populateTrunk si ferma già alla biforcazione, quindi
+    // qui non dovrebbe esserci nulla. Se c'è, è oltre `forkZ` e va tolto,
+    // perché quel tratto ora è sdoppiato.
+    removeMainEntitiesBeyond(game.entities, path.forkZ);
+    // I due rami ripartono da dove si è fermato il tronco: è ciò che tiene
+    // valida l'invariante di giocabilità attraverso la biforcazione.
+    game.spawner.copyCursor('main', 'left', path.forkZ);
+    game.spawner.copyCursor('main', 'right', path.forkZ);
     const richLeft = path.richBranch === 'left';
-    game.spawner.populateSegment(0, CONFIG.path.previewZ, difficulty, 'left', richLeft, game.entities);
-    game.spawner.populateSegment(0, CONFIG.path.previewZ, difficulty, 'right', !richLeft, game.entities);
+    const length = worldHorizonZ(game.world) - path.forkZ;
+    game.spawner.populateSegment(path.forkZ, length, difficulty, 'left', richLeft, game.entities);
+    game.spawner.populateSegment(path.forkZ, length, difficulty, 'right', !richLeft, game.entities);
     return;
   }
 
@@ -257,15 +352,27 @@ function handleForkTransitions(
   }
 
   if (phaseBefore !== 'none' && path.phase === 'none') {
+    // Il vecchio tronco è ormai tutto alle spalle (per costruzione main.z <=
+    // forkZ, e a fine riallineamento forkZ vale meno di -speed*realignSeconds)
+    // ED è rimasto indietro DI LATO: è ancorato a offsetX, che in questo stesso
+    // frame torna a 0. Senza toglierlo, ogni chiusura di bivio gli farebbe fare
+    // uno scatto laterale pari all'intera separazione dei rami. Quel tronco non
+    // esiste più: la strada, adesso, è il ramo scelto.
+    removeEntitiesOnBranch(game.entities, 'main');
     relabelBranch(game.entities, activeBranchBefore, 'main');
+    // Il tronco eredita il cursore del ramo che è appena diventato tronco: il
+    // primo ostacolo dopo il bivio dista dall'ultimo del ramo quanto deve.
+    game.spawner.copyCursor(activeBranchBefore, 'main', -Infinity);
+    const discarded: Branch = activeBranchBefore === 'left' ? 'right' : 'left';
+    removeEntitiesOnBranch(game.entities, discarded);
   }
 }
 
-function removeMainEntitiesAhead(entities: Entity[], maxZ: number): void {
+function removeMainEntitiesBeyond(entities: Entity[], minZ: number): void {
   for (let i = 0; i < entities.length; i++) {
     const entity = entities[i];
     if (entity === undefined || !entity.alive) continue;
-    if (entity.branch === 'main' && entity.z <= maxZ) entity.alive = false;
+    if (entity.branch === 'main' && entity.z > minZ) entity.alive = false;
   }
 }
 
@@ -332,8 +439,12 @@ function resolveCollision(game: GameState, entity: Entity): void {
 }
 
 /**
- * 'star', 'magnet' e 'bell' passano da applyBuff (stato, non carica).
- * 'snowflake' e 'crystal' danno carica pura: nessuno stato in buffs.ts.
+ * TUTTI i buff passano da applyBuff, che è il solo posto in cui vive la
+ * definizione di "cosa fa un buff" e il solo che emette 'buff:gained'. Il
+ * cristallo non fa eccezione anche se di stato non ne ha: il suo effetto è la
+ * carica, aggiunta qui sotto, ma la sua RACCOLTA va annunciata come quella
+ * degli altri tre, altrimenti resta l'unico raccoglibile senza timbro audio.
+ * Il fiocco non è un buff e non passa di lì: dà carica e basta.
  */
 function collectPickup(game: GameState, entity: Entity, kind: PickupKind): void {
   entity.alive = false;
@@ -343,8 +454,9 @@ function collectPickup(game: GameState, entity: Entity, kind: PickupKind): void 
   const multiplier = scoreMultiplier(game.avalanche) * buffMultiplier(game.buffs);
   addBonus(game.score, CONFIG.score.pickupBonus[kind], multiplier);
 
+  if (kind !== 'snowflake') applyBuff(game.buffs, kind, game.bus);
+
   if (kind === 'star' || kind === 'magnet' || kind === 'bell') {
-    applyBuff(game.buffs, kind, game.bus);
     game.bus.emit('pickup:collected', { kind, charge: 0 });
     return;
   }

@@ -344,32 +344,42 @@ describe('updateGame — ostacoli a terra e sospesi', () => {
     expect(game.alive).toBe(true);
   });
 
-  it('un ostacolo sospeso uccide chi resta in piedi a taglia massima', () => {
-    const { game, events } = scenario(1, overheadObstacle());
-    addCharge(game.avalanche, 80, game.bus);
-    expect(game.avalanche.size).toBe(5);
-    // La taglia massima richiede carica >= 80, cioè un chargeRatio (0.8) che
-    // supererebbe sempre minChargeRatio (0.5): senza questo, il primo impatto
-    // sarebbe perdonato invece che fatale, e il test finirebbe per verificare
-    // il perdono (già coperto sopra) invece della vera domanda, "la taglia
-    // massima protegge dagli ostacoli sospesi?".
-    game.forgivenessUsed = true;
+  it('un ostacolo sospeso uccide chi resta in piedi A OGNI TAGLIA, minima compresa', () => {
+    // Design §6: l'azione richiesta non cambia mai con la taglia. La versione
+    // precedente di questo test usava SOLO la taglia massima e passava anche
+    // quando la sagoma a taglia 1 (1.2 + 0.25 = 1.45) restava sotto
+    // spawn.overheadY (1.6): a taglia 1 i sospesi erano innocui, cioè un
+    // terzo degli ostacoli del gioco non chiedeva nulla al giocatore.
+    for (let size = 1; size <= CONFIG.avalanche.maxSize; size++) {
+      const { game, events } = scenario(1, overheadObstacle());
+      // Carica esattamente pari alla soglia della taglia voluta. Il perdono va
+      // disattivato a mano: a carica alta un chargeRatio >= 0.5 perdonerebbe
+      // il primo impatto e il test finirebbe per verificare il perdono invece
+      // della domanda vera, "un sospeso uccide chi resta in piedi?".
+      const threshold = CONFIG.avalanche.sizeThresholds[size - 1] ?? 0;
+      if (threshold > 0) addCharge(game.avalanche, threshold, game.bus);
+      expect(game.avalanche.size).toBe(size);
+      game.forgivenessUsed = true;
 
-    runFrames(game, 60);
+      runFrames(game, 60);
 
-    expect(game.alive).toBe(false);
-    expect(payloadsOf(events, 'obstacle:hit').map((hit) => hit.outcome)).toEqual(['death']);
+      expect(game.alive).toBe(false);
+      expect(payloadsOf(events, 'obstacle:hit').map((hit) => hit.outcome)).toEqual(['death']);
+    }
   });
 
-  it('un ostacolo sospeso si supera scivolando, anche a taglia massima', () => {
-    const { game } = scenario(1, overheadObstacle());
-    addCharge(game.avalanche, 80, game.bus);
-    expect(game.avalanche.size).toBe(5);
+  it('un ostacolo sospeso si supera scivolando A OGNI TAGLIA, massima compresa', () => {
+    for (let size = 1; size <= CONFIG.avalanche.maxSize; size++) {
+      const { game } = scenario(1, overheadObstacle());
+      const threshold = CONFIG.avalanche.sizeThresholds[size - 1] ?? 0;
+      if (threshold > 0) addCharge(game.avalanche, threshold, game.bus);
+      expect(game.avalanche.size).toBe(size);
 
-    handleAction(game, 'SLIDE');
-    runFrames(game, 60);
+      handleAction(game, 'SLIDE');
+      runFrames(game, 60);
 
-    expect(game.alive).toBe(true);
+      expect(game.alive).toBe(true);
+    }
   });
 
   it('con carica al 60% perdona il primo impatto invece di uccidere', () => {
@@ -423,6 +433,50 @@ describe('updateGame — ostacoli a terra e sospesi', () => {
 
     expect(game.alive).toBe(false);
     expect(payloadsOf(events, 'obstacle:hit').map((hit) => hit.outcome)).toEqual(['death']);
+  });
+});
+
+describe('updateGame — raccolta dei buff', () => {
+  function buffPickup(kind: 'crystal' | 'star' | 'magnet' | 'bell', z = 5): Entity {
+    return { id: 4, kind, category: 'pickup', branch: 'main', z, y: 0, alive: true };
+  }
+
+  it('il cristallo annuncia la raccolta come gli altri buff, pur non avendo stato', () => {
+    const { game, events } = scenario(1, buffPickup('crystal'));
+
+    runFrames(game, 60);
+
+    expect(game.alive).toBe(true);
+    // L'effetto del cristallo resta la carica, non uno stato di buff.
+    expect(game.avalanche.charge).toBe(CONFIG.pickups.charge.crystal);
+    expect(game.buffs).toEqual({ shield: false, starTimeLeft: 0, magnetTimeLeft: 0 });
+    // ...ma la raccolta è annunciata: è 'buff:gained' a far suonare il timbro
+    // del cristallo (CONFIG.audio.chime). Senza, era codice morto.
+    expect(payloadsOf(events, 'buff:gained')).toEqual([{ kind: 'crystal' }]);
+    expect(payloadsOf(events, 'pickup:collected')).toEqual([
+      { kind: 'crystal', charge: CONFIG.pickups.charge.crystal },
+    ]);
+  });
+
+  it('tutti e quattro i buff emettono buff:gained una volta sola quando vengono raccolti', () => {
+    for (const kind of ['crystal', 'star', 'magnet', 'bell'] as const) {
+      const { game, events } = scenario(1, buffPickup(kind));
+
+      runFrames(game, 60);
+
+      expect(payloadsOf(events, 'buff:gained')).toEqual([{ kind }]);
+    }
+  });
+
+  it('il fiocco non è un buff: annuncia la raccolta, non un buff guadagnato', () => {
+    const { game, events } = scenario(1, snowflake());
+
+    runFrames(game, 60);
+
+    expect(countOf(events, 'buff:gained')).toBe(0);
+    expect(payloadsOf(events, 'pickup:collected')).toEqual([
+      { kind: 'snowflake', charge: CONFIG.pickups.charge.snowflake },
+    ]);
   });
 });
 
@@ -551,8 +605,14 @@ describe('handleAction', () => {
     const game = createGame(5, bus);
     startRun(game);
 
+    const events = recordEvents(bus);
+
     handleAction(game, 'CHOOSE_LEFT');
     expect(game.path.choice).toBeNull();
+    // Fuori dal bivio non è una scelta, ma non va persa: resta in memoria come
+    // scelta anticipata (design §4), e infatti non annuncia nulla.
+    expect(game.path.pendingChoice).toBe('left');
+    expect(countOf(events, 'fork:chosen')).toBe(0);
 
     game.path.phase = 'approaching';
     handleAction(game, 'CHOOSE_LEFT');
@@ -560,6 +620,10 @@ describe('handleAction', () => {
 
     handleAction(game, 'CHOOSE_RIGHT');
     expect(game.path.choice).toBe('right');
+
+    // 'fork:chosen' è l'unico riscontro che il giocatore riceve fra lo swipe e
+    // il punto di non ritorno: senza, lo swipe al bivio non dà alcun segnale.
+    expect(payloadsOf(events, 'fork:chosen')).toEqual([{ side: 'left' }, { side: 'right' }]);
   });
 
   it('ignora PAUSE, gestita fuori dal gioco', () => {

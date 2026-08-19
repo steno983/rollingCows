@@ -33,8 +33,8 @@ export function createHud(root: HTMLElement): Hud {
     <div class="hud__size">TAGLIA 1</div>
     <div class="hud__buffs">
       <div class="hud__buff hud__buff--shield" data-buff="shield">SCUDO</div>
-      <div class="hud__buff hud__buff--star" data-buff="star"><span class="hud__buff-time"></span>s ×2</div>
-      <div class="hud__buff hud__buff--magnet" data-buff="magnet"><span class="hud__buff-time"></span>s CALAMITA</div>
+      <div class="hud__buff hud__buff--star" data-buff="star"><span class="hud__buff-time"></span>×2</div>
+      <div class="hud__buff hud__buff--magnet" data-buff="magnet"><span class="hud__buff-time"></span>CALAMITA</div>
     </div>
     <div class="hud__fork">
       <div class="hud__fork-side" data-side="left">SINISTRA</div>
@@ -88,13 +88,16 @@ export function createHud(root: HTMLElement): Hud {
     setBuffs(shield: boolean, starSeconds: number, magnetSeconds: number): void {
       shieldEl.classList.toggle('hud__buff--active', shield);
 
+      // Il tempo residuo (e la "s" dei secondi) compare SOLO mentre il buff è
+      // attivo: da spento il badge deve mostrare solo il proprio nome (×2,
+      // CALAMITA), non un tempo formattato che non corrisponde a nulla.
       const starOn = starSeconds > 0;
       starEl.classList.toggle('hud__buff--active', starOn);
-      starTimeEl.textContent = starOn ? String(Math.ceil(starSeconds)) : '';
+      starTimeEl.textContent = starOn ? `${Math.ceil(starSeconds)}s ` : '';
 
       const magnetOn = magnetSeconds > 0;
       magnetEl.classList.toggle('hud__buff--active', magnetOn);
-      magnetTimeEl.textContent = magnetOn ? String(Math.ceil(magnetSeconds)) : '';
+      magnetTimeEl.textContent = magnetOn ? `${Math.ceil(magnetSeconds)}s ` : '';
     },
 
     setFork(richBranch: 'left' | 'right' | null): void {

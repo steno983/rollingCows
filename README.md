@@ -1,8 +1,10 @@
 # Rolling Cows
 
 Endless runner voxel in cui una mucca rotola giù da una montagna, cresce
-raccogliendo neve, fieno e altre mucche, e al culmine esplode in una valanga che
-sfonda tutto a punteggio moltiplicato. Poi torna piccola e si ricomincia.
+raccogliendo fiocchi di neve e cristalli di ghiaccio (più stella, calamita e
+campanaccio come buff temporanei) lungo un tracciato che si biforca di tanto
+in tanto, e al culmine esplode in una valanga che sfonda tutto a punteggio
+moltiplicato. Poi torna piccola e si ricomincia.
 
 L'idea originale è di mia figlia.
 

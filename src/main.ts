@@ -314,7 +314,7 @@ function main(): void {
         view.update(slowDt, game.avalanche.size, false);
         backdrop.sync(view.rigPosition.x, view.rigPosition.z);
         terrain.sync(game.world, game.path);
-        entitiesView.sync(game.entities);
+        entitiesView.sync(game.entities, game.path);
         logStats(dt);
         if (done) showGameOver();
         return;
@@ -334,8 +334,8 @@ function main(): void {
       // La vista continua a vivere anche in menu, pausa e game over: il pendio
       // e la mucca restano visibili dietro le schermate, ma non avanzano.
       terrain.sync(game.world, game.path);
-      entitiesView.sync(game.entities);
-      playerView.sync(game.player, game.avalanche.size, game.world.speed, playing ? dt : 0);
+      entitiesView.sync(game.entities, game.path);
+      playerView.sync(game.player, game.avalanche.size, game.world.speed, playing ? dt : 0, game.buffs.shield);
       view.update(dt, game.avalanche.size, avalancheOn);
       backdrop.sync(view.rigPosition.x, view.rigPosition.z);
       logStats(dt);

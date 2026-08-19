@@ -14,7 +14,7 @@ import {
   tickDeath,
 } from './game/flow';
 import { abandonRun, advanceWorldOnly, createGame, handleAction, startRun, updateGame } from './game/game';
-import { entityCenterX } from './game/lanes';
+import { branchOffsetX } from './game/path';
 import { loadRecord } from './game/score';
 import { createInput } from './input/input';
 import { worldToViewX } from './render/camera-rig';
@@ -173,15 +173,9 @@ function main(): void {
   });
 
   bus.on('obstacle:hit', (payload) => {
-    const width = payload.kind === 'cabin' ? 2 : 1;
-    const hitX = worldToViewX(entityCenterX(payload.lane, width));
+    const hitX = worldToViewX(branchOffsetX(game.path, payload.branch) + game.path.offsetX);
 
-    if (payload.outcome === 'smashed') {
-      burstFromModel(pool, MODELS[payload.kind], hitX, 0.4, payload.z, CONFIG.feel.smashBurstPower * particleScale);
-      view.shake(CONFIG.feel.impactShake);
-      return;
-    }
-    if (payload.outcome === 'forgiven') {
+    if (payload.outcome === 'smashed' || payload.outcome === 'forgiven' || payload.outcome === 'shielded') {
       burstFromModel(pool, MODELS[payload.kind], hitX, 0.4, payload.z, CONFIG.feel.smashBurstPower * particleScale);
       view.shake(CONFIG.feel.impactShake);
       return;
@@ -192,7 +186,10 @@ function main(): void {
   });
 
   bus.on('pickup:collected', (payload) => {
-    burstFromModel(pool, MODELS[payload.kind], worldToViewX(game.player.x), 0.8, 0, 4 * particleScale);
+    // Il giocatore è sempre al centro dello schermo (0): non esiste più una
+    // x propria del player, è il mondo/i rami a scorrere lateralmente
+    // (game.path.offsetX), vedi Note di progetto del task 7.
+    burstFromModel(pool, MODELS[payload.kind], worldToViewX(0), 0.8, 0, 4 * particleScale);
   });
 
   bus.on('avalanche:triggered', () => {
@@ -206,7 +203,7 @@ function main(): void {
     burstFromModel(
       pool,
       MODELS.cow,
-      worldToViewX(game.player.x),
+      worldToViewX(0),
       0.6,
       0,
       CONFIG.feel.deathBurstPower * particleScale,
@@ -331,7 +328,7 @@ function main(): void {
 
       const avalancheOn = playing && game.avalanche.phase !== 'idle';
       const intensity = avalancheOn ? (game.avalanche.size / CONFIG.avalanche.maxSize) * particleScale : 0;
-      avalancheTrail(pool, dt, worldToViewX(game.player.x), 0.2, -1.5, intensity);
+      avalancheTrail(pool, dt, worldToViewX(0), 0.2, -1.5, intensity);
       pool.update(dt, game.world.speed);
 
       // La vista continua a vivere anche in menu, pausa e game over: il pendio

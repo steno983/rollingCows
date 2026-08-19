@@ -184,10 +184,13 @@ describe('updateAvalanche', () => {
     const state = createAvalanche();
 
     addCharge(state, CONFIG.avalanche.threshold, bus);
-    updateAvalanche(state, 6, bus);
+    // durationSeconds 4.5, warningSeconds 1: a 3s restano 1.5s, ancora sopra
+    // la soglia di warning.
+    updateAvalanche(state, 3, bus);
     expect(state.phase).toBe('active');
     expect(countOf(events, 'avalanche:ending')).toBe(0);
 
+    // +0.6s: restano 0.9s, sotto warningSeconds.
     updateAvalanche(state, 0.6, bus);
     expect(state.phase).toBe('warning');
     expect(countOf(events, 'avalanche:ending')).toBe(1);
@@ -243,30 +246,31 @@ describe('isInvulnerable / canSmash / scoreMultiplier', () => {
     addCharge(state, CONFIG.avalanche.threshold, bus);
 
     expect(canSmash(state, 'rock')).toBe(true);
-    expect(canSmash(state, 'tree')).toBe(true);
+    expect(canSmash(state, 'log')).toBe(true);
     expect(canSmash(state, 'fence')).toBe(true);
-    expect(canSmash(state, 'cabin')).toBe(true);
     expect(canSmash(state, 'crevasse')).toBe(true);
     expect(canSmash(state, 'branch')).toBe(true);
+    expect(canSmash(state, 'arch')).toBe(true);
+    expect(canSmash(state, 'cornice')).toBe(true);
   });
 
-  it('fuori dalla valanga sfonda solo tree e fence da taglia 3', () => {
+  it('fuori dalla valanga sfonda solo la staccionata, da taglia 3', () => {
     const bus = createEventBus();
     const state = createAvalanche();
 
     addCharge(state, 20, bus);
     expect(state.size).toBe(2);
-    expect(canSmash(state, 'tree')).toBe(false);
     expect(canSmash(state, 'fence')).toBe(false);
 
     addCharge(state, 20, bus);
     expect(state.size).toBe(3);
-    expect(canSmash(state, 'tree')).toBe(true);
     expect(canSmash(state, 'fence')).toBe(true);
     expect(canSmash(state, 'rock')).toBe(false);
-    expect(canSmash(state, 'cabin')).toBe(false);
+    expect(canSmash(state, 'log')).toBe(false);
     expect(canSmash(state, 'crevasse')).toBe(false);
     expect(canSmash(state, 'branch')).toBe(false);
+    expect(canSmash(state, 'arch')).toBe(false);
+    expect(canSmash(state, 'cornice')).toBe(false);
   });
 
   it('il moltiplicatore vale 4 in valanga e 1 fuori', () => {

@@ -86,7 +86,10 @@ export function isInvulnerable(state: AvalancheState): boolean {
 
 export function canSmash(state: AvalancheState, kind: ObstacleKind): boolean {
   if (isInvulnerable(state)) return true;
-  if (kind !== 'tree' && kind !== 'fence') return false;
+  // 'tree' non è più un ObstacleKind in v2 (è scenografia laterale): resta
+  // sfondabile fuori dalla valanga solo 'fence', l'unico kind smashable
+  // della vecchia coppia rimasto nel tipo.
+  if (kind !== 'fence') return false;
   return state.size >= CONFIG.avalanche.smashMinSize;
 }
 

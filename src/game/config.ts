@@ -102,11 +102,11 @@ export const CONFIG = {
   },
   score: {
     pointsPerUnit: 1,
-    // NOTA: chiavi non ancora aggiornate al nuovo PickupKind. Il contratto
-    // lascia esplicitamente questo blocco "invariato salvo dove indicato nei
-    // task": la riscrittura (nuove chiavi, nuovi importi) tocca a un task
-    // successivo, insieme a game.ts che le consuma via CONFIG.score.pickupBonus[kind].
-    pickupBonus: { snowflake: 5, hay: 25, cow: 50 },
+    // Bonus in punti per raccolta, indipendenti dalla carica che il pickup dà
+    // alla valanga (quella è in pickups.charge). Non specificati dal
+    // contratto: scelti qui in ordine di rarità (design doc §7), campanaccio
+    // (il più raro) in cima.
+    pickupBonus: { snowflake: 5, crystal: 15, star: 20, magnet: 20, bell: 30 },
     smashBonus: 30,
     recordKey: 'rollingcows.record',
   },

@@ -65,11 +65,11 @@ describe('addBonus', () => {
   it('somma amount * multiplier senza toccare la distanza', () => {
     const score = createScore();
 
-    addBonus(score, CONFIG.score.pickupBonus.hay, 1);
-    expect(score.points).toBe(25);
+    addBonus(score, CONFIG.score.pickupBonus.bell, 1);
+    expect(score.points).toBe(30);
 
     addBonus(score, CONFIG.score.smashBonus, 4);
-    expect(score.points).toBe(25 + 120);
+    expect(score.points).toBe(30 + 120);
     expect(score.distance).toBe(0);
   });
 });

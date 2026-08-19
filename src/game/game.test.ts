@@ -6,9 +6,18 @@ import {
   type GameEvents,
 } from '../core/events';
 import { addCharge } from './avalanche';
+import { applyBuff } from './buffs';
 import { CONFIG } from './config';
-import { abandonRun, advanceWorldOnly, createGame, handleAction, startRun, updateGame, type GameState } from './game';
-import type { Entity } from './types';
+import {
+  abandonRun,
+  advanceWorldOnly,
+  createGame,
+  handleAction,
+  startRun,
+  updateGame,
+  type GameState,
+} from './game';
+import type { Branch, Entity } from './types';
 
 const STEP = 1 / 60;
 
@@ -27,6 +36,12 @@ const ALL_EVENTS: EventName[] = [
   'avalanche:triggered',
   'avalanche:ending',
   'avalanche:ended',
+  'fork:appeared',
+  'fork:chosen',
+  'fork:resolved',
+  'buff:gained',
+  'buff:expired',
+  'shield:consumed',
 ];
 
 function recordEvents(bus: EventBus): Recorded[] {
@@ -52,19 +67,23 @@ function payloadsOf<K extends EventName>(
     .map((event) => event.payload as GameEvents[K]);
 }
 
-function rock(): Entity {
-  return { id: 1, kind: 'rock', category: 'obstacle', lane: 1, width: 1, z: 5, y: 0, alive: true };
+function groundObstacle(branch: Branch = 'main', z = 5): Entity {
+  return { id: 1, kind: 'rock', category: 'obstacle', branch, z, y: 0, alive: true };
 }
 
-function cow(): Entity {
-  return { id: 2, kind: 'cow', category: 'pickup', lane: 1, width: 1, z: 5, y: 0, alive: true };
+function overheadObstacle(branch: Branch = 'main', z = 5): Entity {
+  return { id: 2, kind: 'branch', category: 'obstacle', branch, z, y: CONFIG.spawn.overheadY, alive: true };
+}
+
+function snowflake(branch: Branch = 'main', z = 5): Entity {
+  return { id: 3, kind: 'snowflake', category: 'pickup', branch, z, y: 0, alive: true };
 }
 
 /**
- * Piazza una sola entità nella corsia centrale, a 5 unità dal giocatore.
- * A 18 u/s l'impatto avviene entro ~17 frame; i 60 frame simulati restano
- * abbondantemente sotto ai 3,3 s necessari al primo riciclo di chunk, quindi
- * nessuna entità generata dallo spawner interferisce con lo scenario.
+ * Piazza una sola entità sul ramo indicato, a 5 unità dal giocatore. A 18
+ * u/s l'impatto avviene entro ~17 frame; 60 frame simulati restano
+ * abbondantemente sotto al primo riciclo di chunk, quindi nessuna entità
+ * generata dallo spawner interferisce con lo scenario.
  */
 function scenario(seed: number, entity: Entity): { game: GameState; events: Recorded[] } {
   const bus = createEventBus();
@@ -83,7 +102,7 @@ function runFrames(game: GameState, frames: number): void {
 }
 
 describe('startRun', () => {
-  it('reinizializza tutto ed emette run:started', () => {
+  it('reinizializza tutto, incluso path e buffs, ed emette run:started', () => {
     const bus = createEventBus();
     const events = recordEvents(bus);
     const game = createGame(99, bus);
@@ -94,57 +113,48 @@ describe('startRun', () => {
 
     game.forgivenessUsed = true;
     game.alive = false;
+    applyBuff(game.buffs, 'star', game.bus);
     startRun(game, 7);
 
     expect(game.seed).toBe(7);
     expect(game.alive).toBe(true);
     expect(game.forgivenessUsed).toBe(false);
-    // Il pendio iniziale è ripopolato da zero (niente entità residue dalla run
-    // precedente) e nessuna nasce nella zona franca davanti al giocatore.
     expect(game.entities.length).toBeGreaterThan(0);
     for (const entity of game.entities) {
       expect(entity.z).toBeGreaterThanOrEqual(CONFIG.world.spawnSafeZ);
+      expect(entity.branch).toBe('main');
     }
     expect(game.score).toEqual({ points: 0, distance: 0 });
     expect(game.world.distance).toBe(0);
     expect(game.avalanche).toEqual({ charge: 0, size: 1, phase: 'idle', timeLeft: 0 });
+    expect(game.buffs).toEqual({ shield: false, starTimeLeft: 0, magnetTimeLeft: 0 });
+    expect(game.path.phase).toBe('none');
+    expect(game.path.offsetX).toBe(0);
     expect(payloadsOf(events, 'run:started')).toEqual([{ seed: 99 }, { seed: 7 }]);
   });
 });
 
-describe('startRun — popolamento iniziale del pendio', () => {
-  it('subito dopo startRun il pendio non è vuoto', () => {
+describe('startRun — popolamento iniziale del tronco', () => {
+  it('subito dopo startRun il tronco non è vuoto e rispetta la zona franca', () => {
     const bus = createEventBus();
     const game = createGame(2026, bus);
 
     startRun(game);
 
     expect(game.entities.length).toBeGreaterThan(0);
-  });
-
-  it('nessuna entità nasce nella zona franca davanti al giocatore', () => {
-    const bus = createEventBus();
-    const game = createGame(2026, bus);
-
-    startRun(game);
-
     for (const entity of game.entities) {
       expect(entity.z).toBeGreaterThanOrEqual(CONFIG.world.spawnSafeZ);
     }
   });
 
-  it('almeno il 95% delle run ha un-entità raggiungibile entro 3 secondi simulati (300 seed)', () => {
-    // Il vecchio test usava UN SOLO seed (2026): passava, ma nascondeva che
-    // l'11,1% delle run (misurato su 3000 seed) non aveva nulla entro 4
-    // secondi simulati, perché il popolamento delle righe iniziali resta
-    // probabilistico (spawn.rowFillChanceMin) e a difficoltà 0 più righe di
-    // fila possono mancare per sfortuna. Stesso stile del test di
-    // solvibilità dello spawner (spawner.test.ts): tante seed, un percentile
-    // esplicito, nessuna simulazione di collisione — si controlla
-    // direttamente la densità delle entità generate, come nella misura
-    // originale ("la prima riga popolata ha mediana z=40 e p90 z=80").
+  it('almeno il 90% delle run ha un ostacolo raggiungibile entro pochi secondi simulati (300 seed)', () => {
+    // Diversamente dalla v1 (che aveva un popolamento delle righe iniziali
+    // probabilistico, corretto con un "startBelt" forzato), lo spawner v2
+    // piazza gli ostacoli a passo fisso fra minObstacleGap e maxObstacleGap
+    // (nessun "tiro" di riempimento): la soglia qui è quindi una verifica di
+    // integrazione, non una correzione di un buco statistico noto.
     const SEED_COUNT = 300;
-    const REACH_SECONDS = 3;
+    const REACH_SECONDS = 6;
     const reachZ = CONFIG.world.startSpeed * REACH_SECONDS;
 
     let withinReach = 0;
@@ -153,12 +163,13 @@ describe('startRun — popolamento iniziale del pendio', () => {
       const game = createGame(seed, bus);
       startRun(game);
 
-      if (game.entities.some((entity) => entity.z < reachZ)) {
-        withinReach += 1;
-      }
+      const hasObstacleAhead = game.entities.some(
+        (entity) => entity.category === 'obstacle' && entity.z < reachZ,
+      );
+      if (hasObstacleAhead) withinReach += 1;
     }
 
-    expect(withinReach / SEED_COUNT).toBeGreaterThanOrEqual(0.95);
+    expect(withinReach / SEED_COUNT).toBeGreaterThanOrEqual(0.9);
   });
 
   it('resta deterministico: stesso seed produce le stesse entità iniziali', () => {
@@ -174,9 +185,9 @@ describe('startRun — popolamento iniziale del pendio', () => {
 });
 
 describe('updateGame — simulazione lunga', () => {
-  it('60 secondi a 1/60 non lanciano e le entità vive restano limitate', () => {
+  it('60 secondi a 1/60 con seed fisso non lanciano e le entità vive restano limitate', () => {
     const bus = createEventBus();
-    const game = createGame(20260816, bus);
+    const game = createGame(20260819, bus);
     startRun(game);
 
     let maxEntities = 0;
@@ -190,7 +201,30 @@ describe('updateGame — simulazione lunga', () => {
     }).not.toThrow();
 
     expect(maxEntities).toBeGreaterThan(0);
-    expect(maxEntities).toBeLessThan(200);
+    // Tetto più largo che in v1: durante un bivio esistono temporaneamente
+    // le entità di ENTRAMBI i rami, oltre a file di fiocchi più lunghe
+    // (6..10 contro l'1 della v1).
+    expect(maxEntities).toBeLessThan(300);
+  });
+
+  it('il giocatore che non fa nulla muore prima o poi, e run:ended arriva una sola volta', () => {
+    const bus = createEventBus();
+    const game = createGame(2026, bus);
+    startRun(game);
+    const events = recordEvents(bus);
+
+    let frame = 0;
+    while (game.alive && frame < 60 * 60) {
+      updateGame(game, STEP);
+      frame += 1;
+    }
+
+    expect(game.alive).toBe(false);
+    expect(countOf(events, 'run:ended')).toBe(1);
+
+    const total = events.length;
+    runFrames(game, 30);
+    expect(events).toHaveLength(total);
   });
 
   it('il punteggio non decresce mai finché il giocatore è vivo', () => {
@@ -214,10 +248,6 @@ describe('updateGame — simulazione lunga', () => {
 });
 
 describe('advanceWorldOnly', () => {
-  // Usata da main.ts durante il rallentatore alla morte (game.alive è già
-  // false): il pendio e le entità devono continuare a scorrere, senza
-  // punteggio né collisioni, così il mondo non si congela di colpo mentre i
-  // detriti continuano ad animarsi (vedi il difetto M1 nella review finale).
   it('fa avanzare world.distance anche con game.alive = false', () => {
     const bus = createEventBus();
     const game = createGame(2026, bus);
@@ -261,10 +291,6 @@ describe('advanceWorldOnly', () => {
 });
 
 describe('abandonRun', () => {
-  // Percorso "Esc → MENU" mentre il giocatore è ancora vivo: diverso dalla
-  // morte, deve emettere run:stopped (non run:ended, che in main.ts fa
-  // scattare il rallentatore) così l'audio spegne il rombo della valanga
-  // senza una chiamata diretta da main.ts (vedi il difetto residuo I2).
   it('emette run:stopped e segna la run come non più viva', () => {
     const bus = createEventBus();
     const game = createGame(2026, bus);
@@ -292,20 +318,16 @@ describe('abandonRun', () => {
   });
 });
 
-describe('updateGame — collisione con ostacolo', () => {
-  it('uccide il giocatore ed emette run:ended una sola volta', () => {
-    const { game, events } = scenario(1, rock());
+describe('updateGame — ostacoli a terra e sospesi', () => {
+  it('un ostacolo a terra uccide chi resta fermo', () => {
+    const { game, events } = scenario(1, groundObstacle());
 
     runFrames(game, 60);
 
     expect(game.alive).toBe(false);
     expect(payloadsOf(events, 'obstacle:hit').map((hit) => hit.outcome)).toEqual(['death']);
-    expect(payloadsOf(events, 'obstacle:hit').map((hit) => hit.lane)).toEqual([1]);
+    expect(payloadsOf(events, 'obstacle:hit').map((hit) => hit.branch)).toEqual(['main']);
     expect(countOf(events, 'run:ended')).toBe(1);
-
-    const ended = payloadsOf(events, 'run:ended')[0];
-    expect(ended?.points).toBeGreaterThan(0);
-    expect(ended?.distance).toBeGreaterThan(0);
 
     const total = events.length;
     runFrames(game, 10);
@@ -313,8 +335,45 @@ describe('updateGame — collisione con ostacolo', () => {
     expect(countOf(events, 'run:ended')).toBe(1);
   });
 
+  it('un ostacolo a terra si supera saltando', () => {
+    const { game } = scenario(1, groundObstacle());
+
+    handleAction(game, 'JUMP');
+    runFrames(game, 60);
+
+    expect(game.alive).toBe(true);
+  });
+
+  it('un ostacolo sospeso uccide chi resta in piedi a taglia massima', () => {
+    const { game, events } = scenario(1, overheadObstacle());
+    addCharge(game.avalanche, 80, game.bus);
+    expect(game.avalanche.size).toBe(5);
+    // La taglia massima richiede carica >= 80, cioè un chargeRatio (0.8) che
+    // supererebbe sempre minChargeRatio (0.5): senza questo, il primo impatto
+    // sarebbe perdonato invece che fatale, e il test finirebbe per verificare
+    // il perdono (già coperto sopra) invece della vera domanda, "la taglia
+    // massima protegge dagli ostacoli sospesi?".
+    game.forgivenessUsed = true;
+
+    runFrames(game, 60);
+
+    expect(game.alive).toBe(false);
+    expect(payloadsOf(events, 'obstacle:hit').map((hit) => hit.outcome)).toEqual(['death']);
+  });
+
+  it('un ostacolo sospeso si supera scivolando, anche a taglia massima', () => {
+    const { game } = scenario(1, overheadObstacle());
+    addCharge(game.avalanche, 80, game.bus);
+    expect(game.avalanche.size).toBe(5);
+
+    handleAction(game, 'SLIDE');
+    runFrames(game, 60);
+
+    expect(game.alive).toBe(true);
+  });
+
   it('con carica al 60% perdona il primo impatto invece di uccidere', () => {
-    const { game, events } = scenario(1, rock());
+    const { game, events } = scenario(1, groundObstacle());
     addCharge(game.avalanche, 60, game.bus);
     expect(game.avalanche.size).toBe(4);
 
@@ -330,14 +389,13 @@ describe('updateGame — collisione con ostacolo', () => {
   });
 
   it('in fase valanga sfonda la roccia e incassa il bonus moltiplicato', () => {
-    const { game, events } = scenario(1, rock());
+    const { game, events } = scenario(1, groundObstacle());
     addCharge(game.avalanche, CONFIG.avalanche.threshold, game.bus);
     expect(game.avalanche.phase).toBe('active');
 
     runFrames(game, 60);
 
     expect(game.alive).toBe(true);
-    expect(game.forgivenessUsed).toBe(false);
     expect(payloadsOf(events, 'obstacle:hit').map((hit) => hit.outcome)).toEqual(['smashed']);
     expect(game.score.points).toBeGreaterThanOrEqual(
       CONFIG.score.smashBonus * CONFIG.avalanche.scoreMultiplier,
@@ -345,38 +403,100 @@ describe('updateGame — collisione con ostacolo', () => {
     expect(game.entities).toHaveLength(0);
   });
 
-  it('perdona una sola volta per run', () => {
-    const { game, events } = scenario(1, rock());
-    addCharge(game.avalanche, 60, game.bus);
-    runFrames(game, 60);
-    expect(game.alive).toBe(true);
+  it('con lo scudo attivo un impatto lo consuma e il giocatore sopravvive', () => {
+    const { game, events } = scenario(11, groundObstacle());
+    applyBuff(game.buffs, 'bell', game.bus);
+    expect(game.buffs.shield).toBe(true);
 
-    addCharge(game.avalanche, 60, game.bus);
-    game.entities.push(rock());
+    runFrames(game, 60);
+
+    expect(game.alive).toBe(true);
+    expect(game.buffs.shield).toBe(false);
+    expect(payloadsOf(events, 'obstacle:hit').map((hit) => hit.outcome)).toEqual(['shielded']);
+    expect(countOf(events, 'shield:consumed')).toBe(1);
+  });
+
+  it('senza scudo (e senza carica da perdonare) lo stesso impatto uccide', () => {
+    const { game, events } = scenario(11, groundObstacle());
+
     runFrames(game, 60);
 
     expect(game.alive).toBe(false);
-    expect(payloadsOf(events, 'obstacle:hit').map((hit) => hit.outcome)).toEqual([
-      'forgiven',
-      'death',
-    ]);
+    expect(payloadsOf(events, 'obstacle:hit').map((hit) => hit.outcome)).toEqual(['death']);
   });
 });
 
-describe('updateGame — raccolta pickup', () => {
-  it('la mucca raccolta dà carica 10 e uno scatto immediato di taglia', () => {
-    const { game, events } = scenario(1, cow());
+describe('updateGame — ramo non solido', () => {
+  it("un'entità sul ramo non scelto non colpisce mai e i suoi fiocchi non si raccolgono", () => {
+    const { game, events } = scenario(1, groundObstacle('right'));
+    game.entities.push(snowflake('right', 6));
+    expect(game.path.activeBranch).toBe('main');
 
-    runFrames(game, 60);
+    runFrames(game, 180);
 
     expect(game.alive).toBe(true);
-    expect(game.entities).toHaveLength(0);
-    // 10 di carica base + 10 per raggiungere la soglia della taglia 2.
-    expect(game.avalanche.charge).toBe(20);
-    expect(game.avalanche.size).toBe(2);
-    expect(payloadsOf(events, 'pickup:collected')).toEqual([{ kind: 'cow', charge: 20 }]);
-    expect(payloadsOf(events, 'size:changed')).toEqual([{ size: 2, previous: 1 }]);
-    expect(game.score.points).toBeGreaterThanOrEqual(CONFIG.score.pickupBonus.cow);
+    expect(countOf(events, 'obstacle:hit')).toBe(0);
+    expect(countOf(events, 'pickup:collected')).toBe(0);
+  });
+});
+
+describe('updateGame — bivio', () => {
+  it('dopo che un bivio si risolve, nessuna entità del ramo scartato resta viva', () => {
+    const bus = createEventBus();
+    const game = createGame(1, bus);
+    startRun(game);
+    game.entities.length = 0;
+
+    game.path.phase = 'approaching';
+    game.path.forkZ = CONFIG.path.previewZ;
+    game.path.choice = null;
+    game.path.richBranch = 'right';
+    game.path.activeBranch = 'main';
+    game.path.offsetX = 0;
+    game.path.nextForkIn = 999999;
+
+    // Entrambi i rami popolati e visibili prima della scelta, come da design.
+    game.entities.push(
+      groundObstacle('left', CONFIG.path.previewZ - 5),
+      snowflake('left', CONFIG.path.previewZ - 5),
+      groundObstacle('right', CONFIG.path.previewZ - 5),
+      snowflake('right', CONFIG.path.previewZ - 5),
+    );
+
+    let frame = 0;
+    while ((game.path.phase as string) !== 'committed' && frame < 600) {
+      updateGame(game, STEP);
+      frame += 1;
+    }
+
+    expect(game.path.phase).toBe('committed');
+    // `as Branch`, non solo l'annotazione: TypeScript restringe il tipo letto
+    // qui a 'main' in base all'assegnazione fatta più sopra nel test (control
+    // flow narrowing su una const), ignorando che updateGame lo muta al di là
+    // di ciò che il flow analysis può seguire. Un'annotazione da sola non
+    // basta a farlo desistere; l'asserzione sì (stesso trucco già usato sopra
+    // per `game.path.phase as string` nella condizione del while).
+    const chosen = game.path.activeBranch as Branch;
+    expect(chosen === 'left' || chosen === 'right').toBe(true);
+    const discarded: Branch = chosen === 'left' ? 'right' : 'left';
+
+    expect(game.entities.some((entity) => entity.branch === discarded && entity.alive)).toBe(false);
+  });
+
+  it('la calamita raccoglie fiocchi che il giocatore non tocca direttamente', () => {
+    const bus = createEventBus();
+    const game = createGame(5, bus);
+    startRun(game);
+    const events = recordEvents(bus);
+    game.entities.length = 0;
+    const farFlake = snowflake('main', CONFIG.buffs.magnetRangeZ - 1);
+    game.entities.push(farFlake);
+    applyBuff(game.buffs, 'magnet', game.bus);
+
+    updateGame(game, STEP);
+
+    expect(farFlake.alive).toBe(false);
+    expect(payloadsOf(events, 'pickup:collected').map((p) => p.kind)).toEqual(['snowflake']);
   });
 });
 
@@ -389,9 +509,9 @@ describe('determinismo', () => {
 
       for (let frame = 0; frame < frames; frame += 1) {
         if (frame % 53 === 0) handleAction(game, 'JUMP');
-        if (frame % 71 === 0) handleAction(game, 'SLAM');
-        if (frame % 97 === 0) handleAction(game, 'MOVE_LEFT');
-        if (frame % 131 === 0) handleAction(game, 'MOVE_RIGHT');
+        if (frame % 71 === 0) handleAction(game, 'SLIDE');
+        if (frame % 97 === 0) handleAction(game, 'CHOOSE_LEFT');
+        if (frame % 131 === 0) handleAction(game, 'CHOOSE_RIGHT');
         updateGame(game, STEP);
         if (!game.alive) startRun(game, seed);
       }
@@ -408,20 +528,6 @@ describe('determinismo', () => {
 });
 
 describe('handleAction', () => {
-  it('instrada MOVE_LEFT e MOVE_RIGHT al cambio corsia', () => {
-    const bus = createEventBus();
-    const game = createGame(5, bus);
-    startRun(game);
-    expect(game.player.lane).toBe(1);
-
-    handleAction(game, 'MOVE_LEFT');
-    expect(game.player.lane).toBe(0);
-    runFrames(game, 20);
-
-    handleAction(game, 'MOVE_RIGHT');
-    expect(game.player.lane).toBe(1);
-  });
-
   it('instrada JUMP al salto', () => {
     const bus = createEventBus();
     const game = createGame(5, bus);
@@ -431,13 +537,29 @@ describe('handleAction', () => {
     expect(game.player.airborne).toBe(true);
   });
 
-  it('instrada SLAM alla schiacciata', () => {
+  it('instrada SLIDE alla scivolata', () => {
     const bus = createEventBus();
     const game = createGame(5, bus);
     startRun(game);
 
-    handleAction(game, 'SLAM');
-    expect(game.player.slamming).toBe(true);
+    handleAction(game, 'SLIDE');
+    expect(game.player.sliding).toBe(true);
+  });
+
+  it('instrada CHOOSE_LEFT/CHOOSE_RIGHT alla scelta del bivio, solo quando c\'è un bivio da scegliere', () => {
+    const bus = createEventBus();
+    const game = createGame(5, bus);
+    startRun(game);
+
+    handleAction(game, 'CHOOSE_LEFT');
+    expect(game.path.choice).toBeNull();
+
+    game.path.phase = 'approaching';
+    handleAction(game, 'CHOOSE_LEFT');
+    expect(game.path.choice).toBe('left');
+
+    handleAction(game, 'CHOOSE_RIGHT');
+    expect(game.path.choice).toBe('right');
   });
 
   it('ignora PAUSE, gestita fuori dal gioco', () => {

@@ -12,7 +12,7 @@ export interface GameEvents {
   'pickup:collected': { kind: PickupKind; charge: number };
   'obstacle:hit': {
     kind: ObstacleKind;
-    outcome: 'death' | 'forgiven' | 'smashed';
+    outcome: 'death' | 'forgiven' | 'smashed' | 'shielded';
     branch: Branch;
     z: number;
   };

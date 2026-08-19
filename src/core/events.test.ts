@@ -101,7 +101,7 @@ describe('createEventBus', () => {
     });
 
     expect(() => {
-      bus.emit('obstacle:hit', { kind: 'rock', outcome: 'death', lane: 1, z: 12 });
+      bus.emit('obstacle:hit', { kind: 'rock', outcome: 'death', branch: 'main', z: 12 });
     }).not.toThrow();
 
     expect(calls).toEqual(['before', 'after']);
@@ -118,7 +118,7 @@ describe('createEventBus', () => {
       calls.push('ended');
     });
 
-    bus.emit('pickup:collected', { kind: 'hay', charge: 5 });
+    bus.emit('pickup:collected', { kind: 'snowflake', charge: 5 });
 
     expect(calls).toEqual(['pickup']);
   });

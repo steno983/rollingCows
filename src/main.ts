@@ -1,4 +1,5 @@
 import './style.css';
+import * as THREE from 'three';
 import { createAudio } from './audio/audio';
 import { createEventBus } from './core/events';
 import { createLoop } from './core/loop';
@@ -18,6 +19,7 @@ import { loadRecord } from './game/score';
 import { createInput } from './input/input';
 import { worldToViewX } from './render/camera-rig';
 import { createBackdrop } from './render/backdrop';
+import { cameraRollFor, playerTiltFor, worldYawFor } from './render/curve';
 import { avalancheTrail, burstFromModel, resetDebris } from './render/debris';
 import { createEntitiesView, entityWorldOffsetX } from './render/entities-view';
 import { MODELS } from './render/models';
@@ -73,14 +75,27 @@ function main(): void {
   const playerView = createPlayerView();
   const backdrop = createBackdrop();
   const pool = createVoxelPool(CONFIG.render.voxelPoolSize, CONFIG.render.voxelSize);
+  // Pendio, entità e detriti vivono in un unico gruppo: durante un bivio è
+  // QUESTO gruppo a ruotare attorno all'origine (render/curve.ts,
+  // worldYawFor), dove sta sempre la mucca (x=0, z=0, vedi player-view.ts),
+  // così sembra che sia lei a curvare invece che il mondo a scivolare di
+  // lato in blocco (vedi le note di progetto sul fix del bivio). playerView
+  // NON ci va dentro apposta: la mucca resta ferma al centro, è tutto il
+  // resto a muoversi intorno a lei. Il backdrop resta fuori (è ancorato alla
+  // camera, non all'origine: vedi render/backdrop.ts) ma riceve lo stesso
+  // angolo in backdrop.sync, altrimenti l'orizzonte immobile smaschererebbe
+  // il trucco. Raggruppare sotto un Group non aggiunge draw call (li
+  // determinano le mesh figlie, non i nodi intermedi del grafo di scena).
+  const worldGroup = new THREE.Group();
+  worldGroup.add(terrain.group);
+  worldGroup.add(scenery.group);
+  worldGroup.add(entitiesView.group);
+  worldGroup.add(pool.mesh);
   // Il backdrop va aggiunto per primo: è il più lontano, ma l'ordine di scene
   // graph non incide sull'ordine di disegno (quello lo decide lo z-buffer).
   view.scene.add(backdrop.group);
-  view.scene.add(terrain.group);
-  view.scene.add(scenery.group);
-  view.scene.add(entitiesView.group);
+  view.scene.add(worldGroup);
   view.scene.add(playerView.group);
-  view.scene.add(pool.mesh);
 
   const input = createInput(canvas);
   const hud = createHud(uiRoot);
@@ -348,8 +363,14 @@ function main(): void {
         // cubetti sembravano galleggiare rispetto al pendio invece di scorrere
         // insieme, l'artefatto opposto a quello che il fix M1 voleva eliminare.
         pool.update(slowDt, game.world.speed);
-        view.update(slowDt, game.avalanche.size, false);
-        backdrop.sync(view.rigPosition.x, view.rigPosition.z);
+        // Il bivio può restare a metà quando si muore: la piegata continua ad
+        // animarsi al rallenty come tutto il resto, invece di congelarsi di
+        // scatto (vedi render/curve.ts, worldYawFor — stessa PathState letta
+        // anche nel ramo normale qui sotto).
+        const dyingYaw = worldYawFor(game.path);
+        worldGroup.rotation.y = dyingYaw;
+        view.update(slowDt, game.avalanche.size, false, cameraRollFor(game.path));
+        backdrop.sync(view.rigPosition.x, view.rigPosition.z, dyingYaw);
         terrain.sync(game.world, game.path);
         scenery.sync(game.world);
         entitiesView.sync(game.entities, game.path);
@@ -374,9 +395,22 @@ function main(): void {
       terrain.sync(game.world, game.path);
       scenery.sync(game.world);
       entitiesView.sync(game.entities, game.path);
-      playerView.sync(game.player, game.avalanche.size, game.world.speed, playing ? dt : 0, game.buffs.shield);
-      view.update(dt, game.avalanche.size, avalancheOn);
-      backdrop.sync(view.rigPosition.x, view.rigPosition.z);
+      // Piegata "da cartone animato" di un bivio: mondo, mucca, sfondo e
+      // camera leggono la STESSA PathState (vedi render/curve.ts) e restano
+      // sincronizzati fra loro per costruzione, senza bisogno di smorzamenti
+      // a runtime — l'unica sorgente di verità è game.path.
+      const yaw = worldYawFor(game.path);
+      worldGroup.rotation.y = yaw;
+      playerView.sync(
+        game.player,
+        game.avalanche.size,
+        game.world.speed,
+        playing ? dt : 0,
+        game.buffs.shield,
+        playerTiltFor(game.path),
+      );
+      view.update(dt, game.avalanche.size, avalancheOn, cameraRollFor(game.path));
+      backdrop.sync(view.rigPosition.x, view.rigPosition.z, yaw);
       logStats(dt);
     },
     render(): void {

@@ -344,6 +344,32 @@ export const CONFIG = {
       minScale: 0.8,
       maxScale: 1.6,
     },
+    /** Inclinazione "da cartone animato" con cui si legge un bivio: il mondo
+     *  (pendio, entità, sfondo) ruota attorno alla mucca invece di scivolare
+     *  di lato in blocco, e la mucca stessa si piega sul fianco mentre la
+     *  camera aggiunge un lieve rollio all'orizzonte (vedi render/curve.ts).
+     *  Puramente estetico e a somma zero: tutti e tre tornano esattamente a 0
+     *  alla chiusura del bivio, l'allineamento geometrico resta compito della
+     *  traslazione path.offsetX che già esisteva. Gradi, non radianti: sono
+     *  numeri pensati per essere letti e tarati a occhio. */
+    curve: {
+      /** Rotazione di picco del gruppo-mondo (pendio+entità+sfondo) al
+       *  culmine della curva. Voluta esagerata ("sopra le righe"): un
+       *  bivio reale sposta il tracciato di soli branchSeparation=6 unità,
+       *  ma la vecchia traslazione pura senza rotazione si leggeva come un
+       *  errore di rendering, non come una svolta. */
+      maxWorldTiltDeg: 38,
+      /** Inclinazione di picco della mucca sul fianco, sullo stesso verso
+       *  della rotazione del mondo (si piega DENTRO la curva, come una moto
+       *  o uno sciatore). Volutamente vistosa: è il dettaglio che vende
+       *  l'idea "sono io a curvare", non il mondo che scivola. */
+      maxPlayerTiltDeg: 32,
+      /** Rollio di picco della camera: leggero apposta, un tocco che inclina
+       *  l'orizzonte senza disorientare (a differenza dei due angoli sopra,
+       *  che possono permettersi di essere marcati perché non toccano mai
+       *  l'inquadratura in sé). */
+      maxCameraRollDeg: 9,
+    },
   },
   input: {
     swipeMinPixels: 24,

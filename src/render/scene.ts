@@ -25,7 +25,7 @@ export interface SceneContext {
    *  questo no. */
   rigPosition: { x: number; z: number };
   resize(): void;
-  update(dt: number, size: number, avalanche: boolean): void;
+  update(dt: number, size: number, avalanche: boolean, roll: number): void;
   shake(amount: number): void;
   render(): void;
   setQuality(low: boolean): void;
@@ -142,7 +142,7 @@ export function createScene(canvas: HTMLCanvasElement): SceneContext {
     camera.updateProjectionMatrix();
   }
 
-  function update(dt: number, size: number, avalanche: boolean): void {
+  function update(dt: number, size: number, avalanche: boolean, roll: number): void {
     if (avalanche !== lastAvalanche) {
       lastAvalanche = avalanche;
       fovT = 0;
@@ -164,6 +164,13 @@ export function createScene(canvas: HTMLCanvasElement): SceneContext {
     const offsetY = (shakeRng.next() * 2 - 1) * shakeAmount;
     camera.position.set(offsetX, height + offsetY, -distance);
     camera.lookAt(lookAt);
+    // Rollio da bivio (render/curve.ts, cameraRollFor): lookAt sopra
+    // ricalcola l'orientamento da zero a ogni chiamata (asse "up" sempre
+    // verticale), quindi va riapplicato qui, ogni frame, DOPO lookAt — non
+    // è uno stato che si accumula. rotateZ ruota attorno all'asse di vista
+    // locale della camera: inclina l'orizzonte senza spostare il punto
+    // guardato (lookAt), a differenza di un roll ottenuto inclinando `up`.
+    if (roll !== 0) camera.rotateZ(roll);
   }
 
   function shake(amount: number): void {

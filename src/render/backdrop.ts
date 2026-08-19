@@ -9,9 +9,16 @@ export interface BackdropView {
    *  MAI y (l'altezza reale della camera non deve mai piegare l'orizzonte) e
    *  MAI lo shake (che qui produrrebbe un sobbalzo innaturale su elementi che
    *  devono restare immobili come un fondale dipinto). Il chiamante passa
-   *  `scene.rigPosition`, che esclude entrambi apposta. Zero allocazioni: si
-   *  chiama ogni frame. */
-  sync(cameraX: number, cameraZ: number): void;
+   *  `scene.rigPosition`, che esclude entrambi apposta. `yaw` è invece
+   *  voluto: è lo stesso angolo (radianti) applicato al gruppo-mondo durante
+   *  un bivio (vedi render/curve.ts, worldYawFor, e main.ts), e deve seguirlo
+   *  di pari passo — altrimenti l'orizzonte resterebbe immobile mentre pendio
+   *  ed entità curvano, smascherando il trucco invece di venderlo. Ruotare
+   *  attorno all'origine locale del gruppo (che `sync` stesso sposta sulla
+   *  camera) invece che sulla mucca è un'approssimazione voluta: lo sfondo è
+   *  così lontano (150+ unità) che la manciata di unità fra camera e mucca è
+   *  impercettibile. Zero allocazioni: si chiama ogni frame. */
+  sync(cameraX: number, cameraZ: number, yaw: number): void;
 }
 
 /* ------------------------------------------------------------------------ *
@@ -339,8 +346,9 @@ export function createBackdrop(): BackdropView {
   group.add(buildValleyFloor());
   group.add(buildVillage(rng));
 
-  function sync(cameraX: number, cameraZ: number): void {
+  function sync(cameraX: number, cameraZ: number, yaw: number): void {
     group.position.set(cameraX, 0, cameraZ);
+    group.rotation.y = yaw;
   }
 
   return { group, sync };

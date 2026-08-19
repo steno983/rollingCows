@@ -4,7 +4,14 @@ import type { PlayerState } from '../game/player';
 import { MODELS, buildGeometry } from './models';
 
 export interface PlayerView {
-  sync(player: PlayerState, size: number, speed: number, dt: number, shielded: boolean): void;
+  sync(
+    player: PlayerState,
+    size: number,
+    speed: number,
+    dt: number,
+    shielded: boolean,
+    tilt: number,
+  ): void;
   group: THREE.Group;
 }
 
@@ -91,7 +98,14 @@ export function createPlayerView(): PlayerView {
   let roll = 0;
   let shieldSpin = 0;
 
-  function sync(player: PlayerState, size: number, speed: number, dt: number, shielded: boolean): void {
+  function sync(
+    player: PlayerState,
+    size: number,
+    speed: number,
+    dt: number,
+    shielded: boolean,
+    tilt: number,
+  ): void {
     const scale = playerModelScale(size, player.sliding);
     pivot.scale.set(scale.x, scale.y, scale.z);
 
@@ -107,6 +121,13 @@ export function createPlayerView(): PlayerView {
     // La mucca del giocatore è sempre a x = 0 in v2 (è il tracciato che si
     // sposta, non lei): nessun worldToViewX qui, a differenza di v1.
     group.position.set(0, player.y + radius, 0);
+    // Piegata sul fianco durante un bivio (render/curve.ts, playerTiltFor):
+    // sul GRUPPO esterno, non sul pivot che rotola in avanti (rotation.x
+    // sopra), altrimenti le due rotazioni si mescolerebbero sullo stesso
+    // nodo. Lo scudo (figlio di group, non di pivot) si piega insieme al
+    // resto dell'assieme: essendo una sfera, non si nota, ed è comunque
+    // corretto che segua la mucca che protegge.
+    group.rotation.z = tilt;
 
     shield.visible = shielded;
     if (shielded) {

@@ -1,37 +1,31 @@
 import { CONFIG } from './config';
-import { entityCenterX, entityHalfWidth } from './lanes';
 import type { Entity, EntityKind } from './types';
 
-/** AABB allineato agli assi. `x` e `z` sono centri, `y` è la base: il box occupa
- *  [x-halfWidth, x+halfWidth] x [y, y+height] x [z-depth/2, z+depth/2]. */
+/** AABB su due soli assi: quota e distanza. Niente più X: la mucca è sempre al
+ *  centro del ramo attivo (vedi path.ts), quindi il test laterale è sparito insieme
+ *  alle corsie. `y` è la base, `height` si estende verso l'alto (occupa
+ *  [y, y+height]); `z` è il centro, `depth` la profondità totale (occupa
+ *  [z-depth/2, z+depth/2]). */
 export interface Box {
-  x: number;
-  halfWidth: number;
   y: number;
   height: number;
   z: number;
   depth: number;
 }
 
-/** Quanto si abbassa la mucca in schiacciata: dimezza l'altezza del box, il che
- *  la porta sotto la base del ramo sospeso (CONFIG.spawn.branchY) fino a taglia 5. */
-export const SLAM_HEIGHT_RATIO: number = CONFIG.collisions.slamHeightRatio;
-
-/** Ingombro verticale e in profondità di ogni tipo di entità. La larghezza non
- *  serve: deriva dalle corsie occupate (`entityHalfWidth`). */
+/** Ingombro verticale e in profondità di ogni tipo di entità. */
 export const ENTITY_BOX: Record<EntityKind, { height: number; depth: number }> =
   CONFIG.collisions.entityBox;
 
-/** Box del giocatore. `slamming` (estensione additiva del contratto) riduce
- *  l'altezza: è così che si passa sotto al ramo sospeso. */
-export function playerBox(x: number, y: number, size: number, slamming = false): Box {
-  const { baseHalfWidth, halfWidthPerSize, baseHeight, heightPerSize, depth } = CONFIG.player;
+/** Box del giocatore. In scivolata l'altezza è ridotta di slideHeightRatio: è così
+ *  che si passa sotto agli ostacoli sospesi, a qualunque taglia (vedi l'invariante
+ *  di design documentata sopra il task). */
+export function playerBox(y: number, size: number, sliding: boolean): Box {
+  const { baseHeight, heightPerSize, depth, slideHeightRatio } = CONFIG.player;
   const height = baseHeight + heightPerSize * size;
   return {
-    x,
-    halfWidth: baseHalfWidth + halfWidthPerSize * size,
     y,
-    height: slamming ? height * SLAM_HEIGHT_RATIO : height,
+    height: sliding ? height * slideHeightRatio : height,
     // Il giocatore è fermo sull'asse di scorrimento: è il mondo a muoversi.
     z: 0,
     depth,
@@ -41,8 +35,6 @@ export function playerBox(x: number, y: number, size: number, slamming = false):
 export function entityBox(entity: Entity): Box {
   const measures = ENTITY_BOX[entity.kind];
   return {
-    x: entityCenterX(entity.lane, entity.width),
-    halfWidth: entityHalfWidth(entity.width),
     y: entity.y,
     height: measures.height,
     z: entity.z,
@@ -51,7 +43,6 @@ export function entityBox(entity: Entity): Box {
 }
 
 export function boxesOverlap(a: Box, b: Box): boolean {
-  if (Math.abs(a.x - b.x) >= a.halfWidth + b.halfWidth) return false;
   if (Math.abs(a.z - b.z) >= (a.depth + b.depth) / 2) return false;
   if (a.y + a.height <= b.y) return false;
   if (b.y + b.height <= a.y) return false;

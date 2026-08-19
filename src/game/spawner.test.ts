@@ -1,144 +1,192 @@
 import { describe, expect, it } from 'vitest';
 import { createRng } from '../core/rng';
 import { CONFIG } from './config';
-import { BRANCH_Y, createSpawner } from './spawner';
-import type { Entity } from './types';
+import { createSpawner } from './spawner';
+import { isOverhead } from './types';
+import type { Entity, ObstacleKind } from './types';
 
-const { laneCount, chunkLength } = CONFIG.world;
-
-function rowsOf(entities: Entity[]): number[] {
-  return [...new Set(entities.map((entity) => entity.z))].sort((a, b) => a - b);
+function requiredGap(kind: ObstacleKind): number {
+  const seconds = isOverhead(kind) ? CONFIG.player.slideSeconds : CONFIG.player.jumpSeconds;
+  return seconds * CONFIG.world.maxSpeed;
 }
 
-/** Corsie realmente bloccate a terra in una riga: il branch è sospeso e non conta. */
-function groundBlockedLanes(entities: Entity[], rowZ: number): Set<number> {
-  const blocked = new Set<number>();
-  for (const entity of entities) {
-    if (entity.z !== rowZ) continue;
-    if (entity.category !== 'obstacle') continue;
-    if (entity.y > 0) continue;
-    for (let offset = 0; offset < entity.width; offset++) {
-      blocked.add(entity.lane + offset);
+function isUnimodal(ys: readonly number[]): boolean {
+  let rising = true;
+  let previous = ys[0] ?? 0;
+  for (const y of ys.slice(1)) {
+    if (rising) {
+      if (y < previous) rising = false;
+    } else if (y > previous) {
+      return false;
     }
+    previous = y;
   }
-  return blocked;
+  return true;
 }
 
-function generate(seed: number, difficulty: number, chunks: number): Entity[] {
-  const spawner = createSpawner(createRng(seed));
-  const out: Entity[] = [];
-  for (let i = 0; i < chunks; i++) {
-    spawner.populateChunk(i * chunkLength, difficulty, out);
+/** Le file ad arco sono l'UNICA fonte di fiocchi con y > 0 (le file basse e
+ *  dritte stanno tutte a y = 0): raggrupparli per contiguità in z basta a
+ *  ricostruire ogni singola fila ad arco dall'output piatto dello spawner. */
+function groupArcTrails(entities: Entity[]): number[][] {
+  const flakes = entities
+    .filter((entity) => entity.kind === 'snowflake' && entity.y > 0)
+    .sort((a, b) => a.z - b.z);
+  const groups: number[][] = [];
+  let current: number[] = [];
+  let lastZ: number | null = null;
+  for (const flake of flakes) {
+    if (lastZ !== null && flake.z - lastZ > CONFIG.spawn.trailSpacing + 0.01) {
+      groups.push(current);
+      current = [];
+    }
+    current.push(flake.y);
+    lastZ = flake.z;
   }
-  return out;
+  if (current.length > 0) groups.push(current);
+  return groups;
 }
 
-describe('populateChunk', () => {
-  it('posiziona le entità dentro l-intervallo [chunkZ, chunkZ + chunkLength)', () => {
+describe('populateSegment', () => {
+  it('posiziona le entità dentro l-intervallo [startZ, startZ + length)', () => {
     for (let seed = 1; seed <= 50; seed++) {
       const spawner = createSpawner(createRng(seed));
       const out: Entity[] = [];
-      const chunkZ = 320;
-      spawner.populateChunk(chunkZ, 1, out);
+      const startZ = 300;
+      const length = 500;
+      spawner.populateSegment(startZ, length, 1, 'main', true, out);
       for (const entity of out) {
-        expect(entity.z).toBeGreaterThanOrEqual(chunkZ);
-        expect(entity.z).toBeLessThan(chunkZ + chunkLength);
+        expect(entity.z).toBeGreaterThanOrEqual(startZ);
+        expect(entity.z).toBeLessThan(startZ + length);
       }
     }
   });
 
-  it('aggiunge in coda a out senza cancellare il contenuto preesistente', () => {
-    const spawner = createSpawner(createRng(7));
+  it('assegna a ogni entità il ramo richiesto', () => {
+    const spawner = createSpawner(createRng(21));
     const out: Entity[] = [];
-    spawner.populateChunk(0, 1, out);
-    const first = out.length;
-    spawner.populateChunk(chunkLength, 1, out);
-    expect(out.length).toBeGreaterThan(first);
-  });
-
-  it('non lascia mai una riga con tutte le corsie bloccate a terra (500 seed, difficoltà 1)', () => {
-    for (let seed = 1; seed <= 500; seed++) {
-      const entities = generate(seed, 1, 1);
-      for (const rowZ of rowsOf(entities)) {
-        const blocked = groundBlockedLanes(entities, rowZ);
-        expect(blocked.size).toBeLessThanOrEqual(CONFIG.spawn.maxBlockedLanes);
-        expect(blocked.size).toBeLessThanOrEqual(laneCount - 1);
-      }
-    }
-  });
-
-  it('genera meno entità a difficoltà 0 che a difficoltà 1', () => {
-    const easy = generate(12345, 0, 200).length;
-    const hard = generate(12345, 1, 200).length;
-    expect(easy).toBeGreaterThan(0);
-    expect(easy).toBeLessThan(hard);
-  });
-
-  it('non mette mai un pickup nella stessa corsia e riga di un ostacolo a terra', () => {
-    for (let seed = 1; seed <= 200; seed++) {
-      const entities = generate(seed, 1, 3);
-      for (const entity of entities) {
-        if (entity.category !== 'pickup') continue;
-        const blocked = groundBlockedLanes(entities, entity.z);
-        expect(blocked.has(entity.lane)).toBe(false);
-      }
+    spawner.populateSegment(0, 800, 0.5, 'left', true, out);
+    for (const entity of out) {
+      expect(entity.branch).toBe('left');
     }
   });
 
   it('assegna id univoci e strettamente crescenti', () => {
-    const entities = generate(99, 1, 50);
-    expect(entities.length).toBeGreaterThan(10);
-    for (let i = 1; i < entities.length; i++) {
-      const previous = entities[i - 1];
-      const current = entities[i];
+    const spawner = createSpawner(createRng(99));
+    const out: Entity[] = [];
+    spawner.populateSegment(0, 2000, 1, 'main', true, out);
+    expect(out.length).toBeGreaterThan(10);
+    for (let i = 1; i < out.length; i++) {
+      const previous = out[i - 1];
+      const current = out[i];
       if (!previous || !current) throw new Error('entità mancante');
       expect(current.id).toBeGreaterThan(previous.id);
     }
   });
 
-  it('sospende solo il branch: y = 1.6 per il branch, 0 per tutto il resto', () => {
-    const entities = generate(2024, 1, 200);
-    let branches = 0;
-    for (const entity of entities) {
-      if (entity.kind === 'branch') {
-        branches++;
-        expect(entity.y).toBe(BRANCH_Y);
-        expect(BRANCH_Y).toBe(1.6);
-      } else {
-        expect(entity.y).toBe(0);
-      }
-    }
-    expect(branches).toBeGreaterThan(0);
-  });
-
-  it('dà width 2 solo alla cabin, e solo nelle corsie 0 o 1', () => {
-    const entities = generate(4242, 1, 200);
-    let cabins = 0;
-    for (const entity of entities) {
-      if (entity.kind === 'cabin') {
-        cabins++;
-        expect(entity.width).toBe(2);
-        expect([0, 1]).toContain(entity.lane);
-      } else {
-        expect(entity.width).toBe(1);
-      }
-    }
-    expect(cabins).toBeGreaterThan(0);
+  it('è deterministico a parità di seed', () => {
+    const a: Entity[] = [];
+    createSpawner(createRng(555)).populateSegment(0, 1000, 0.5, 'right', true, a);
+    const b: Entity[] = [];
+    createSpawner(createRng(555)).populateSegment(0, 1000, 0.5, 'right', true, b);
+    expect(a).toEqual(b);
   });
 
   it('marca tutte le entità come vive e coerenti nella categoria', () => {
-    const entities = generate(31337, 1, 50);
-    const pickupKinds = new Set(['snowflake', 'hay', 'cow']);
-    for (const entity of entities) {
+    const out: Entity[] = [];
+    createSpawner(createRng(31337)).populateSegment(0, 1500, 1, 'main', true, out);
+    const buffKinds = new Set(['crystal', 'star', 'magnet', 'bell']);
+    for (const entity of out) {
       expect(entity.alive).toBe(true);
-      expect(entity.category).toBe(pickupKinds.has(entity.kind) ? 'pickup' : 'obstacle');
+      const isPickup = entity.kind === 'snowflake' || buffKinds.has(entity.kind);
+      expect(entity.category).toBe(isPickup ? 'pickup' : 'obstacle');
     }
   });
 
-  it('è deterministico a parità di seed', () => {
-    const a = generate(555, 0.5, 20);
-    const b = generate(555, 0.5, 20);
-    expect(a).toEqual(b);
+  it('il ramo sgombro genera meno entità e nessun buff rispetto al ramo ricco, a parità di seed', () => {
+    let richBuffs = 0;
+    for (let seed = 1; seed <= 30; seed++) {
+      const richOut: Entity[] = [];
+      createSpawner(createRng(seed)).populateSegment(0, 3000, 0.5, 'left', true, richOut);
+      const poorOut: Entity[] = [];
+      createSpawner(createRng(seed)).populateSegment(0, 3000, 0.5, 'right', false, poorOut);
+
+      expect(poorOut.length).toBeLessThan(richOut.length);
+      const poorHasBuff = poorOut.some(
+        (entity) => entity.category === 'pickup' && entity.kind !== 'snowflake',
+      );
+      expect(poorHasBuff).toBe(false);
+      richBuffs += richOut.filter(
+        (entity) => entity.category === 'pickup' && entity.kind !== 'snowflake',
+      ).length;
+    }
+    expect(richBuffs).toBeGreaterThan(0);
+  });
+
+  it('le file ad arco hanno y crescente e poi decrescente, con apice a trailArcHeight', () => {
+    let arcsChecked = 0;
+    for (let seed = 1; seed <= 200; seed++) {
+      const out: Entity[] = [];
+      createSpawner(createRng(seed)).populateSegment(0, 2000, 0.5, 'main', true, out);
+      for (const group of groupArcTrails(out)) {
+        if (group.length < 3) continue;
+        arcsChecked++;
+        expect(isUnimodal(group)).toBe(true);
+        const peak = Math.max(...group);
+        expect(peak).toBeGreaterThan(0);
+        expect(peak).toBeLessThanOrEqual(CONFIG.spawn.trailArcHeight + 1e-9);
+      }
+    }
+    expect(arcsChecked).toBeGreaterThan(50);
+  });
+
+  it('i fiocchi della fila bassa stanno sotto l-ostacolo sospeso a cui sono associati', () => {
+    const { trailMax, trailSpacing } = CONFIG.spawn;
+    const halfSpan = ((trailMax - 1) * trailSpacing) / 2 + 0.5;
+    let checked = 0;
+    for (let seed = 1; seed <= 200; seed++) {
+      const out: Entity[] = [];
+      createSpawner(createRng(seed)).populateSegment(0, 2000, 0.5, 'main', true, out);
+      const overheadObstacles = out.filter(
+        (entity) => entity.category === 'obstacle' && isOverhead(entity.kind),
+      );
+      for (const obstacle of overheadObstacles) {
+        const nearby = out.filter(
+          (entity) =>
+            entity.kind === 'snowflake' &&
+            entity.y === 0 &&
+            Math.abs(entity.z - obstacle.z) <= halfSpan,
+        );
+        if (nearby.length === 0) continue;
+        checked++;
+        for (const flake of nearby) {
+          expect(flake.y).toBeLessThan(obstacle.y);
+        }
+      }
+    }
+    expect(checked).toBeGreaterThan(50);
+  });
+
+  it('INVARIANTE DI GIOCABILITÀ: nessuna coppia di ostacoli consecutivi dista meno del minimo superabile alla velocità massima (300 seed x 2 rami x rich/sgombro)', () => {
+    let pairsChecked = 0;
+    for (let seed = 1; seed <= 300; seed++) {
+      for (const rich of [true, false]) {
+        const out: Entity[] = [];
+        createSpawner(createRng(seed)).populateSegment(0, 5000, 1, 'main', rich, out);
+        const obstacles = out
+          .filter((entity) => entity.category === 'obstacle')
+          .sort((a, b) => a.z - b.z);
+        for (let i = 1; i < obstacles.length; i++) {
+          const previous = obstacles[i - 1];
+          const current = obstacles[i];
+          if (!previous || !current) throw new Error('ostacolo mancante');
+          const gap = current.z - previous.z;
+          const minGap = requiredGap(previous.kind as ObstacleKind);
+          expect(gap).toBeGreaterThanOrEqual(minGap);
+          pairsChecked++;
+        }
+      }
+    }
+    expect(pairsChecked).toBeGreaterThan(1000);
   });
 });
 
@@ -146,12 +194,12 @@ describe('reset', () => {
   it('riporta il contatore degli id a zero', () => {
     const spawner = createSpawner(createRng(8));
     const first: Entity[] = [];
-    spawner.populateChunk(0, 1, first);
+    spawner.populateSegment(0, 1000, 1, 'main', true, first);
     expect(first.length).toBeGreaterThan(0);
 
     spawner.reset();
     const second: Entity[] = [];
-    spawner.populateChunk(0, 1, second);
+    spawner.populateSegment(0, 1000, 1, 'main', true, second);
     const firstEntity = second[0];
     if (!firstEntity) throw new Error('nessuna entità generata dopo il reset');
     expect(firstEntity.id).toBe(0);

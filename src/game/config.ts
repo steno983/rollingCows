@@ -39,33 +39,35 @@ export const CONFIG = {
     halfWidthPerSize: 0.11,
   },
   collisions: {
-    /** Ingombro verticale e in profondità di ogni tipo di entità. Non c'è più
-     *  un asse laterale: le collisioni si riducono a z e quota (vedi
-     *  game/collisions.ts, task successivo). */
+    /** Ingombro verticale e in profondità di ogni tipo di entità. La X è sparita:
+     *  senza corsie, le collisioni si riducono a distanza e quota (vedi
+     *  game/collisions.ts). */
     entityBox: {
       /** Masso basso e tozzo: si scavalca solo saltando. */
       rock: { height: 1.4, depth: 1.4 },
-      /** Tronco caduto: basso, si salta. */
-      log: { height: 1, depth: 1.2 },
+      /** Tronco caduto: più basso del masso, stessa azione. */
+      log: { height: 1.0, depth: 1.2 },
       /** Staccionata: bassa e sottile, il salto ci passa sopra comodamente. */
       fence: { height: 1.2, depth: 0.8 },
-      /** Crepaccio: praticamente piatto, largo: va anticipato con il salto. */
+      /** Crepaccio: praticamente piatto, quindi colpisce solo chi è a terra;
+       *  molto profondo, così va anticipato con il salto. */
       crevasse: { height: 0.1, depth: 4 },
-      /** Ramo di abete: sospeso, ci si passa sotto scivolando. */
+      /** Ramo di abete sospeso: base a spawn.overheadY, spesso quanto una
+       *  staccionata. */
       branch: { height: 1.2, depth: 0.8 },
-      /** Arco di roccia: sospeso, più alto del ramo. */
-      arch: { height: 1.4, depth: 1 },
-      /** Cornicione di ghiaccio: sospeso, il più alto e profondo. */
+      /** Arco di roccia sospeso: più alto del ramo. */
+      arch: { height: 1.4, depth: 1.0 },
+      /** Cornicione di ghiaccio sospeso: il più ingombrante dei tre. */
       cornice: { height: 1.6, depth: 1.2 },
       /** Fiocco di neve: piccolo, ma la raccolta è generosa. */
       snowflake: { height: 0.8, depth: 0.8 },
-      /** Cristallo di ghiaccio: +carica in un colpo. */
+      /** Cristallo di ghiaccio: cubo di un metro. */
       crystal: { height: 1, depth: 1 },
-      /** Stella: punti doppi a tempo. */
+      /** Stella: cubo di un metro. */
       star: { height: 1, depth: 1 },
-      /** Calamita: attira i fiocchi a tempo. */
+      /** Calamita: cubo di un metro. */
       magnet: { height: 1, depth: 1 },
-      /** Campanaccio: scudo che assorbe un impatto. */
+      /** Campanaccio: cubo di un metro. */
       bell: { height: 1, depth: 1 },
     },
   },

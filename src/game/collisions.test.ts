@@ -1,144 +1,142 @@
 import { describe, expect, it } from 'vitest';
 import { CONFIG } from './config';
 import { ENTITY_BOX, boxesOverlap, entityBox, playerBox } from './collisions';
-import { laneToX } from './lanes';
+import { isOverhead } from './types';
 import type { Box } from './collisions';
-import type { Entity, EntityKind, Lane } from './types';
+import type { Entity, EntityKind } from './types';
 
-function makeEntity(kind: EntityKind, lane: Lane, z = 0, y = 0, width: 1 | 2 = 1): Entity {
-  const pickups = new Set<EntityKind>(['snowflake', 'hay', 'cow']);
+const GROUND_KINDS: readonly EntityKind[] = ['rock', 'log', 'fence', 'crevasse'];
+const OVERHEAD_KINDS: readonly EntityKind[] = ['branch', 'arch', 'cornice'];
+const ALL_SIZES = [1, 2, 3, 4, 5];
+
+function makeEntity(kind: EntityKind, z = 0, y = 0): Entity {
+  const pickupKinds = new Set<EntityKind>(['snowflake', 'crystal', 'star', 'magnet', 'bell']);
   return {
     id: 1,
     kind,
-    category: pickups.has(kind) ? 'pickup' : 'obstacle',
-    lane,
-    width,
+    category: pickupKinds.has(kind) ? 'pickup' : 'obstacle',
+    branch: 'main',
     z,
     y,
     alive: true,
   };
 }
 
-function box(x: number, halfWidth: number, y: number, height: number, z: number, depth: number): Box {
-  return { x, halfWidth, y, height, z, depth };
+function box(y: number, height: number, z: number, depth: number): Box {
+  return { y, height, z, depth };
 }
 
 describe('boxesOverlap', () => {
   it('rileva la sovrapposizione di due box coincidenti', () => {
-    const a = box(0, 1, 0, 2, 0, 2);
-    expect(boxesOverlap(a, box(0, 1, 0, 2, 0, 2))).toBe(true);
-  });
-
-  it('separa correttamente sull-asse X', () => {
-    const a = box(0, 1, 0, 2, 0, 2);
-    expect(boxesOverlap(a, box(1.5, 1, 0, 2, 0, 2))).toBe(true);
-    expect(boxesOverlap(a, box(3, 1, 0, 2, 0, 2))).toBe(false);
+    const a = box(0, 2, 0, 2);
+    expect(boxesOverlap(a, box(0, 2, 0, 2))).toBe(true);
   });
 
   it('separa correttamente sull-asse Y', () => {
-    const a = box(0, 1, 0, 2, 0, 2);
-    expect(boxesOverlap(a, box(0, 1, 1.5, 2, 0, 2))).toBe(true);
-    expect(boxesOverlap(a, box(0, 1, 2.5, 2, 0, 2))).toBe(false);
+    const a = box(0, 2, 0, 2);
+    expect(boxesOverlap(a, box(1.5, 2, 0, 2))).toBe(true);
+    expect(boxesOverlap(a, box(2.5, 2, 0, 2))).toBe(false);
   });
 
   it('separa correttamente sull-asse Z', () => {
-    const a = box(0, 1, 0, 2, 0, 2);
-    expect(boxesOverlap(a, box(0, 1, 0, 2, 1.5, 2))).toBe(true);
-    expect(boxesOverlap(a, box(0, 1, 0, 2, 3, 2))).toBe(false);
+    const a = box(0, 2, 0, 2);
+    expect(boxesOverlap(a, box(0, 2, 1.5, 2))).toBe(true);
+    expect(boxesOverlap(a, box(0, 2, 3, 2))).toBe(false);
   });
 
   it('non considera collisione il contatto esatto sui bordi', () => {
-    const a = box(0, 1, 0, 2, 0, 2);
-    expect(boxesOverlap(a, box(2, 1, 0, 2, 0, 2))).toBe(false);
-    expect(boxesOverlap(a, box(0, 1, 2, 2, 0, 2))).toBe(false);
-    expect(boxesOverlap(a, box(0, 1, 0, 2, 2, 2))).toBe(false);
+    const a = box(0, 2, 0, 2);
+    expect(boxesOverlap(a, box(2, 2, 0, 2))).toBe(false);
+    expect(boxesOverlap(a, box(0, 2, 2, 2))).toBe(false);
   });
 });
 
 describe('playerBox', () => {
-  it('si allarga e si alza al crescere della taglia', () => {
-    const small = playerBox(0, 0, 1);
-    const big = playerBox(0, 0, 5);
-    expect(big.halfWidth).toBeGreaterThan(small.halfWidth);
+  it('cresce in altezza con la taglia', () => {
+    const small = playerBox(0, 1, false);
+    const big = playerBox(0, 5, false);
     expect(big.height).toBeGreaterThan(small.height);
-    expect(small.halfWidth).toBeCloseTo(
-      CONFIG.player.baseHalfWidth + CONFIG.player.halfWidthPerSize,
-      10,
-    );
+    expect(small.height).toBeCloseTo(CONFIG.player.baseHeight + CONFIG.player.heightPerSize, 10);
     expect(small.depth).toBe(CONFIG.player.depth);
   });
 
-  it('abbassa la mucca in schiacciata senza toccarne la larghezza', () => {
-    const upright = playerBox(0, 0, 3);
-    const slammed = playerBox(0, 0, 3, true);
-    expect(slammed.height).toBeLessThan(upright.height);
-    expect(slammed.halfWidth).toBe(upright.halfWidth);
+  it('in scivolata riduce l-altezza esattamente di slideHeightRatio', () => {
+    for (const size of ALL_SIZES) {
+      const upright = playerBox(0, size, false);
+      const sliding = playerBox(0, size, true);
+      expect(sliding.height).toBeCloseTo(upright.height * CONFIG.player.slideHeightRatio, 10);
+    }
   });
 });
 
 describe('entityBox', () => {
   it('usa le misure per kind di ENTITY_BOX', () => {
-    const rock = entityBox(makeEntity('rock', 1));
+    const rock = entityBox(makeEntity('rock', 10));
     expect(rock.height).toBe(ENTITY_BOX.rock.height);
     expect(rock.depth).toBe(ENTITY_BOX.rock.depth);
-    expect(rock.x).toBe(laneToX(1));
-  });
-
-  it('centra la cabin larga 2 tra le due corsie occupate', () => {
-    const cabin = entityBox(makeEntity('cabin', 0, 0, 0, 2));
-    expect(cabin.x).toBe((laneToX(0) + laneToX(1)) / 2);
-    expect(cabin.halfWidth).toBe(CONFIG.world.laneWidth);
-  });
-});
-
-describe('collisioni di gioco', () => {
-  it('un giocatore in corsia 0 non collide con un ostacolo in corsia 2', () => {
-    const player = playerBox(laneToX(0), 0, 5);
-    expect(boxesOverlap(player, entityBox(makeEntity('rock', 2)))).toBe(false);
-    expect(boxesOverlap(player, entityBox(makeEntity('rock', 0)))).toBe(true);
-  });
-
-  it('saltando si passa sopra una fence ma non sopra una cabin', () => {
-    const apex = CONFIG.player.jumpHeight;
-    const player = playerBox(laneToX(1), apex, 1);
-    expect(boxesOverlap(player, entityBox(makeEntity('fence', 1)))).toBe(false);
-    expect(boxesOverlap(player, entityBox(makeEntity('cabin', 0, 0, 0, 2)))).toBe(true);
-  });
-
-  it('il branch colpisce la mucca cresciuta, ma non se è in schiacciata', () => {
-    const branch = entityBox(makeEntity('branch', 1, 0, 1.6));
-    expect(boxesOverlap(playerBox(laneToX(1), 0, 3), branch)).toBe(true);
-    expect(boxesOverlap(playerBox(laneToX(1), 0, 3, true), branch)).toBe(false);
-  });
-
-  it('la mucca a taglia 1 passa sotto al branch anche senza schiacciata', () => {
-    // Conseguenza voluta delle costanti: a taglia 1 la mucca è alta 1.45 < 1.6.
-    const branch = entityBox(makeEntity('branch', 1, 0, 1.6));
-    expect(boxesOverlap(playerBox(laneToX(1), 0, 1), branch)).toBe(false);
-  });
-
-  it('il crevasse colpisce solo chi è a terra', () => {
-    const crevasse = entityBox(makeEntity('crevasse', 1));
-    expect(boxesOverlap(playerBox(laneToX(1), 0, 1), crevasse)).toBe(true);
-    expect(boxesOverlap(playerBox(laneToX(1), 1, 1), crevasse)).toBe(false);
-    expect(boxesOverlap(playerBox(laneToX(1), CONFIG.player.jumpHeight, 1), crevasse)).toBe(false);
+    expect(rock.z).toBe(10);
   });
 
   it('definisce una misura per ogni kind', () => {
     const kinds: EntityKind[] = [
       'rock',
-      'tree',
+      'log',
       'fence',
-      'cabin',
       'crevasse',
       'branch',
+      'arch',
+      'cornice',
       'snowflake',
-      'hay',
-      'cow',
+      'crystal',
+      'star',
+      'magnet',
+      'bell',
     ];
     for (const kind of kinds) {
       expect(ENTITY_BOX[kind].height).toBeGreaterThan(0);
       expect(ENTITY_BOX[kind].depth).toBeGreaterThan(0);
     }
+  });
+});
+
+describe('collisioni di gioco', () => {
+  it('il crevasse colpisce solo chi è a terra, non chi sta saltando', () => {
+    const crevasse = entityBox(makeEntity('crevasse'));
+    expect(boxesOverlap(playerBox(0, 1, false), crevasse)).toBe(true);
+    expect(boxesOverlap(playerBox(CONFIG.player.jumpHeight, 1, false), crevasse)).toBe(false);
+  });
+
+  it('isOverhead distingue esattamente i tre ostacoli sospesi dai quattro a terra', () => {
+    for (const kind of OVERHEAD_KINDS) expect(isOverhead(kind)).toBe(true);
+    for (const kind of GROUND_KINDS) expect(isOverhead(kind)).toBe(false);
+  });
+});
+
+describe('invariante di design: l-azione richiesta resta sempre possibile', () => {
+  it('in scivolata, a qualunque taglia da 1 a 5, si passa sotto OGNI ostacolo sospeso', () => {
+    for (const kind of OVERHEAD_KINDS) {
+      const overhead = entityBox(makeEntity(kind, 0, CONFIG.spawn.overheadY));
+      for (const size of ALL_SIZES) {
+        const sliding = playerBox(0, size, true);
+        const clears = !boxesOverlap(sliding, overhead);
+        expect(clears, `taglia ${size} dovrebbe passare sotto ${kind}`).toBe(true);
+      }
+    }
+  });
+
+  it('all-apice del salto, a qualunque taglia da 1 a 5, si supera OGNI ostacolo a terra', () => {
+    for (const kind of GROUND_KINDS) {
+      const ground = entityBox(makeEntity(kind, 0, 0));
+      for (const size of ALL_SIZES) {
+        const apex = playerBox(CONFIG.player.jumpHeight, size, false);
+        const clears = !boxesOverlap(apex, ground);
+        expect(clears, `taglia ${size} dovrebbe superare ${kind} al salto`).toBe(true);
+      }
+    }
+  });
+
+  it('il margine peggiore (taglia massima, scivolata) resta strettamente positivo', () => {
+    const worstSlideTop = playerBox(0, CONFIG.avalanche.maxSize, true).height;
+    expect(worstSlideTop).toBeLessThan(CONFIG.spawn.overheadY);
   });
 });

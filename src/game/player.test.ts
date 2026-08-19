@@ -1,18 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import { CONFIG } from './config';
-import { laneToX } from './lanes';
-import { SLAM_GROUND_SECONDS, createPlayer, jump, moveLane, slam, updatePlayer } from './player';
+import { createPlayer, jump, slide, updatePlayer } from './player';
 import type { PlayerState } from './player';
 
 const STEP = 1 / 60;
-const { laneChangeSeconds, jumpSeconds, jumpHeight } = CONFIG.player;
+const { jumpSeconds, jumpHeight, slideSeconds } = CONFIG.player;
 
 /** Simula il volo e restituisce il tempo di atterraggio e la quota massima. */
-function flight(player: PlayerState, onStep?: (elapsed: number) => void): {
-  landedAt: number;
-  maxY: number;
-  maxAt: number;
-} {
+function flight(player: PlayerState): { landedAt: number; maxY: number; maxAt: number } {
   let elapsed = 0;
   let maxY = 0;
   let maxAt = 0;
@@ -23,86 +18,24 @@ function flight(player: PlayerState, onStep?: (elapsed: number) => void): {
       maxY = player.y;
       maxAt = elapsed;
     }
-    onStep?.(elapsed);
   }
   return { landedAt: elapsed, maxY, maxAt };
 }
 
 describe('createPlayer', () => {
-  it('parte in corsia 1, a x = 0, a terra', () => {
+  it('parte a terra, senza scivolata né volo', () => {
     const player = createPlayer();
-    expect(player.lane).toBe(1);
-    expect(player.x).toBe(0);
-    expect(player.x).toBe(laneToX(1));
     expect(player.y).toBe(0);
+    expect(player.vy).toBe(0);
     expect(player.airborne).toBe(false);
-    expect(player.slamming).toBe(false);
-  });
-});
-
-describe('moveLane', () => {
-  it('porta a corsia 0 e completa la transizione entro laneChangeSeconds', () => {
-    const player = createPlayer();
-    moveLane(player, -1);
-    expect(player.lane).toBe(0);
-
-    let elapsed = 0;
-    while (elapsed < laneChangeSeconds) {
-      updatePlayer(player, STEP);
-      elapsed += STEP;
-    }
-    expect(player.x).toBeCloseTo(laneToX(0), 10);
-    expect(player.laneChangeT).toBe(1);
-  });
-
-  it('non fa nulla oltre i bordi', () => {
-    const player = createPlayer();
-    moveLane(player, -1);
-    for (let i = 0; i < 20; i++) updatePlayer(player, STEP);
-    expect(player.lane).toBe(0);
-
-    moveLane(player, -1);
-    expect(player.lane).toBe(0);
-    expect(player.x).toBeCloseTo(laneToX(0), 10);
-
-    moveLane(player, 1);
-    moveLane(player, 1);
-    for (let i = 0; i < 40; i++) updatePlayer(player, STEP);
-    expect(player.lane).toBe(2);
-    moveLane(player, 1);
-    expect(player.lane).toBe(2);
-  });
-
-  it('interpola in ease-out: a metà tempo ha percorso più di metà distanza', () => {
-    const player = createPlayer();
-    moveLane(player, -1);
-    updatePlayer(player, laneChangeSeconds / 2);
-
-    const travelled = Math.abs(player.x - 0);
-    const total = Math.abs(laneToX(0) - 0);
-    expect(player.laneChangeT).toBeCloseTo(0.5, 10);
-    expect(travelled / total).toBeGreaterThan(0.5);
-    expect(travelled / total).toBeLessThan(1);
-  });
-
-  it('riparte dalla x corrente se si cambia corsia durante una transizione', () => {
-    const player = createPlayer();
-    moveLane(player, -1);
-    updatePlayer(player, laneChangeSeconds / 2);
-    const xBefore = player.x;
-
-    moveLane(player, 1);
-    expect(player.lane).toBe(1);
-    expect(player.laneFromX).toBeCloseTo(xBefore, 10);
-    expect(player.laneChangeT).toBe(0);
-
-    updatePlayer(player, 0.001);
-    expect(Math.abs(player.x - xBefore)).toBeLessThan(0.15);
+    expect(player.sliding).toBe(false);
+    expect(player.slideTimer).toBe(0);
+    expect(player.jumpTimer).toBe(0);
   });
 });
 
 describe('jump', () => {
-  it('mette in aria e descrive una parabola che culmina vicino a jumpHeight', () => {
+  it('descrive una parabola che culmina vicino a jumpHeight a metà volo', () => {
     const player = createPlayer();
     jump(player);
     expect(player.airborne).toBe(true);
@@ -113,7 +46,7 @@ describe('jump', () => {
     expect(Math.abs(maxAt - jumpSeconds / 2)).toBeLessThan(0.05);
   });
 
-  it('atterra a fine jumpSeconds riportando y a 0', () => {
+  it('atterra dopo jumpSeconds', () => {
     const player = createPlayer();
     jump(player);
     const { landedAt } = flight(player);
@@ -122,16 +55,6 @@ describe('jump', () => {
     expect(player.y).toBe(0);
     expect(player.vy).toBe(0);
     expect(player.airborne).toBe(false);
-  });
-
-  it('sale prima di scendere', () => {
-    const player = createPlayer();
-    jump(player);
-    updatePlayer(player, STEP);
-    const first = player.y;
-    updatePlayer(player, STEP);
-    expect(player.y).toBeGreaterThan(first);
-    expect(first).toBeGreaterThan(0);
   });
 
   it('viene ignorato se si è già in aria', () => {
@@ -147,55 +70,77 @@ describe('jump', () => {
   });
 });
 
-describe('slam', () => {
-  it('a terra tiene la mucca abbassata per SLAM_GROUND_SECONDS e poi si spegne', () => {
+describe('slide a terra', () => {
+  it('dura slideSeconds e poi si spegne', () => {
     const player = createPlayer();
-    slam(player);
-    expect(player.slamming).toBe(true);
-    expect(player.slamTimer).toBeCloseTo(SLAM_GROUND_SECONDS, 10);
-    expect(SLAM_GROUND_SECONDS).toBe(0.25);
+    slide(player);
+    expect(player.sliding).toBe(true);
+    expect(player.slideTimer).toBeCloseTo(slideSeconds, 10);
 
-    updatePlayer(player, 0.1);
-    expect(player.slamming).toBe(true);
+    updatePlayer(player, slideSeconds / 2);
+    expect(player.sliding).toBe(true);
 
-    updatePlayer(player, 0.2);
-    expect(player.slamming).toBe(false);
-    expect(player.slamTimer).toBe(0);
+    updatePlayer(player, slideSeconds / 2 + STEP);
+    expect(player.sliding).toBe(false);
+    expect(player.slideTimer).toBe(0);
   });
 
-  it('in aria accelera la caduta', () => {
+  it('può essere ri-avviata a fine durata', () => {
+    const player = createPlayer();
+    slide(player);
+    updatePlayer(player, slideSeconds + STEP);
+    expect(player.sliding).toBe(false);
+
+    slide(player);
+    expect(player.sliding).toBe(true);
+    expect(player.slideTimer).toBeCloseTo(slideSeconds, 10);
+  });
+});
+
+describe('slide in aria (tuffo)', () => {
+  it('accelera la caduta rispetto a un salto normale', () => {
     const plain = createPlayer();
     jump(plain);
     const plainFlight = flight(plain);
 
-    const slammed = createPlayer();
-    jump(slammed);
-    updatePlayer(slammed, STEP);
-    slam(slammed);
-    expect(slammed.slamming).toBe(true);
-    const slamFlight = flight(slammed);
+    const diving = createPlayer();
+    jump(diving);
+    updatePlayer(diving, STEP);
+    slide(diving);
+    expect(diving.sliding).toBe(true);
+    const diveFlight = flight(diving);
 
-    expect(slamFlight.landedAt + STEP).toBeLessThan(plainFlight.landedAt);
-    expect(slammed.airborne).toBe(false);
-    expect(slammed.y).toBe(0);
-    expect(slammed.slamming).toBe(false);
+    expect(diveFlight.landedAt + STEP).toBeLessThan(plainFlight.landedAt);
   });
 
-  it('non lascia lo slam attivo dopo l-atterraggio', () => {
+  it('all-atterraggio il giocatore risulta in scivolata', () => {
     const player = createPlayer();
     jump(player);
-    slam(player);
+    updatePlayer(player, STEP);
+    slide(player);
+
     flight(player);
-    expect(player.slamming).toBe(false);
-    expect(player.slamTimer).toBe(0);
-  });
 
-  it('saltare durante uno slam a terra annulla lo slam', () => {
+    expect(player.airborne).toBe(false);
+    expect(player.y).toBe(0);
+    expect(player.sliding).toBe(true);
+    expect(player.slideTimer).toBeCloseTo(slideSeconds, 10);
+  });
+});
+
+describe('salto durante la scivolata', () => {
+  it('è possibile e interrompe la scivolata', () => {
+    // Scelta di design (vedi commento del task): come già in v1 per lo slam a
+    // terra, saltare durante una scivolata la interrompe subito invece di
+    // restare bloccati a terra finché non scade slideTimer.
     const player = createPlayer();
-    slam(player);
+    slide(player);
+    expect(player.sliding).toBe(true);
+
     jump(player);
-    expect(player.slamming).toBe(false);
-    expect(player.slamTimer).toBe(0);
+
     expect(player.airborne).toBe(true);
+    expect(player.sliding).toBe(false);
+    expect(player.slideTimer).toBe(0);
   });
 });

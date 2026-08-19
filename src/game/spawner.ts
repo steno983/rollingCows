@@ -1,156 +1,179 @@
 import type { Rng } from '../core/rng';
 import { CONFIG } from './config';
-import type { Entity, EntityKind, Lane, ObstacleKind, PickupKind } from './types';
+import type {
+  Branch,
+  BuffKind,
+  Entity,
+  GroundObstacleKind,
+  ObstacleKind,
+  OverheadObstacleKind,
+} from './types';
+import { isOverhead } from './types';
 
-/** Quota della base del ramo sospeso: sotto ci si passa con lo slam. */
-export const BRANCH_Y: number = CONFIG.spawn.branchY;
-
-/** Ostacoli che poggiano a terra e bloccano la corsia. */
-const GROUND_OBSTACLES: readonly ObstacleKind[] = ['rock', 'tree', 'fence', 'crevasse'];
-
-const PICKUP_BY_ROLL: readonly PickupKind[] = ['cow', 'hay', 'snowflake'];
+const GROUND_OBSTACLES: readonly GroundObstacleKind[] = ['rock', 'log', 'fence', 'crevasse'];
+const OVERHEAD_OBSTACLES: readonly OverheadObstacleKind[] = ['branch', 'arch', 'cornice'];
+const BUFF_KINDS: readonly BuffKind[] = ['crystal', 'star', 'magnet', 'bell'];
 
 export interface Spawner {
-  /** Popola un chunk appena riciclato, aggiungendo entità a `out`. */
-  populateChunk(chunkZ: number, difficulty: number, out: Entity[]): void;
-  /**
-   * Popola UNA riga a `z`, saltando il tiro di rowFillChance: populateRow
-   * piazza sempre almeno un ostacolo (cabin, oppure ≥1 ostacolo a terra: vedi
-   * il ramo `else` sotto, dove `wanted` è sempre ≥1), quindi basta chiamarla
-   * direttamente per garantire che quella riga non sia mai vuota. Usata da
-   * startRun per la cintura di partenza (vedi CONFIG.startBelt).
-   */
-  forceRow(z: number, difficulty: number, out: Entity[]): void;
+  /** Popola un tratto di percorso su un ramo, aggiungendo entità a `out`. */
+  populateSegment(
+    startZ: number,
+    length: number,
+    difficulty: number,
+    branch: Branch,
+    rich: boolean,
+    out: Entity[],
+  ): void;
   reset(): void;
 }
 
 export function createSpawner(rng: Rng): Spawner {
-  const { laneCount, chunkLength } = CONFIG.world;
-  const { rowSpacing, rowFillChanceMin, rowFillChanceMax, maxBlockedLanes } = CONFIG.spawn;
-  const { pickupChance, cowChance, hayChance } = CONFIG.spawn;
-
-  const rowCount = Math.max(1, Math.floor(chunkLength / rowSpacing));
-  /** Tetto reale di corsie bloccabili: almeno una resta sempre percorribile. */
-  const blockLimit = Math.min(maxBlockedLanes, laneCount - 1);
-  /** Scratch riusato per ogni riga: nessuna allocazione durante la generazione. */
-  const laneBlocked: boolean[] = new Array<boolean>(laneCount).fill(false);
+  const { minObstacleGap, maxObstacleGap, trailMin, trailMax, trailSpacing, trailArcHeight } =
+    CONFIG.spawn;
+  const gapSpread = maxObstacleGap - minObstacleGap;
 
   let nextId = 0;
 
-  function clearLanes(): void {
-    for (let lane = 0; lane < laneCount; lane++) {
-      laneBlocked[lane] = false;
-    }
-  }
-
-  function freeLaneCount(): number {
-    let free = 0;
-    for (let lane = 0; lane < laneCount; lane++) {
-      if (!laneBlocked[lane]) free++;
-    }
-    return free;
-  }
-
-  /** Corsia libera scelta a caso, oppure -1 se non ce ne sono. */
-  function pickFreeLane(): number {
-    const free = freeLaneCount();
-    if (free === 0) return -1;
-    let target = rng.int(0, free);
-    for (let lane = 0; lane < laneCount; lane++) {
-      if (laneBlocked[lane]) continue;
-      if (target === 0) return lane;
-      target--;
-    }
-    return -1;
-  }
-
   function emit(
     out: Entity[],
-    kind: EntityKind,
+    kind: Entity['kind'],
     category: 'obstacle' | 'pickup',
-    lane: number,
-    width: 1 | 2,
+    branch: Branch,
     z: number,
     y: number,
   ): void {
-    out.push({
-      id: nextId++,
-      kind,
-      category,
-      lane: lane as Lane,
-      width,
-      z,
-      y,
-      alive: true,
-    });
+    out.push({ id: nextId++, kind, category, branch, z, y, alive: true });
   }
 
-  function pickPickupKind(): PickupKind {
-    const roll = rng.next();
-    if (roll < cowChance) return PICKUP_BY_ROLL[0] as PickupKind;
-    if (roll < cowChance + hayChance) return PICKUP_BY_ROLL[1] as PickupKind;
-    return PICKUP_BY_ROLL[2] as PickupKind;
+  /** Tempo reale che serve a completare l'azione richiesta da questo ostacolo:
+   *  scivolata per i sospesi, salto per quelli a terra. È la base
+   *  dell'invariante di giocabilità (vedi Note di progetto). */
+  function requiredActionSeconds(kind: ObstacleKind): number {
+    return isOverhead(kind) ? CONFIG.player.slideSeconds : CONFIG.player.jumpSeconds;
   }
 
-  function populateRow(rowZ: number, difficulty: number, out: Entity[]): void {
-    clearLanes();
+  function pickObstacleKind(): ObstacleKind {
+    return rng.chance(0.5) ? rng.pick(GROUND_OBSTACLES) : rng.pick(OVERHEAD_OBSTACLES);
+  }
 
-    // 1. Ostacoli a terra. La cabin occupa due corsie e da sola satura il budget.
-    const cabinChance =
-      CONFIG.spawn.cabinChanceBase + CONFIG.spawn.cabinChancePerDifficulty * difficulty;
-    if (blockLimit >= 2 && laneCount >= 3 && rng.chance(cabinChance)) {
-      const lane = rng.int(0, laneCount - 1); // 0 o 1: la cabin sfora a destra
-      emit(out, 'cabin', 'obstacle', lane, 2, rowZ, 0);
-      laneBlocked[lane] = true;
-      laneBlocked[lane + 1] = true;
-    } else {
-      const secondChance =
-        CONFIG.spawn.secondObstacleChanceBase +
-        CONFIG.spawn.secondObstacleChancePerDifficulty * difficulty;
-      const wanted = rng.chance(secondChance) ? 2 : 1;
-      const count = Math.min(wanted, blockLimit);
-      for (let i = 0; i < count; i++) {
-        const lane = pickFreeLane();
-        if (lane < 0) break;
-        emit(out, rng.pick(GROUND_OBSTACLES), 'obstacle', lane, 1, rowZ, 0);
-        laneBlocked[lane] = true;
-      }
+  function pickBuffKind(): BuffKind {
+    const weights = CONFIG.spawn.buffWeights;
+    const total = weights.crystal + weights.star + weights.magnet + weights.bell;
+    let roll = rng.next() * total;
+    for (const kind of BUFF_KINDS) {
+      roll -= weights[kind];
+      if (roll < 0) return kind;
     }
+    const fallback = BUFF_KINDS[BUFF_KINDS.length - 1];
+    if (fallback === undefined) throw new Error('pickBuffKind: BUFF_KINDS vuoto');
+    return fallback;
+  }
 
-    // 2. Ramo sospeso: non blocca la corsia (ci si passa sotto con lo slam), ma lo
-    //    generiamo solo se resta almeno una corsia completamente sgombra.
-    const blocked = laneCount - freeLaneCount();
-    const branchChance =
-      CONFIG.spawn.branchChanceBase + CONFIG.spawn.branchChancePerDifficulty * difficulty;
-    if (blocked < blockLimit && rng.chance(branchChance)) {
-      const lane = pickFreeLane();
-      if (lane >= 0) {
-        emit(out, 'branch', 'obstacle', lane, 1, rowZ, BRANCH_Y);
-      }
+  /** Fila ad arco che insegna il salto: termina esattamente sull'ostacolo a terra
+   *  (l'ultimo fiocco coincide con esso), apice a trailArcHeight a metà fila. I
+   *  punti che cadrebbero prima dell'inizio del segmento, o prima dell'ostacolo
+   *  precedente, vengono scartati: senza questo secondo limite, quando il gap
+   *  fra due ostacoli scende vicino al minimo giocabile una fila lunga potrebbe
+   *  sporgere all'indietro oltre l'ostacolo precedente e interfogliarsi con la
+   *  sua stessa fila ad arco, rompendo la forma unimodale di entrambe. */
+  function emitArcTrail(
+    obstacleZ: number,
+    branch: Branch,
+    count: number,
+    floorZ: number,
+    out: Entity[],
+  ): void {
+    for (let i = 0; i < count; i++) {
+      const z = obstacleZ - (count - 1 - i) * trailSpacing;
+      if (z < floorZ) continue;
+      const t = count > 1 ? i / (count - 1) : 0.5;
+      const rawY = trailArcHeight * Math.sin(Math.PI * t);
+      // Math.sin(Math.PI) non è esattamente 0 (Math.PI è un'approssimazione):
+      // agli estremi dell'arco arrotondiamo lo zero vero, altrimenti quel
+      // residuo infinitesimale ma positivo farebbe sembrare l'ultimo fiocco
+      // "in aria" e lo saldrebbe visivamente alla fila ad arco successiva.
+      const y = Math.abs(rawY) < 1e-9 ? 0 : rawY;
+      emit(out, 'snowflake', 'pickup', branch, z, y);
     }
+  }
 
-    // 3. Un raccoglibile al massimo, mai in una corsia occupata da un ostacolo a terra.
-    if (rng.chance(pickupChance)) {
-      const lane = pickFreeLane();
-      if (lane >= 0) {
-        emit(out, pickPickupKind(), 'pickup', lane, 1, rowZ, 0);
-        laneBlocked[lane] = true;
-      }
+  /** Fila bassa che insegna la scivolata: centrata sull'ostacolo sospeso, a quota
+   *  0 (sotto la sua base, spawn.overheadY). */
+  function emitLowTrail(
+    obstacleZ: number,
+    branch: Branch,
+    count: number,
+    startZ: number,
+    endZ: number,
+    out: Entity[],
+  ): void {
+    const half = (count - 1) / 2;
+    for (let i = 0; i < count; i++) {
+      const z = obstacleZ + (i - half) * trailSpacing;
+      if (z < startZ || z >= endZ) continue;
+      emit(out, 'snowflake', 'pickup', branch, z, 0);
     }
   }
 
   return {
-    populateChunk(chunkZ: number, difficulty: number, out: Entity[]): void {
+    populateSegment(
+      startZ: number,
+      length: number,
+      difficulty: number,
+      branch: Branch,
+      rich: boolean,
+      out: Entity[],
+    ): void {
       const clamped = Math.min(1, Math.max(0, difficulty));
-      const fillChance = rowFillChanceMin + (rowFillChanceMax - rowFillChanceMin) * clamped;
-      for (let row = 0; row < rowCount; row++) {
-        if (!rng.chance(fillChance)) continue;
-        populateRow(chunkZ + row * rowSpacing, clamped, out);
+      const endZ = startZ + length;
+      let cursorZ = startZ;
+      // z dell'ostacolo precedente: limite inferiore per la fila ad arco del
+      // prossimo, così due file non si interfogliano quando il gap è stretto
+      // (vedi commento su emitArcTrail).
+      let previousObstacleZ = -Infinity;
+
+      while (cursorZ < endZ) {
+        const kind = pickObstacleKind();
+        const overhead = isOverhead(kind);
+
+        // La distanza scelta cala con la difficoltà, ma non scende MAI sotto il
+        // tempo reale che serve a completare l'azione richiesta da questo
+        // ostacolo alla velocità massima: è l'invariante di giocabilità.
+        const minTraversableGap = requiredActionSeconds(kind) * CONFIG.world.maxSpeed;
+        const rangeLow = Math.max(minObstacleGap, minTraversableGap);
+        const desiredHigh = maxObstacleGap - gapSpread * clamped;
+        const rangeHigh = Math.max(rangeLow, desiredHigh);
+        const midpoint = (rangeLow + rangeHigh) / 2;
+        // Ramo ricco: distanza nel semi-intervallo basso (ostacoli più fitti).
+        // Ramo sgombro: semi-intervallo alto (ostacoli più radi).
+        const gap = rich
+          ? rangeLow + rng.next() * (midpoint - rangeLow)
+          : midpoint + rng.next() * (rangeHigh - midpoint);
+
+        emit(out, kind, 'obstacle', branch, cursorZ, overhead ? CONFIG.spawn.overheadY : 0);
+
+        // Ramo ricco: fila lunga (trailMin..trailMax). Ramo sgombro: fila corta
+        // (1..ceil(trailMin/2)), sempre più povera ma mai assente.
+        const trailCount = rich
+          ? rng.int(trailMin, trailMax + 1)
+          : rng.int(1, Math.ceil(trailMin / 2) + 1);
+
+        if (overhead) {
+          emitLowTrail(cursorZ, branch, trailCount, startZ, endZ, out);
+        } else {
+          emitArcTrail(cursorZ, branch, trailCount, Math.max(startZ, previousObstacleZ), out);
+        }
+        previousObstacleZ = cursorZ;
+
+        // I buff esistono solo sul ramo ricco: è ciò che rende la scelta al
+        // bivio una scelta vera (vedi design doc).
+        if (rich && rng.chance(CONFIG.spawn.buffChance)) {
+          const buffZ = cursorZ + gap / 2;
+          if (buffZ < endZ) emit(out, pickBuffKind(), 'pickup', branch, buffZ, 0);
+        }
+
+        cursorZ += gap;
       }
-    },
-    forceRow(z: number, difficulty: number, out: Entity[]): void {
-      const clamped = Math.min(1, Math.max(0, difficulty));
-      populateRow(z, clamped, out);
     },
     reset(): void {
       nextId = 0;

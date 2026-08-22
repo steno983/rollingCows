@@ -236,62 +236,6 @@
   color: #fff6f5;
 }
 
-/* Il pannello del bivio evidenziava IL RAMO RICCO, cioè ripeteva l'unica cosa
-   che il mondo sa già dire da solo (quel ramo è pieno di fiocchi) e taceva
-   l'unica che il mondo non può dire: cosa sto scegliendo io. Ora le due frecce
-   nascono neutre; si accende quella scelta, e per un attimo quella che si
-   ottiene non facendo nulla. */
-.hud__fork {
-  position: absolute;
-  top: 50%;
-  left: 0;
-  right: 0;
-  display: flex;
-  justify-content: space-between;
-  padding: 0 12px;
-  opacity: 0;
-  transform: translateY(-50%) scale(0.9);
-  transition: opacity 150ms ease, transform 150ms ease;
-}
-
-.hud__fork--visible {
-  opacity: 1;
-  transform: translateY(-50%) scale(1);
-}
-
-.hud__fork-side {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  padding: 6px 12px;
-  border-radius: 12px;
-  font-size: 14px;
-  font-weight: 800;
-  letter-spacing: 0.06em;
-  background: rgba(11, 28, 44, 0.45);
-  opacity: 0.6;
-  transition: opacity 120ms ease, background 120ms ease, box-shadow 120ms ease;
-}
-
-.hud__fork-side .icon {
-  width: 30px;
-  height: 30px;
-}
-
-/* Il ramo che si ottiene restando fermi: lampo breve all'apparire del bivio. */
-.hud__fork-side--default {
-  opacity: 1;
-  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.85);
-}
-
-/* Il ramo che ho scelto io. */
-.hud__fork-side--chosen {
-  opacity: 1;
-  color: #06202f;
-  background: rgba(191, 230, 255, 0.9);
-  box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.5);
-}
-
 /* Vignetta calda della valanga: un radial-gradient su un elemento già
    presente, quindi costo zero in WebGL (nessun render target, nessun
    passaggio a schermo pieno in più). I due numeri arrivano da
@@ -695,19 +639,6 @@
   opacity: 1;
   transform: translate(-50%, 0);
 }
-
-@media (prefers-reduced-motion: reduce) {
-  .hud--avalanche .hud__points,
-  .hud--warning .hud__charge,
-  .hud--warning .hud__size,
-  .hud__buff--expiring.hud__buff--active,
-  .hud__fork,
-  .hud__record,
-  .hud__multiplier,
-  .prompt {
-    animation: none;
-    transition: none;
-  }
 
   .hud__charge-fill {
     transition: none;

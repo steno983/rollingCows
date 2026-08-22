@@ -6,6 +6,10 @@ import {
   cameraFovFor,
   cameraHeightFor,
   decayShake,
+  LOOK_AHEAD_Z,
+  LOOK_AT_Y,
+  slopeTiltY,
+  slopeTiltZ,
   speedRatio,
 } from './camera-rig';
 
@@ -112,22 +116,28 @@ const SUN_INTENSITY = 2.7;
  *  incoerente. */
 const HEMI_LOW_BOOST = 1.23;
 
-/** Punto verso cui la camera guarda: davanti alla mucca, poco sopra la neve. */
-const LOOK_AHEAD_Z = 9;
-const LOOK_AT_Y = 1.4;
 /** Velocità (1/s) con cui distanza, altezza, FOV e luce della valanga
  *  raggiungono il valore obiettivo. */
 const RIG_RATE = CONFIG.render.shakeDecay;
 
 /** Quota della cupola (seno dell'angolo sopra l'orizzonte) alla quale il
  *  gradiente arriva a SKY_TOP, e posizione dello stop intermedio dentro
- *  quell'intervallo. La camera guarda in basso di ~12.7°
- *  (CAMERA_HEIGHT_RATIO) e il semi-FOV verticale va da 28° a 39°: il bordo
- *  alto dello schermo sta quindi fra 15° e 26° sopra l'orizzonte, cioè fra
- *  0.26 e 0.44 di seno. Sopra 0.38 il cielo è tutto SKY_TOP e non si vede
- *  quasi mai; sotto, il gradiente si legge per intero come nella texture che
- *  la cupola sostituisce. */
-const SKY_ZENITH_Y = 0.38;
+ *  quell'intervallo.
+ *
+ *  Il conto va rifatto ogni volta che cambia quanto la camera guarda in
+ *  basso, perché è quello a decidere quanta cupola entra in quadro. Con il
+ *  rig inclinato sul pendio (WORLD_SLOPE) l'asse ottico scende di 20,7°
+ *  (taglia 1) e 24,4° (taglia 5) sotto l'orizzonte, e il semi-FOV verticale
+ *  va da 28° a 39°: il bordo alto dello schermo sta quindi fra 7,3° sopra
+ *  l'orizzonte (gioco normale) e 14,6° (valanga, FOV spalancato), cioè fra
+ *  0,127 e 0,25 di seno — contro i 15°-26° del mondo piatto.
+ *
+ *  Il valore era 0.38, tarato su quella fascia più alta: lasciandolo lì si
+ *  vedrebbe solo il primo terzo del gradiente e il cielo diventerebbe una
+ *  lastra pallida uniforme. A 0.21 il bordo alto dello schermo cade a t≈0,61
+ *  come prima (era 0,60), e la valanga continua a spingere il quadro dentro
+ *  SKY_TOP pieno: stessa lettura, su una finestra di cielo più stretta. */
+const SKY_ZENITH_Y = 0.21;
 const SKY_MID_STOP = 0.45;
 /** Raggio della cupola in frazione di camera.far: dentro il far plane con
  *  margine anche nei punti dove la sfera a 16 lati taglia l'angolo. */
@@ -271,8 +281,18 @@ export function createScene(
   const sunColor = new THREE.Color(SUN_COLOR);
   const sunAvalancheColor = new THREE.Color(SUN_AVALANCHE_COLOR);
   const sun = new THREE.DirectionalLight(SUN_COLOR, SUN_INTENSITY);
-  sun.position.set(14, 26, -10);
-  sun.target.position.set(0, 0, 12);
+  // Il sole è inclinato insieme al pendio, come il rig della camera. Non è
+  // realismo (il sole vero non si piega con la montagna): è il modo di NON
+  // rimettere in discussione due tarature fatte a mano sul mondo piatto.
+  // L'incidenza su ogni faccia di ogni voxel resta quella misurata per
+  // HEMI_INTENSITY/SUN_INTENSITY qui sopra, e soprattutto il frustum della
+  // shadow map — misurato per coprire z ∈ [-39, 80] al suolo, vedi
+  // render.shadow in game/config.ts — continua a coprire esattamente quella
+  // fascia di pendio invece di scivolarci sopra man mano che il terreno
+  // scende. Nessuno può accorgersene: in cielo non c'è un disco solare, e il
+  // gradiente della cupola è simmetrico attorno alla verticale.
+  sun.position.set(14, slopeTiltY(26, -10), slopeTiltZ(26, -10));
+  sun.target.position.set(0, slopeTiltY(0, 12), slopeTiltZ(0, 12));
   sun.castShadow = shadowsEnabled;
   const shadowCfg = CONFIG.render.shadow;
   sun.shadow.mapSize.set(shadowCfg.mapSize, shadowCfg.mapSize);
@@ -291,16 +311,28 @@ export function createScene(
   scene.add(sun);
   scene.add(sun.target);
 
-  const lookAt = new THREE.Vector3(0, LOOK_AT_Y, LOOK_AHEAD_Z);
+  // Anche il punto guardato scende lungo il pendio: è l'altra metà della
+  // rotazione rigida del rig (vedi WORLD_SLOPE). Con il lookAt fermo sul
+  // vecchio punto la camera guarderebbe un pezzo di cielo sopra il pendio.
+  const lookAt = new THREE.Vector3(
+    0,
+    slopeTiltY(LOOK_AT_Y, LOOK_AHEAD_Z),
+    slopeTiltZ(LOOK_AT_Y, LOOK_AHEAD_Z),
+  );
   const shakeRng = createRng(SHAKE_SEED);
   let shakeAmount = 0;
   let lowQuality = false;
   let reduced = reducedMotion;
   let distance = cameraDistanceFor(1);
   let height = cameraHeightFor(1);
+  /** Quota della camera DOPO l'inclinazione del rig sul pendio, senza shake:
+   *  `height` resta la quota misurata sul pendio (quella che dipende dalla
+   *  taglia), questa è dove finisce davvero la camera nel mondo. Dietro la
+   *  mucca il pendio sale, quindi è sempre più alta di `height`. */
+  let rigY = slopeTiltY(height, -distance);
   // La camera non si sposta mai lateralmente (lookAt è fisso a x = 0): l'unica
   // sua x diversa da 0 è lo shake, che qui va apposta ignorato.
-  const rigPosition = { x: 0, z: -distance };
+  const rigPosition = { x: 0, z: slopeTiltZ(height, -distance) };
 
   /** Applica un moltiplicatore di render.reducedMotion solo se la riduzione
    *  del movimento è richiesta. */
@@ -344,7 +376,12 @@ export function createScene(
 
     distance += (cameraDistanceFor(size) - distance) * k;
     height += (cameraHeightFor(size) - height) * k;
-    rigPosition.z = -distance;
+    // Il rig scivola sul pendio invece che su un piano orizzontale: stessa
+    // posizione di prima RISPETTO AL PENDIO, ruotata di WORLD_SLOPE come il
+    // gruppo-mondo. È questa coppia di righe a garantire che il corridoio
+    // resti inquadrato esattamente come prima.
+    rigY = slopeTiltY(height, -distance);
+    rigPosition.z = slopeTiltZ(height, -distance);
 
     // La valanga vira tutta l'inquadratura invece di appiccicarci sopra un
     // effetto: il sole si scalda e si intensifica, e torna indietro alla fine.
@@ -380,7 +417,7 @@ export function createScene(
     const amplitude = shakeAmount + jitter;
     const offsetX = (shakeRng.next() * 2 - 1) * amplitude;
     const offsetY = (shakeRng.next() * 2 - 1) * amplitude;
-    camera.position.set(offsetX, height + offsetY, -distance);
+    camera.position.set(offsetX, rigY + offsetY, rigPosition.z);
     camera.lookAt(lookAt);
     // Rollio da bivio (render/curve.ts, cameraRollFor): lookAt sopra
     // ricalcola l'orientamento da zero a ogni chiamata (asse "up" sempre
@@ -394,7 +431,7 @@ export function createScene(
     // camera tremante, il cielo tremerebbe insieme a lei e lo scuotimento
     // sparirebbe dalla metà alta dello schermo (stessa scelta di
     // render/backdrop.ts).
-    sky.position.set(rigPosition.x, height, rigPosition.z);
+    sky.position.set(rigPosition.x, rigY, rigPosition.z);
   }
 
   function shake(amount: number): void {
@@ -435,9 +472,9 @@ export function createScene(
   }
 
   resize();
-  camera.position.set(0, height, -distance);
+  camera.position.set(0, rigY, rigPosition.z);
   camera.lookAt(lookAt);
-  sky.position.set(rigPosition.x, height, rigPosition.z);
+  sky.position.set(rigPosition.x, rigY, rigPosition.z);
 
   return {
     renderer,

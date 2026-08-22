@@ -63,12 +63,29 @@ export const MAX_OBSTACLE_INSTANCES = OBSTACLES_PER_BRANCH * 2;
  */
 export const MAX_BUFF_INSTANCES = MAX_OBSTACLE_INSTANCES;
 
-/** Capienza dell'InstancedMesh di ciascun tipo di entità. */
-export const INSTANCE_CAPACITY: Readonly<Record<EntityKind, number>> = {
+/**
+ * Tetto per i CARTELLI del bivio: ce n'è al più uno per bivio, e nella
+ * profondità popolata (POPULATED_DEPTH, 260 unità) non ci stanno più di tre
+ * bivi, perché due bivi distano almeno CONFIG.path.minGap (120 unità) e la
+ * distanza cresce con la velocità. Quattro è quel massimo con un margine.
+ */
+export const MAX_SIGNPOST_INSTANCES = Math.ceil(POPULATED_DEPTH / CONFIG.path.minGap) + 1;
+
+/**
+ * Capienza dell'InstancedMesh di ciascun tipo di entità.
+ *
+ * `chasm` e `signpost` sono nominati anche nell'unione delle chiavi: i due
+ * tipi entrano in `EntityKind` (game/types.ts) insieme alle meccaniche che li
+ * usano, e nominarli qui fa compilare il file sia prima sia dopo — a unione
+ * fatta i due letterali si riassorbono.
+ */
+export const INSTANCE_CAPACITY: Readonly<Record<EntityKind | 'chasm' | 'signpost', number>> = {
   rock: MAX_OBSTACLE_INSTANCES,
   log: MAX_OBSTACLE_INSTANCES,
   fence: MAX_OBSTACLE_INSTANCES,
   crevasse: MAX_OBSTACLE_INSTANCES,
+  chasm: MAX_OBSTACLE_INSTANCES,
+  signpost: MAX_SIGNPOST_INSTANCES,
   branch: MAX_OBSTACLE_INSTANCES,
   arch: MAX_OBSTACLE_INSTANCES,
   cornice: MAX_OBSTACLE_INSTANCES,

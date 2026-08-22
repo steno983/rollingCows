@@ -184,6 +184,7 @@ describe('populateSegment', () => {
       'log',
       'fence',
       'crevasse',
+      'chasm',
       'branch',
       'arch',
       'cornice',
@@ -835,5 +836,130 @@ describe('primo ostacolo del tutorial', () => {
     const firstOfSecond = obstaclesByZ(second)[0];
     if (firstOfSecond === undefined) throw new Error('nessun ostacolo dopo il reset');
     expect(firstOfSecond.z).toBeGreaterThanOrEqual(floor);
+  });
+});
+
+describe('crepaccio vero (chasm)', () => {
+  function kindsOf(seed: number, lateProgress: number): string[] {
+    const out: Entity[] = [];
+    createSpawner(createRng(seed)).populateSegment(0, 6000, 1, 'main', false, out, lateProgress);
+    return out.filter((entity) => entity.category === 'obstacle').map((entity) => entity.kind);
+  }
+
+  it('non nasce MAI prima della rampa tardiva', () => {
+    // Non è solo ritmo: un buco largo 7 unità si salta solo sopra i 15,5 u/s
+    // (vedi il conto in config, collisions.entityBox.chasm), e prima di
+    // lateRampStart quella velocità non è garantita in tutti i profili.
+    let obstacles = 0;
+    for (let seed = 1; seed <= 120; seed++) {
+      const kinds = kindsOf(seed, 0);
+      obstacles += kinds.length;
+      expect(kinds.filter((kind) => kind === 'chasm')).toEqual([]);
+    }
+    expect(obstacles).toBeGreaterThan(1000);
+  });
+
+  it('a rampa piena nasce, ma resta raro', () => {
+    let chasms = 0;
+    let obstacles = 0;
+    for (let seed = 1; seed <= 120; seed++) {
+      const kinds = kindsOf(seed, 1);
+      obstacles += kinds.length;
+      chasms += kinds.filter((kind) => kind === 'chasm').length;
+    }
+    expect(chasms).toBeGreaterThan(0);
+    // Un ostacolo su una decina scarsa: un evento, non un tipo di terreno.
+    const share = chasms / obstacles;
+    expect(share).toBeGreaterThan(0.02);
+    expect(share).toBeLessThan(0.12);
+  });
+
+  it('non è mai il PRIMO ostacolo che il giocatore incontra', () => {
+    // Anche a rampa piena passata a mano: il primo ostacolo di una corsa
+    // insegna il salto, non punisce chi non l-ha ancora imparato.
+    for (let seed = 1; seed <= 120; seed++) {
+      const out: Entity[] = [];
+      createSpawner(createRng(seed)).populateSegment(0, 400, 1, 'main', false, out, 1);
+      const first = obstaclesByZ(out)[0];
+      if (first === undefined) continue;
+      expect(first.kind).not.toBe('chasm');
+    }
+  });
+
+  it('INVARIANTE DI GIOCABILITÀ a RAMPA PIENA, col crepaccio in circolazione (300 seed x rich/sgombro)', () => {
+    // Il gemello del test qui sopra, ma con lateProgress = 1: è la
+    // configurazione in cui esistono insieme le coppie strette e il crepaccio,
+    // cioè le due cose che accorciano davvero i margini.
+    let pairsChecked = 0;
+    let chasms = 0;
+    for (let seed = 1; seed <= 300; seed++) {
+      for (const rich of [true, false]) {
+        const out: Entity[] = [];
+        createSpawner(createRng(seed)).populateSegment(0, 5000, 1, 'main', rich, out, 1);
+        const obstacles = obstaclesByZ(out);
+        chasms += obstacles.filter((entity) => entity.kind === 'chasm').length;
+        pairsChecked += expectGapsTraversable(obstacles);
+      }
+    }
+    expect(pairsChecked).toBeGreaterThan(1000);
+    // Se il crepaccio non comparisse, il test starebbe misurando il nulla.
+    expect(chasms).toBeGreaterThan(100);
+  });
+});
+
+describe('cartello del bivio (signpost)', () => {
+  it('non è MAI estratto dalla generazione: lo piazza solo il bivio', () => {
+    for (let seed = 1; seed <= 120; seed++) {
+      for (const late of [0, 0.5, 1]) {
+        const out: Entity[] = [];
+        createSpawner(createRng(seed)).populateSegment(0, 4000, 1, 'main', true, out, late);
+        expect(out.some((entity) => entity.kind === 'signpost')).toBe(false);
+      }
+    }
+  });
+
+  it('placeSignpost emette un cartello sul tronco, a terra, con un id nuovo', () => {
+    const out: Entity[] = [];
+    const spawner = createSpawner(createRng(9));
+    spawner.populateSegment(0, 400, 0.5, 'main', false, out);
+    const idsBefore = new Set(out.map((entity) => entity.id));
+
+    spawner.placeSignpost(77, out);
+
+    const sign = out[out.length - 1];
+    if (sign === undefined) throw new Error('cartello mancante');
+    expect(sign.kind).toBe('signpost');
+    expect(sign.category).toBe('obstacle');
+    expect(sign.branch).toBe('main');
+    expect(sign.z).toBe(77);
+    expect(sign.y).toBe(0);
+    expect(sign.alive).toBe(true);
+    expect(idsBefore.has(sign.id)).toBe(false);
+  });
+
+  it('placeSignpost non sposta i cursori e non consuma numeri pseudocasuali', () => {
+    // Il cartello non fa parte della spaziatura degli ostacoli e non deve
+    // spostare di un bit la corsa che il seed descrive.
+    const withSign: Entity[] = [];
+    const a = createSpawner(createRng(31));
+    a.populateSegment(0, 600, 0.5, 'main', false, withSign);
+    a.placeSignpost(300, withSign);
+    a.populateSegment(600, 600, 0.5, 'main', false, withSign);
+
+    const without: Entity[] = [];
+    const b = createSpawner(createRng(31));
+    b.populateSegment(0, 600, 0.5, 'main', false, without);
+    b.populateSegment(600, 600, 0.5, 'main', false, without);
+
+    // L-id no: il cartello ne consuma uno, e gli id sono un contatore. Cio' che
+    // deve restare identico e' la GENERAZIONE — tipi, distanze, quote — perche'
+    // e' quella che il seed promette di riprodurre.
+    const strip = (entities: readonly Entity[]): string =>
+      JSON.stringify(
+        entities
+          .filter((entity) => entity.kind !== 'signpost')
+          .map((entity) => [entity.kind, entity.branch, entity.z, entity.y]),
+      );
+    expect(strip(withSign)).toBe(strip(without));
   });
 });

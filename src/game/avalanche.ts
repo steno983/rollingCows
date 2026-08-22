@@ -12,23 +12,10 @@ export interface AvalancheState {
   phase: AvalanchePhase;
   /** Secondi rimanenti nella fase active/warning. */
   timeLeft: number;
-  /** Carica raccolta DURANTE la valanga, in attesa di essere versata sulla
-   *  barra alla fine (vedi addCharge). Prima veniva semplicemente buttata: nel
-   *  profilo che sceglie sempre il ramo ricco erano 607 fiocchi per corsa,
-   *  cioè più carica di quanta se ne accumuli utilmente, e niente lo
-   *  comunicava — la barra è piena e lampeggia, quindi lo spreco era
-   *  invisibile e la strategia ottimale ("smetti di raccogliere durante la
-   *  valanga") antintuitiva e comunque ineseguibile. */
-  carryOver: number;
 }
 
 export function createAvalanche(): AvalancheState {
-  return { charge: 0, size: 1, phase: 'idle', timeLeft: 0, carryOver: 0 };
-}
-
-/** Tetto del riporto, in unità di carica. */
-function carryOverCap(): number {
-  return CONFIG.avalanche.threshold * CONFIG.avalanche.carryOverRatio;
+  return { charge: 0, size: 1, phase: 'idle', timeLeft: 0 };
 }
 
 export function sizeForCharge(charge: number): number {
@@ -54,15 +41,14 @@ function setSize(state: AvalancheState, next: number, bus: EventBus): void {
 export function addCharge(state: AvalancheState, amount: number, bus: EventBus): void {
   if (amount <= 0) return;
 
-  // Durante la valanga la barra resta congelata — altrimenti la fase si
-  // autoprolungherebbe — ma la carica non si perde più: finisce nel
-  // serbatoio, che si versa alla fine (vedi updateAvalanche). Il tetto tiene
-  // il riporto una ricompensa e non una scorciatoia: al massimo
-  // carryOverRatio della soglia, cioè mai una valanga quasi gratis.
-  if (state.phase !== 'idle') {
-    state.carryOver = Math.min(carryOverCap(), state.carryOver + amount);
-    return;
-  }
+  // Durante la valanga i raccoglibili NON caricano: valgono solo i punti.
+  //
+  // Non è uno spreco lasciato lì per pigrizia, è ciò che rende leggibile la
+  // barra: durante la fase la barra non misura più la carica ma il TEMPO che
+  // resta (vedi avalancheBarRatio), e una barra che scende per raccontare il
+  // tempo mentre risale per raccontare la carica non racconterebbe più niente.
+  // Fuori dalla valanga la barra torna a essere la carica, e riparte da zero.
+  if (state.phase !== 'idle') return;
 
   const threshold = CONFIG.avalanche.threshold;
   state.charge = Math.min(threshold, state.charge + amount);
@@ -83,12 +69,10 @@ export function updateAvalanche(state: AvalancheState, dt: number, bus: EventBus
   if (state.timeLeft <= 0) {
     state.timeLeft = 0;
     state.phase = 'idle';
-    // La barra riparte dal riporto, non da zero: il tetto è sotto la soglia
-    // per costruzione, quindi versarlo non può innescare subito la valanga
-    // successiva. La taglia segue la carica come sempre — è sizeForCharge la
+    // Si riparte da zero: lo sfogo si paga, ed è la regola dichiarata dal
+    // design. La taglia segue la carica come sempre — è sizeForCharge la
     // definizione di "quanto è grossa la mucca", non un valore a parte.
-    state.charge = Math.min(CONFIG.avalanche.threshold, state.carryOver);
-    state.carryOver = 0;
+    state.charge = 0;
     bus.emit('avalanche:ended', {});
     setSize(state, sizeForCharge(state.charge), bus);
     return;
@@ -103,10 +87,29 @@ export function updateAvalanche(state: AvalancheState, dt: number, bus: EventBus
 /** Penalità del "primo impatto perdonato": carica a zero e taglia scalata. */
 export function applyForgivenessPenalty(state: AvalancheState, bus: EventBus): void {
   state.charge = 0;
-  // Anche il serbatoio: il perdono azzera la corsa alla valanga, non solo la
-  // parte di corsa che si vede.
-  state.carryOver = 0;
   setSize(state, state.size - CONFIG.forgiveness.sizePenalty, bus);
+}
+
+/**
+ * Riempimento della barra, 0..1 — e NON è sempre la carica.
+ *
+ * Fuori dalla valanga la barra è la carica che sale verso la soglia. Durante
+ * la valanga diventa il TEMPO che resta, e scende: prima restava piena e
+ * immobile per tutta la fase, quindi l'unica indicazione che stava per finire
+ * era il lampeggio dell'ultimo secondo — troppo tardi per farci qualcosa, in
+ * una fase in cui si sta correndo a velocità massima dentro gli ostacoli.
+ * Vedendola scendere si sa quanto manca, e il lampeggio diventa la conferma
+ * di una cosa che si stava già guardando invece che una sorpresa.
+ *
+ * Sono due grandezze diverse sulla stessa barra, ed è una scelta: l'alternativa
+ * (un secondo indicatore per il tempo) aggiungerebbe un elemento a schermo per
+ * dire una cosa che quello esistente, in quel momento, non sta dicendo.
+ */
+export function avalancheBarRatio(state: AvalancheState): number {
+  if (state.phase === 'idle') return chargeRatio(state);
+  const duration = CONFIG.avalanche.durationSeconds;
+  if (duration <= 0) return 0;
+  return Math.max(0, Math.min(1, state.timeLeft / duration));
 }
 
 /** Frazione della soglia già accumulata, 0..1. È il numero su cui è tarato

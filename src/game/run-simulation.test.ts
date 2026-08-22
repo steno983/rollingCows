@@ -7,8 +7,15 @@ import { createEventBus } from '../core/events';
 import { INSTANCE_CAPACITY } from '../render/instancing';
 import { ENTITY_BOX } from './collisions';
 import { CONFIG } from './config';
-import { createGame, type GameState, handleAction, startRun, updateGame } from './game';
-import { activeBranchOf, branchCenterAt, branchIsSolid, realignProgressOf } from './path';
+import {
+  createGame,
+  entityIsSolid,
+  type GameState,
+  handleAction,
+  startRun,
+  updateGame,
+} from './game';
+import { activeBranchOf, branchCenterAt, choiceIsOpen, forkZOf, realignProgressOf } from './path';
 import type { Entity, EntityKind, ObstacleKind, PickupKind } from './types';
 import { isOverhead } from './types';
 
@@ -57,6 +64,26 @@ function isObstacleKind(entity: Entity): entity is Entity & { kind: ObstacleKind
 }
 
 /**
+ * SCEGLIE, se un bivio e' in corso e nessuna scelta e' ancora stata data.
+ *
+ * Non e' una comodita' del test: da quando l'indecisione costa la corsa
+ * (design §4, regola nuova) non scegliere non e' piu' un modo di giocare, e' un
+ * modo di morire al primo bivio — misurato, a 8,0 s su tutti i seed. Un
+ * fantasma che non sceglie smetterebbe quindi di misurare il percorso proprio
+ * dove il percorso comincia a essere interessante.
+ *
+ * Sceglie il ramo SGOMBRO, cioe' quello che il gioco assegnava d'ufficio fino a
+ * ieri: cosi' le corse simulate restano confrontabili con quelle di prima, e i
+ * test che vogliono il ramo ricco lo chiedono esplicitamente nel proprio
+ * `onFrame` (la scelta resta cambiabile fino al punto di non ritorno).
+ */
+function chooseIfUndecided(game: GameState): void {
+  if (!choiceIsOpen(game.path)) return;
+  if (game.path.phase !== 'approaching' || game.path.choice !== null) return;
+  handleAction(game, game.path.richBranch === 'left' ? 'CHOOSE_RIGHT' : 'CHOOSE_LEFT');
+}
+
+/**
  * Registra ogni ostacolo SOLIDO che entra nella finestra di collisione e lo
  * toglie di mezzo: il "fantasma" attraversa gli ostacoli invece di schiantarcisi,
  * così una singola corsa misura l'intero percorso generato invece di fermarsi
@@ -71,11 +98,24 @@ function harvest(game: GameState, run: GhostRun, seen: Set<number>): void {
     if (!isObstacleKind(entity)) continue;
     if (entity.z > COLLISION_Z_WINDOW) continue;
     if (seen.has(entity.id)) continue;
-    if (!branchIsSolid(game.path, entity.branch)) {
+    // `entityIsSolid` e non `branchIsSolid`: e' la stessa domanda che si fa
+    // il ciclo di collisione, e la differenza fra le due e' esattamente il
+    // cartello del bivio, che sta sul tronco ma e' inerte per chi ha scelto.
+    // Con branchIsSolid il fantasma raccoglieva il cartello come se fosse un
+    // ostacolo del ritmo, e la coppia "ultimo ostacolo -> cartello" violava
+    // l'invariante di giocabilita' per un ostacolo che non e' nel ritmo e non
+    // e' nemmeno solido.
+    if (!entityIsSolid(game.path, entity)) {
       // Non lo si toglie di mezzo: se il ramo diventa solido più avanti,
       // l'ostacolo va ancora contato. Ma se supera del tutto il giocatore
       // restando inerte, è un fantasma.
-      if (entity.z < -COLLISION_Z_WINDOW) {
+      //
+      // Il cartello del bivio no: e' inerte DI PROPOSITO per chi ha scelto, e
+      // per una ragione geometrica — la mucca e' su un ramo, cioe' fino a
+      // branchSeparation unita' di lato, e il cartello le passa accanto invece
+      // che addosso. Non e' un ostacolo che gli vola dentro senza effetto, e'
+      // un palo piantato di fianco alla strada che ha imboccato.
+      if (entity.z < -COLLISION_Z_WINDOW && entity.kind !== 'signpost') {
         seen.add(entity.id);
         run.phantomCrossings += 1;
       }
@@ -106,6 +146,7 @@ function ghostRun(seed: number, seconds: number, onFrame?: (game: GameState) => 
   const frames = Math.round(seconds / STEP);
   for (let frame = 0; frame < frames; frame++) {
     harvest(game, run, seen);
+    chooseIfUndecided(game);
     updateGame(game, STEP);
     if (onFrame !== undefined) onFrame(game);
     if (!game.alive) {
@@ -137,8 +178,9 @@ interface AutopilotOutcome {
 /**
  * Un giocatore che gioca bene: guarda l'ostacolo solido più vicino davanti a
  * sé e, quando manca poco più di metà azione, salta (a terra) o scivola
- * (sospeso). Non sceglie mai al bivio: al punto di non ritorno il gioco gli
- * assegna il ramo più sgombro, ed è giusto che debba sopravvivere anche così.
+ * (sospeso). Al bivio sceglie il ramo sgombro appena il bivio compare — non
+ * per avidità al contrario, ma perché è il minimo che il gioco ora RICHIEDE:
+ * chi non sceglie va a sbattere contro il cartello (design §4, regola nuova).
  */
 function autopilotRun(seed: number, seconds: number): AutopilotOutcome {
   const bus = createEventBus();
@@ -152,11 +194,13 @@ function autopilotRun(seed: number, seconds: number): AutopilotOutcome {
 
   const frames = Math.round(seconds / STEP);
   for (let frame = 0; frame < frames; frame++) {
+    chooseIfUndecided(game);
+
     let nearest: Entity | null = null;
     for (const entity of game.entities) {
       if (!entity.alive || entity.category !== 'obstacle') continue;
       if (entity.z <= 0) continue;
-      if (!branchIsSolid(game.path, entity.branch)) continue;
+      if (!entityIsSolid(game.path, entity)) continue;
       if (nearest === null || entity.z < nearest.z) nearest = entity;
     }
 
@@ -286,7 +330,7 @@ describe('BUCO 2 — i buff sono raccoglibili in una corsa vera', () => {
     const kinds = new Set<PickupKind>();
     for (let seed = 1; seed <= 25; seed++) {
       const run = ghostRun(seed, 120, (game) => {
-        if (game.path.phase !== 'approaching') return;
+        if (!choiceIsOpen(game.path) || game.path.phase !== 'approaching') return;
         handleAction(game, game.path.richBranch === 'left' ? 'CHOOSE_LEFT' : 'CHOOSE_RIGHT');
       });
       for (const kind of run.buffsCollected) kinds.add(kind);
@@ -404,7 +448,7 @@ describe('BUCO 8 — nessun ostacolo uccide mentre è disegnato fuori dal corrid
         for (const entity of game.entities) {
           if (!entity.alive || entity.category !== 'obstacle') continue;
           if (Math.abs(entity.z) > COLLISION_Z_WINDOW) continue;
-          if (!branchIsSolid(game.path, entity.branch)) continue;
+          if (!entityIsSolid(game.path, entity)) continue;
 
           checked += 1;
           const lateral = Math.abs(branchCenterAt(game.path, entity.branch, entity.z));
@@ -647,4 +691,164 @@ describe('tetto delle istanze della vista', () => {
       .map(([kind, count]) => `${kind}: picco ${count} su capienza ${INSTANCE_CAPACITY[kind]}`);
     expect(over).toEqual([]);
   });
+});
+
+describe('BUCO 10 — la finestra di scelta è a tempo, e resta larga abbastanza', () => {
+  /**
+   * Misura la finestra di scelta come la vive il giocatore, su una corsa vera
+   * e a velocità crescente. La scelta si dà all'ultimo istante utile, così la
+   * finestra viene percorsa per intero e ce n'è una per ogni bivio.
+   */
+  function choiceWindows(profileName: string, seconds: number): { speed: number; span: number }[] {
+    const bus = createEventBus();
+    const game = createGame(3, bus);
+    startRun(game, { profileName });
+
+    const windows: { speed: number; span: number }[] = [];
+    let openedAt: number | null = null;
+    let openSpeed = 0;
+    let wasOpen = false;
+
+    const frames = Math.round(seconds / STEP);
+    for (let frame = 0; frame < frames && game.alive; frame++) {
+      // Fantasma: gli ostacoli non sono l'oggetto della misura, il cartello sì.
+      for (const entity of game.entities) {
+        if (entity.category === 'obstacle' && entity.kind !== 'signpost') entity.alive = false;
+      }
+      const open = choiceIsOpen(game.path);
+      if (open && !wasOpen) {
+        openedAt = frame;
+        openSpeed = game.world.speed;
+      }
+      if (!open && wasOpen && openedAt !== null) {
+        windows.push({ speed: openSpeed, span: (frame - openedAt) * STEP });
+      }
+      wasOpen = open;
+      // All'ultimo frame utile: è così che la finestra si misura tutta.
+      if (
+        open &&
+        game.path.phase === 'approaching' &&
+        game.path.forkZ < CONFIG.path.commitZ + game.world.speed * STEP * 2
+      ) {
+        handleAction(game, 'CHOOSE_LEFT');
+      }
+      updateGame(game, STEP);
+    }
+    return windows;
+  }
+
+  it('dura lo stesso a ogni velocità e su ogni profilo, invece di gonfiarsi a bassa velocità', () => {
+    // È tutto il punto del cambio: con la finestra legata a `previewZ` durava
+    // 4,78 s a velocità di partenza e 2,15 s al tetto — un bivio fermo davanti
+    // per cinque secondi con la decisione già presa da un pezzo.
+    const nominal = CONFIG.path.choiceWindowSeconds;
+    for (const profileName of ['calf', 'normal', 'bull'] as const) {
+      const windows = choiceWindows(profileName, 240);
+      expect(windows.length, `${profileName}: nessun bivio misurato`).toBeGreaterThan(10);
+      for (const { speed, span } of windows) {
+        // Il tetto vero è il minimo fra il tempo concesso e ciò che la
+        // visibilità permette: sopra i 43 u/s comanda previewZ, e la finestra
+        // si accorcia a (previewZ - commitZ) / speed. Sotto, comanda il tempo.
+        const capped = (CONFIG.path.previewZ - CONFIG.path.commitZ) / speed;
+        const expected = Math.min(nominal, capped);
+        // Tolleranza in difetto e non in eccesso: la soglia di apertura si
+        // calcola con la velocità di QUEL frame, ma la velocità sale mentre la
+        // finestra viene percorsa, quindi la distanza fissata all'apertura si
+        // copre in un pelo meno di tempo. È massimo a bassa velocità, dove la
+        // curva è più ripida, e vale qualche centesimo.
+        const detail = `${profileName} @ ${speed.toFixed(1)} u/s: ${span.toFixed(2)} s su ${expected.toFixed(2)} attesi`;
+        expect(span, detail).toBeGreaterThanOrEqual(expected - 0.1);
+        expect(span, detail).toBeLessThanOrEqual(expected + 0.02);
+      }
+    }
+  });
+
+  it('non si apre mai a più di previewZ: non si sceglie un bivio che non si vede', () => {
+    for (const profileName of ['calf', 'normal', 'bull'] as const) {
+      const bus = createEventBus();
+      const game = createGame(6, bus);
+      startRun(game, { profileName });
+      let checked = 0;
+      for (let frame = 0; frame < 60 * 120 && game.alive; frame++) {
+        for (const entity of game.entities) {
+          if (entity.category === 'obstacle' && entity.kind !== 'signpost') entity.alive = false;
+        }
+        if (choiceIsOpen(game.path)) {
+          const forkZ = forkZOf(game.path);
+          if (forkZ === null) throw new Error('finestra aperta senza bivio');
+          expect(forkZ).toBeLessThanOrEqual(CONFIG.path.previewZ);
+          checked += 1;
+        }
+        if (
+          choiceIsOpen(game.path) &&
+          game.path.phase === 'approaching' &&
+          game.path.forkZ < CONFIG.path.commitZ + game.world.speed * STEP * 2
+        ) {
+          handleAction(game, 'CHOOSE_LEFT');
+        }
+        updateGame(game, STEP);
+      }
+      expect(checked).toBeGreaterThan(500);
+    }
+  });
+
+  it('un giocatore che reagisce in 1,5 s sopravvive, pur continuando a schivare', () => {
+    // La domanda che rende leale la regola nuova: dentro la finestra non si
+    // decide soltanto, si continua a saltare e scivolare — a 46 u/s ci passano
+    // circa 3,3 ostacoli. Se il resto della corsa mangiasse la finestra, "non
+    // hai scelto" diventerebbe una morte che il giocatore non capisce.
+    const REACTION = 1.5;
+    const delayFrames = Math.round(REACTION / STEP);
+
+    for (const profileName of ['calf', 'normal', 'bull'] as const) {
+      const deaths: string[] = [];
+      for (let seed = 1; seed <= 8; seed++) {
+        const bus = createEventBus();
+        const game = createGame(seed, bus);
+        startRun(game, { profileName });
+        let deathKind = '';
+        bus.on('obstacle:hit', (payload) => {
+          if (payload.outcome === 'death') deathKind = payload.kind;
+        });
+        bus.on('player:fell', () => {
+          deathKind = 'chasm';
+        });
+
+        let openedAt: number | null = null;
+        let chosen = false;
+        const frames = Math.round(180 / STEP);
+        for (let frame = 0; frame < frames && game.alive; frame++) {
+          if (choiceIsOpen(game.path)) {
+            if (openedAt === null) {
+              openedAt = frame;
+              chosen = false;
+            }
+            if (!chosen && frame - openedAt >= delayFrames) {
+              handleAction(game, 'CHOOSE_LEFT');
+              chosen = true;
+            }
+          } else if (game.path.phase === 'none') {
+            openedAt = null;
+          }
+
+          let nearest: Entity | null = null;
+          for (const entity of game.entities) {
+            if (!entity.alive || entity.category !== 'obstacle') continue;
+            if (entity.z <= 0 || !entityIsSolid(game.path, entity)) continue;
+            if (nearest === null || entity.z < nearest.z) nearest = entity;
+          }
+          if (nearest !== null && nearest.z / game.world.speed <= AUTOPILOT_REACTION_SECONDS) {
+            if (isOverhead(nearest.kind)) {
+              if (!game.player.sliding) handleAction(game, 'SLIDE');
+            } else if (!game.player.airborne) {
+              handleAction(game, 'JUMP');
+            }
+          }
+          updateGame(game, STEP);
+        }
+        if (!game.alive) deaths.push(`seed ${seed} su ${deathKind}`);
+      }
+      expect(deaths, `${profileName}: morti con 1,5 s di reazione`).toEqual([]);
+    }
+  }, 120000);
 });

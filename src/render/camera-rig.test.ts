@@ -4,8 +4,14 @@ import {
   cameraDistanceFor,
   cameraFovFor,
   cameraHeightFor,
+  cameraPitchFor,
   decayShake,
+  LOOK_AHEAD_Z,
+  LOOK_AT_Y,
+  slopeTiltY,
+  slopeTiltZ,
   speedRatio,
+  WORLD_SLOPE,
   worldToViewX,
 } from './camera-rig';
 
@@ -129,5 +135,76 @@ describe('worldToViewX', () => {
     expect(worldToViewX(-2)).toBe(2);
     expect(worldToViewX(0)).toBe(0);
     expect(worldToViewX(worldToViewX(1.5))).toBe(1.5);
+  });
+});
+
+describe('WORLD_SLOPE', () => {
+  it('è una pendenza in discesa, e resta nell intervallo in cui il fondale regge', () => {
+    expect(WORLD_SLOPE).toBeGreaterThan(0);
+    // Oltre gli 8° il paese del fondale finisce dietro il pendio: vedi il
+    // conto in render/backdrop.ts (backdropDrop) e il test che lo verifica.
+    expect(WORLD_SLOPE).toBeLessThanOrEqual((8 * Math.PI) / 180);
+  });
+});
+
+describe('slopeTiltY / slopeTiltZ', () => {
+  it('a pendenza zero non spostano nulla', () => {
+    expect(slopeTiltY(3, 40, 0)).toBeCloseTo(3, 10);
+    expect(slopeTiltZ(3, 40, 0)).toBeCloseTo(40, 10);
+  });
+
+  it('quello che sta davanti scende, quello che sta dietro sale: è una discesa', () => {
+    expect(slopeTiltY(0, 40)).toBeLessThan(0);
+    expect(slopeTiltY(0, -40)).toBeGreaterThan(0);
+  });
+
+  it('è una rotazione: conserva la distanza dal perno, che è la mucca', () => {
+    for (const [y, z] of [
+      [6.12, -9],
+      [1.4, 9],
+      [26, -10],
+    ]) {
+      const before = Math.hypot(y ?? 0, z ?? 0);
+      const after = Math.hypot(slopeTiltY(y ?? 0, z ?? 0), slopeTiltZ(y ?? 0, z ?? 0));
+      expect(after).toBeCloseTo(before, 10);
+    }
+  });
+
+  it('la mucca, che sta nel perno, non si muove', () => {
+    expect(slopeTiltY(0, 0)).toBe(0);
+    expect(slopeTiltZ(0, 0)).toBe(0);
+  });
+
+  it('inclinare il rig NON cambia la geometria fra camera e pendio', () => {
+    // È l'invariante che rende l'intervento solo visivo: il rig ruota con il
+    // mondo, quindi la camera resta esattamente dove stava rispetto al pendio
+    // e il corridoio occupa gli stessi pixel di prima. Lo si verifica sulla
+    // distanza fra la camera e il punto guardato, che è la coppia che
+    // definisce l'inquadratura.
+    const height = cameraHeightFor(1);
+    const distance = cameraDistanceFor(1);
+    const flat = Math.hypot(height - LOOK_AT_Y, -distance - LOOK_AHEAD_Z);
+    const tilted = Math.hypot(
+      slopeTiltY(height, -distance) - slopeTiltY(LOOK_AT_Y, LOOK_AHEAD_Z),
+      slopeTiltZ(height, -distance) - slopeTiltZ(LOOK_AT_Y, LOOK_AHEAD_Z),
+    );
+    expect(tilted).toBeCloseTo(flat, 10);
+  });
+});
+
+describe('cameraPitchFor', () => {
+  it('rispetto all orizzonte la camera guarda in basso ANCHE della pendenza', () => {
+    expect(cameraPitchFor(1) - cameraPitchFor(1, 0)).toBeCloseTo(WORLD_SLOPE, 10);
+  });
+
+  it('cresce con la taglia: il punto guardato è fisso mentre la camera si alza', () => {
+    expect(cameraPitchFor(5)).toBeGreaterThan(cameraPitchFor(1));
+  });
+
+  it('lascia comunque l orizzonte dentro il quadro, anche al FOV più stretto', () => {
+    const halfFov = ((CONFIG.render.cameraMinFov / 2) * Math.PI) / 180;
+    for (let size = 1; size <= CONFIG.avalanche.maxSize; size += 0.5) {
+      expect(cameraPitchFor(size)).toBeLessThan(halfFov);
+    }
   });
 });

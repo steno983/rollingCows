@@ -25,20 +25,53 @@ export const CONFIG = {
      *  impercettibile e coincideva con l'inizio della piegata — il feedback
      *  della scelta arrivava quando la scelta non era più modificabile. A 24
      *  la fase impegnata dura 0,60 s e la piegata parte visibilmente PRIMA
-     *  della biforcazione. La finestra di decisione utile resta ~2,15 s a
-     *  velocità massima, nella norma del genere. */
+     *  della biforcazione.
+     *
+     *  DA QUANDO L'INDECISIONE COSTA LA CORSA (design §4, regola nuova: chi
+     *  non sceglie va dritto contro il cartello) questo non è più solo il
+     *  punto in cui la scelta smette di essere reversibile, è la SCADENZA:
+     *  chi arriva qui senza avere scelto non prende alcun ramo e si schianta
+     *  contro il cartello 24 unità più avanti.
+     *
+     *  Non è più anche l'estremo INFERIORE della finestra di scelta, che ora
+     *  è a tempo: vedi `choiceWindowSeconds`, che è il numero da muovere se
+     *  la finestra si rivelasse stretta. Restano invece 24 unità — da 0,52 a
+     *  0,60 s — fra qui e il cartello: non tempo di decisione, ma il
+     *  preavviso che rende la morte leggibile invece che improvvisa. */
     commitZ: 24,
-    /** Per quanto vale una scelta anticipata: uno swipe laterale dato fuori
-     *  dalla finestra di avvicinamento non fa nulla, ma viene ricordato per
-     *  questo tempo e, se il bivio compare entro tale finestra, vale come
-     *  scelta già data (design §4). */
-    earlyChoiceSeconds: 0.6,
-    /** ...ma solo se un bivio è davvero imminente. Uno swipe laterale dato in
-     *  mezzo al nulla non è quasi mai una scelta: molto più spesso è un salto
-     *  malriuscito (vedi input.horizontalDominance), e senza questa finestra
-     *  diventava una scelta di ramo silenziosa data 0,6 s dopo, senza che il
-     *  giocatore lo sapesse. Distanza dal prossimo bivio, in unità. */
-    earlyChoiceWindowZ: 30,
+    /**
+     * Per quanto TEMPO la scelta resta aperta, prima del punto di non ritorno.
+     *
+     * La visibilita' del bivio e la possibilita' di sceglierlo erano la stessa
+     * cosa, e non dovevano esserlo. La Y del tracciato si vede arrivare da
+     * `previewZ` = 110 unita' perche' serve leggere il terreno e preparare la
+     * manovra; ma 110 unita' sono una DISTANZA, e una distanza fissa dura
+     * tempi diversi a velocita' diverse. La finestra di scelta ne usciva
+     * lunga 2,15 s al tetto di "Normale" e **4,78 s a velocita' di partenza**:
+     * cinque secondi con un bivio fermo davanti e una decisione binaria gia'
+     * presa da un pezzo. Il proprietario lo ha descritto cosi': «devo poter
+     * scegliere solo a ridosso del bivio con un minimo di buffer, non ore
+     * prima».
+     *
+     * La finestra si apre quindi quando `forkZ <= commitZ + speed * questo
+     * numero`, ed e' l'unica soglia del bivio espressa in tempo: dura uguale a
+     * qualunque velocita', che e' esattamente cio' che serviva.
+     *
+     * 2,0 s. Il tetto vero e' il minimo fra questo e cio' che `previewZ`
+     * concede, perche' non si puo' aprire la scelta su un bivio che non si
+     * vede ancora: il pareggio e' a (110 − 24) / 2 = 43 u/s, quindi sotto i 43
+     * u/s comanda questo numero e sopra comanda `previewZ`. In pratica: 2,00 s
+     * per tutti i profili tranne "Toro" vicino al suo tetto, dove restano gli
+     * 1,87 s di prima. Il cambio quindi ACCORCIA solo dove era troppo lungo e
+     * non tocca il caso gia' stretto.
+     *
+     * Non e' tempo dedicato solo a decidere: dentro quella finestra si
+     * continua a saltare e scivolare (a 46 u/s ci passano ~3,5 ostacoli).
+     * Misurato con un pilota automatico che gioca gli ostacoli e ritarda la
+     * scelta di R secondi, il ritardo massimo tollerato e' riportato nei test
+     * (game/run-simulation.test.ts): e' il margine vero, non i 2,0 nominali.
+     */
+    choiceWindowSeconds: 2,
     /** Distanza del PRIMISSIMO bivio di una corsa, diversa da minGap: a
      *  minGap (120 unità, ~6,5 s a velocità di partenza) il giocatore deve
      *  superare tre ostacoli prima di vedere un bivio, e spesso muore prima
@@ -147,6 +180,70 @@ export const CONFIG = {
       /** Crepaccio: praticamente piatto, quindi colpisce solo chi è a terra;
        *  molto profondo, così va anticipato con il salto. */
       crevasse: { height: 0.1, depth: 4 },
+      /**
+       * CREPACCIO VERO: non una crepa da scavalcare ma un buco in cui si
+       * precipita (vedi types.ts, `isUnforgiving`, e game.ts, hitObstacle).
+       * Stessa altezza simbolica del crepaccio piatto — un buco "colpisce"
+       * solo chi sta a terra, e nemmeno la scivolata aiuta, perché schiaccia
+       * la sagoma senza alzarne la base — ma largo 7 invece di 4: è la
+       * LARGHEZZA a farne un buco e non una fenditura.
+       *
+       * I CONTI DI SUPERABILITÀ, che qui non sono una formalità perché 7
+       * unità sono quasi il doppio dell'ostacolo più profondo del gioco.
+       * Il salto è y(t) = 4·h·u·(1−u) con u = t/T, h = player.jumpHeight =
+       * 3,2 e T = player.jumpSeconds = 0,55 (vedi player.ts).
+       *
+       * 1. Quanto si sta sopra il bordo: y ≥ 0,1 quando u·(1−u) ≥ 0,0078125,
+       *    cioè u ∈ [0,0079; 0,9921] → 0,9843·0,55 = 0,5414 s.
+       * 2. Quanto si sta sopra il buco: la finestra di collisione in z è
+       *    player.depth + depth = 1,4 + 7 = 8,4 unità, percorse in 8,4/v.
+       * 3. Serve dunque v ≥ 8,4 / 0,5414 = 15,5 u/s. NOTARE IL VERSO: per un
+       *    ostacolo largo e piatto il nemico è la velocità BASSA, non quella
+       *    alta — più si corre, meno tempo si passa sospesi sul vuoto. È il
+       *    contrario di tutto il resto del gioco, ed è la ragione per cui il
+       *    crepaccio è riservato alla rampa tardiva (spawn.chasmChanceLate):
+       *    a `spawn.lateRampStart` = 5000 unità la velocità vale almeno 28
+       *    u/s (il tetto di "Vitellino"; "Normale" 39,2, "Toro" 43,2), cioè
+       *    l'80% sopra il minimo necessario.
+       * 4. Margine residuo per sbagliare il tempo del salto: 0,241 s a 28
+       *    u/s, 0,331 s a 40, 0,359 s a 46. Per confronto, il MASSO — che
+       *    nessuno considera ingiusto — ne lascia 0,344 a 40 u/s. Il
+       *    crepaccio è quindi tarato sulla stessa difficoltà di timing di un
+       *    masso, non su una più severa.
+       * 5. Concatenamento con l'ostacolo successivo, cioè l'invariante di
+       *    giocabilità: l'atterraggio più precoce che permette di superarlo
+       *    cade a T/2 − (0,5414 − 8,4/v)/2 dal suo passaggio, che a 46 u/s
+       *    vale 0,096 s, contro gli 0,098 s del masso. Il crepaccio libera la
+       *    mucca appena PRIMA di un masso: `jumpSeconds × maxSpeed` resta il
+       *    termine giusto dell'invariante, e la coppia stretta non ha bisogno
+       *    di trattarlo diversamente.
+       */
+      chasm: { height: 0.1, depth: 7 },
+      /**
+       * CARTELLO DEL BIVIO, con le due frecce verso i due rami. Non nasce
+       * dallo spawner: lo piazza il bivio nel cuneo fra i due nastri, ed è
+       * solido solo finché nessuno ha scelto (vedi path.ts, signpostIsSolid).
+       *
+       * ALTEZZA — è il numero che regge tutta la regola nuova, e va scritto
+       * il conto. `player.jumpHeight` = 3,2 è l'apice della BASE della sagoma
+       * della mucca: più in alto di così la base non arriva mai, a nessuna
+       * velocità, a nessuna taglia e con nessuna gravità (il tuffo abbassa
+       * l'apice, non lo alza). Con il cartello alto 3,6 le due sagome si
+       * sovrappongono in quota in OGNI istante del volo, perché la mucca
+       * occupa [y, y + altezza] e il cartello [0; 3,6] con y ≤ 3,2 < 3,6.
+       * Non esiste una finestra temporale da calcolare: non esiste proprio
+       * un'altezza a cui passare. Le 0,4 unità sopra l'apice (+12,5%) sono il
+       * margine perché il conto resti vero anche se un giorno il salto
+       * cresce di poco.
+       *
+       * Senza questo, "scegli o muori" diventerebbe "scegli o salta", cioè
+       * una terza opzione più facile delle altre due.
+       *
+       * PROFONDITÀ 1: un palo, non un muro. Serve solo a dargli un ingombro
+       * in z; largo o stretto non cambia nulla, dato che in quota non lo si
+       * evita comunque.
+       */
+      signpost: { height: 3.6, depth: 1 },
       /** Ramo di abete sospeso: base a spawn.overheadY, spesso quanto una
        *  staccionata. */
       branch: { height: 1.2, depth: 0.8 },
@@ -182,7 +279,14 @@ export const CONFIG = {
      *  tempo totale in valanga scende comunque, perché la soglia è cresciuta
      *  del 60% contro il 33% della durata. */
     durationSeconds: 6,
-    warningSeconds: 1,
+    /** Quanto dura il lampeggio di fine valanga. Alzato da 1: ora la barra
+     *  scende per tutta la fase raccontando il tempo che resta
+     *  (avalancheBarRatio), quindi il lampeggio non è più l'unico avviso ma la
+     *  conferma di una cosa che il giocatore sta già guardando — e conviene
+     *  che arrivi con l'anticipo necessario a rimettersi in assetto, non
+     *  all'ultimo istante. A velocità massima un secondo e mezzo sono 60
+     *  unità: due ostacoli. */
+    warningSeconds: 1.5,
     /** Abbassato da 5. Con soglia e durata nuove il moltiplicatore ×5 avrebbe
      *  lasciato la quota di punti da valanga sopra il 70%; ×4 la porta verso
      *  il 55%, che è ancora la ricompensa dominante ma lascia respiro al
@@ -197,15 +301,6 @@ export const CONFIG = {
     maxSize: 5,
     /** Taglia minima per sfondare gli ostacoli durante la valanga */
     smashMinSize: 3,
-    /** Quota della carica raccolta DURANTE la valanga che viene riportata
-     *  sulla barra alla fine, come frazione della soglia. Prima era zero: i
-     *  fiocchi presi in valanga davano punti ma non carica, e nel profilo che
-     *  sceglie sempre il ramo ricco se ne buttavano 607 per corsa — più
-     *  carica di quanta se ne accumulasse utilmente. Niente lo comunicava (la
-     *  barra è piena e lampeggia), quindi era uno spreco invisibile con una
-     *  strategia ottimale antintuitiva e ineseguibile. Il tetto tiene il
-     *  riporto una ricompensa e non una scorciatoia. */
-    carryOverRatio: 0.4,
   },
   forgiveness: {
     enabled: true,
@@ -360,6 +455,27 @@ export const CONFIG = {
      *  la manovra avanzata che il gioco implementa già e che finora nulla
      *  richiedeva davvero. */
     tightPairChanceLate: 0.25,
+    /**
+     * Probabilità che un ostacolo A TERRA sia un CREPACCIO VERO (`chasm`), a
+     * rampa tardiva piena; scala linearmente con `lateRampAt`, quindi vale 0
+     * fino a `lateRampStart` e non consuma nemmeno un numero pseudocasuale
+     * prima di lì (le corse esistenti restano identiche seed per seed).
+     *
+     * Riservato alla parte avanzata per due motivi che vanno nella stessa
+     * direzione. Il primo è di ritmo: è l'unico ostacolo che non perdona
+     * niente, e metterlo davanti a chi sta ancora imparando i comandi
+     * significherebbe chiudere corse senza avere insegnato nulla. Il secondo
+     * è aritmetico, ed è il vincolo vero: un buco largo si salta solo se si
+     * corre abbastanza (vedi il conto in collisions.entityBox.chasm — serve
+     * v ≥ 15,5 u/s), e la rampa tardiva è esattamente il punto della corsa in
+     * cui quella velocità è garantita in tutti e tre i profili.
+     *
+     * 0,18 sulla sola quota a terra, che a rampa piena è il 35% degli
+     * ostacoli (overheadShareLate = 0,65): circa un ostacolo ogni 16. Raro
+     * abbastanza da restare un evento, frequente abbastanza da incontrarne
+     * qualcuno in una corsa lunga.
+     */
+    chasmChanceLate: 0.18,
     overheadY: 1.6,
     /** Probabilità che dopo un ostacolo nasca un buff, sul RAMO RICCO di un bivio. */
     buffChance: 0.22,
@@ -385,6 +501,23 @@ export const CONFIG = {
     commonBuffWeights: { crystal: 5, star: 3, magnet: 3, bell: 1 },
   },
   render: {
+    /** Pendenza visiva della montagna, in GRADI. È un intervento di SOLA
+     *  resa: inclina attorno all'asse X il gruppo-mondo, la mucca e il rig
+     *  della camera dello stesso angolo, quindi la geometria fra camera e
+     *  pendio non cambia di un millimetro e nessuna quota di collisione è
+     *  coinvolta — game/collisions.ts continua a lavorare su un mondo piatto.
+     *
+     *  Quello che cambia è ciò che NON ruota, cioè cielo e fondale, ed è lì
+     *  che sta l'effetto: su una pianura il terreno svanisce SULL'orizzonte,
+     *  in discesa svanisce di questi gradi SOTTO, e la fascia in mezzo si
+     *  riempie di fondovalle e paese. Misurata: da 1,5-2,5° a 7,5-8,5°, cioè
+     *  da un filo a un settimo dello schermo.
+     *
+     *  Il tetto pratico è ~8°: oltre, il fondale va abbassato tanto che il
+     *  paese finisce dietro il pendio. Il conto non è a mano ma in
+     *  render/backdrop.ts (backdropDrop), che a pendenza 0 restituisce
+     *  esattamente 0 — così il panorama di prima resta quello di prima. */
+    worldSlopeDeg: 6,
     maxPixelRatio: 2,
     /** Pixel ratio quando il monitor delle prestazioni abbassa la qualità.
      *  Prima il degrado spegneva ombre e particelle e lasciava la risoluzione

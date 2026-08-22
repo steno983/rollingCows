@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { CONFIG } from '../game/config';
 import { createPlayer, type PlayerState } from '../game/player';
+import { WORLD_SLOPE } from './camera-rig';
 import { resetDebris } from './debris';
 import {
   buffEffectLevel,
@@ -307,5 +308,49 @@ describe('createPlayerView', () => {
     // dt = 0 (pausa, menu): il tempo dell'effetto si ferma con tutto il resto.
     view.sync(frame({ shielded: true, dt: 0 }));
     expect(uniform.value).toBeCloseTo(0.5, 10);
+  });
+});
+
+describe('inclinazione sul pendio', () => {
+  beforeEach(() => {
+    resetDebris();
+  });
+
+  it('la mucca è inclinata quanto il pendio: sta fuori dal gruppo-mondo, quindi non la eredita', () => {
+    const view = createPlayerView();
+    expect(view.group.rotation.x).toBeCloseTo(WORLD_SLOPE, 10);
+  });
+
+  it('sync non tocca l inclinazione, nemmeno mentre piega nei bivi', () => {
+    // Regressione: la piegata del bivio si scrive su rotation.z, e chi la
+    // riscrivesse con un rotation.set(...) azzererebbe la pendenza lasciando
+    // la mucca verticale su un pendio inclinato.
+    const view = createPlayerView();
+    view.sync(frame({ tilt: 0.4 }));
+    expect(view.group.rotation.x).toBeCloseTo(WORLD_SLOPE, 10);
+    expect(view.group.rotation.z).toBeCloseTo(0.4, 10);
+    view.sync(frame({ tilt: -0.4, dt: 0.5 }));
+    expect(view.group.rotation.x).toBeCloseTo(WORLD_SLOPE, 10);
+    expect(view.group.rotation.z).toBeCloseTo(-0.4, 10);
+  });
+
+  it('la piegata del bivio agisce nel sistema del pendio, non sopra la pendenza', () => {
+    // Ordine di Eulero XYZ: la matrice risultante è Rx(pendenza)·Rz(piegata),
+    // cioè la piegata viene applicata PRIMA. È lo stesso ordine con cui
+    // main.ts compone lo sterzo (rotation.y) sotto la pendenza del
+    // gruppo-mondo: se i due divergessero, mucca e pista si piegherebbero in
+    // modo diverso nello stesso bivio.
+    const view = createPlayerView();
+    expect(view.group.rotation.order).toBe('XYZ');
+  });
+
+  it('l anello della calamita resta parallelo al pendio, non all orizzonte', () => {
+    const view = createPlayerView();
+    view.sync(frame({ magnetTimeLeft: 3, tilt: 0.3 }));
+    const pivot = magnetPivotOf(view);
+    // Il perno annulla la sola piegata del bivio; la pendenza resta, perché
+    // il pavimento del corridoio è inclinato quanto il pendio.
+    expect(pivot.rotation.z).toBeCloseTo(-0.3, 10);
+    expect(pivot.rotation.x).toBe(0);
   });
 });

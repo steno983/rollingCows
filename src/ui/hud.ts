@@ -40,14 +40,11 @@ export interface Hud {
   setBuffExpiring(kind: HudBuffKind, expiring?: boolean): void;
   /** Mostra o nasconde il pannello del bivio. Nasconderlo azzera anche la
    *  scelta e il lato di default. */
-  setFork(visible: boolean): void;
   /** Lampeggia brevemente sul lato che si ottiene NON facendo nulla. È
    *  l'unica informazione che il mondo non può dare: quale ramo mi prende se
    *  resto fermo. (Il ramo ricco NON va evidenziato: quello si vede già dal
    *  pendio, che è pieno di fiocchi.) */
-  setForkDefault(side: ForkSide | null): void;
   /** Illumina la freccia del lato scelto dal giocatore; null la spegne. */
-  setForkChoice(side: ForkSide | null): void;
   /** L'HUD deve stare visibile SOLO in 'playing': senza questo, punteggio,
    *  barra di carica e taglia restano leggibili sopra menu, pausa e game
    *  over, spesso sovrapposti allo stesso numero mostrato dalla schermata. */
@@ -124,7 +121,6 @@ export const ICONS = {
 } as const;
 
 /** Quanto resta acceso il lampo sul ramo di default all'apparire del bivio. */
-const FORK_DEFAULT_FLASH_MS = 400;
 /** Quanto resta a video l'avviso di record superato durante la corsa. */
 const RECORD_BANNER_MS = 2200;
 
@@ -171,10 +167,6 @@ export function createHud(root: HTMLElement): Hud {
       <div class="hud__buff hud__buff--star" data-buff="star">${ICONS.star}<span class="hud__buff-time"></span>×2</div>
       <div class="hud__buff hud__buff--magnet" data-buff="magnet">${ICONS.magnet}<span class="hud__buff-time"></span>CALAMITA</div>
     </div>
-    <div class="hud__fork">
-      <div class="hud__fork-side" data-side="left">${ICONS.arrowLeft}<span class="hud__fork-label">SINISTRA</span></div>
-      <div class="hud__fork-side" data-side="right"><span class="hud__fork-label">DESTRA</span>${ICONS.arrowRight}</div>
-    </div>
   `;
   root.appendChild(container);
 
@@ -196,11 +188,6 @@ export function createHud(root: HTMLElement): Hud {
   const streakEl = need('.hud__streak');
   const streakValueEl = need('.hud__streak-value');
   const vignetteEl = need('.hud__vignette');
-  const forkEl = need('.hud__fork');
-  const forkSides: Readonly<Record<ForkSide, HTMLElement>> = {
-    left: need('[data-side="left"]'),
-    right: need('[data-side="right"]'),
-  };
   const buffEls: Readonly<Record<HudBuffKind, HTMLElement>> = {
     shield: need('[data-buff="shield"]'),
     star: need('[data-buff="star"]'),
@@ -231,17 +218,7 @@ export function createHud(root: HTMLElement): Hud {
     }
   });
 
-  let forkDefaultTimer: ReturnType<typeof setTimeout> | null = null;
   let recordTimer: ReturnType<typeof setTimeout> | null = null;
-
-  function clearForkDefault(): void {
-    if (forkDefaultTimer !== null) {
-      clearTimeout(forkDefaultTimer);
-      forkDefaultTimer = null;
-    }
-    forkSides.left.classList.remove('hud__fork-side--default');
-    forkSides.right.classList.remove('hud__fork-side--default');
-  }
 
   return {
     setPoints(p: number): void {
@@ -334,32 +311,6 @@ export function createHud(root: HTMLElement): Hud {
 
     setBuffExpiring(kind: HudBuffKind, expiring = true): void {
       buffEls[kind].classList.toggle('hud__buff--expiring', expiring);
-    },
-
-    setFork(visible: boolean): void {
-      forkEl.classList.toggle('hud__fork--visible', visible);
-      if (!visible) {
-        clearForkDefault();
-        forkSides.left.classList.remove('hud__fork-side--chosen');
-        forkSides.right.classList.remove('hud__fork-side--chosen');
-      }
-    },
-
-    setForkDefault(side: ForkSide | null): void {
-      clearForkDefault();
-      if (side === null) {
-        return;
-      }
-      forkSides[side].classList.add('hud__fork-side--default');
-      forkDefaultTimer = setTimeout(() => {
-        forkSides[side].classList.remove('hud__fork-side--default');
-        forkDefaultTimer = null;
-      }, FORK_DEFAULT_FLASH_MS);
-    },
-
-    setForkChoice(side: ForkSide | null): void {
-      forkSides.left.classList.toggle('hud__fork-side--chosen', side === 'left');
-      forkSides.right.classList.toggle('hud__fork-side--chosen', side === 'right');
     },
 
     setVisible(visible: boolean): void {

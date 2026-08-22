@@ -75,31 +75,111 @@ Parametri (tutti in `config.ts`):
 |---|---|
 | Larghezza del tracciato | 4 unità |
 | Separazione dei rami al bivio | 6 unità |
-| Distanza a cui il bivio diventa visibile | 90 unità |
-| Punto di non ritorno | 12 unità prima della biforcazione |
-| Durata del riallineamento | 0,6 s |
+| Distanza a cui il bivio diventa visibile | 110 unità |
+| Punto di non ritorno | 24 unità prima della biforcazione |
+| Finestra di scelta | 2,0 s prima del punto di non ritorno (a tempo, non a distanza) |
+| Lunghezza del riallineamento | 28 unità (una distanza, non un tempo) |
 | Distanza minima fra due bivi | 120 unità, crescente con la velocità |
 
 ## 4. Il bivio
 
 Tre tempi:
 
-1. **Lettura.** A 90 unità il tracciato si sdoppia visibilmente. Entrambi i rami sono
+1. **Lettura.** A 110 unità il tracciato si sdoppia visibilmente. Entrambi i rami sono
    già popolati e visibili: il giocatore vede *cosa* contengono prima di scegliere.
    Un ramo è ricco (fila fitta di fiocchi, spesso un buff) e più ostacolato; l'altro è
    sgombro e povero. Quale dei due sia ricco è casuale (RNG con seed).
-2. **Scelta.** Swipe laterale durante la finestra di avvicinamento. La scelta è
-   **reversibile**: finché non si supera il punto di non ritorno si può swipare di
-   nuovo e la traslazione si inverte.
+2. **Scelta.** Swipe laterale, ma **non per tutto l'avvicinamento**: la finestra di
+   scelta si apre a ridosso del bivio, a `commitZ + velocità × choiceWindowSeconds`,
+   e da lì al punto di non ritorno. La scelta è **reversibile**: finché non si supera
+   il punto di non ritorno si può swipare di nuovo e la traslazione si inverte.
 3. **Riallineamento.** Superato il punto di non ritorno il ramo scelto scivola al
-   centro in 0,6 s, il ramo scartato si allontana e le sue entità vengono rimosse.
+   centro nell'arco di 28 unità, il ramo scartato si allontana e le sue entità vengono
+   rimosse.
 
-**Chi non sceglie non muore:** al punto di non ritorno senza input, il gioco imbocca
-automaticamente il ramo **più sgombro**, cioè quello con meno ostacoli (a parità,
-quello con meno raccoglibili). L'indecisione costa il premio, mai la corsa.
+**Chi non sceglie si schianta.** *Regola rivista rispetto alla prima stesura di questo
+documento, che diceva l'opposto: «chi non sceglie ottiene automaticamente il ramo più
+sgombro; l'indecisione costa il premio, mai la corsa».*
 
-**Fuori da un bivio** lo swipe laterale non fa nulla, ma viene ricordato per un breve
-istante: uno swipe dato appena prima che il bivio compaia vale come scelta anticipata.
+Al punto di non ritorno senza input **non viene imboccato alcun ramo**. Non c'è un ramo
+di default: la mucca prosegue dritta, in mezzo ai due nastri che si aprono, e nel cuneo
+fra i due c'è un **cartello di scelta** con due frecce contro cui va a sbattere.
+Colpirlo chiude sempre la corsa: nessuno scudo, nessun perdono, nessuno sfondamento in
+valanga.
+
+Il motivo del cambio è che la regola precedente rendeva la scelta al bivio l'unica
+decisione del gioco che si poteva non prendere. Chi non sceglieva riceveva comunque
+una strada percorribile, quindi il bivio non era un bivio: era un bonus opzionale, e
+la meccanica di firma della v2 si poteva ignorare per intere partite senza pagare
+niente di più che qualche punto. Con questa regola la scelta torna a essere una
+decisione — c'è un costo per non prenderla, ed è il costo massimo.
+
+Perché sia leale servono tre cose, tutte verificate:
+
+- **La si vede arrivare.** Il cartello nasce insieme al bivio, a `previewZ` = 110
+  unità, e resta visibile per tutta la discesa. La finestra in cui si può *scegliere*
+  si apre più tardi (vedi sotto) e dura ~2 s a ogni velocità. Dopo il punto di non
+  ritorno restano 24 unità (0,52-0,60 s) in cui l'esito è già deciso e lo si vede
+  arrivare: non tempo di decisione, ma il preavviso che rende la morte leggibile.
+- **Non c'è una scorciatoia.** Il cartello è alto 3,6 unità contro un apice di salto di
+  3,2: non è scavalcabile a nessuna velocità e a nessuna taglia. Altrimenti «scegli o
+  muori» diventerebbe «scegli o salta», cioè una terza opzione più facile delle altre
+  due.
+- **Non uccide chi ha scelto.** Il cartello sta sul tronco, al centro; nell'istante in
+  cui la scelta viene registrata la mucca appartiene a un ramo e il cartello le passa
+  accanto. Diventa quindi inerte, non sparisce: farlo svanire davanti al muso sarebbe
+  una sparizione a vista.
+
+**Vedere il bivio e poterlo scegliere sono due momenti diversi.** *Anche questo è
+rivisto: nella prima stesura coincidevano.* La Y del tracciato si vede arrivare da
+`previewZ` = 110 unità e deve continuare a farlo — serve a leggere il terreno e a
+preparare la manovra. Ma 110 unità sono una **distanza**, e una distanza fissa dura
+tempi diversi a velocità diverse: la finestra di scelta ne usciva lunga 2,15 s al tetto
+di "Normale" e **4,78 s a velocità di partenza**, cioè cinque secondi con un bivio
+fermo davanti e la decisione presa da un pezzo. Parole del proprietario: «devo poter
+scegliere solo a ridosso del bivio con un minimo di buffer, non ore prima».
+
+La finestra è quindi **a tempo**: si apre quando `forkZ <= commitZ + velocità ×
+choiceWindowSeconds`, con `choiceWindowSeconds` = 2,0 s. Dura uguale a ogni velocità,
+che è esattamente ciò che serviva. Il tetto vero è il minimo fra quel tempo e ciò che
+la visibilità concede — non si apre la scelta su un bivio che non si vede — e il
+pareggio cade a (110 − 24) / 2 = **43 u/s**: sotto comanda il tempo, sopra comanda
+`previewZ`.
+
+| | velocità | finestra misurata |
+|---|---|---|
+| primo bivio, "Vitellino" | 17,2 u/s | 1,95 s *(prima: 5,00 s)* |
+| primo bivio, "Normale" | 21,0 u/s | 1,97 s *(prima: 4,10 s)* |
+| crociera | 30-34 u/s | 2,00 s *(prima: 2,53-2,87 s)* |
+| tetto "Vitellino" | 28 u/s | 2,00 s *(prima: 3,07 s)* |
+| tetto "Normale" | 40 u/s | 2,00 s *(prima: 2,15 s)* |
+| tetto "Toro" | 46 u/s | 1,87 s *(invariata: comanda `previewZ`)* |
+
+*(Le finestre a bassa velocità sono un pelo sotto i 2,0 s nominali perché la
+velocità sale mentre la finestra viene percorsa: la soglia di apertura si fissa con
+la velocità di quell'istante, e la distanza che ne risulta si copre poi un po' più
+in fretta.)*
+
+Il cambio quindi **accorcia solo dove era troppo lungo** e non tocca il caso già
+stretto. Che 2,0 s bastino non è un'opinione: un pilota automatico che gioca gli
+ostacoli correttamente e ritarda la scelta sopravvive con un ritardo di reazione fino
+a **1,90-1,93 s** su tutti e tre i profili, cioè quasi l'intera finestra — schivare
+non la mangia.
+
+**`fork:appeared` è emesso all'apertura della finestra**, non alla comparsa del bivio:
+quell'evento accende il pannello con le due frecce, e il pannello deve comparire quando
+si può davvero scegliere. Il cartello, invece, si vede da lontano insieme alla Y — è il
+segnale diegetico che «qui bisogna decidere», mentre le frecce sono il momento in cui
+lo si può fare.
+
+**Fuori da un bivio** lo swipe laterale non fa **nulla**, e non viene nemmeno
+ricordato. *La scelta anticipata, prevista dalla prima stesura, è stata rimossa.*
+Permetteva di decidere prima di vedere il contenuto dei due rami, cioè saltava il primo
+dei tre tempi qui sopra — la lettura, che è l'informazione su cui la scelta si fa — e,
+dato che uno swipe diagonale viene letto come laterale, trasformava un salto
+malriuscito in una scelta di ramo silenziosa data mezzo secondo dopo. Con l'indecisione
+che ora costa la corsa, una scelta che il giocatore non sa di avere dato sarebbe
+intollerabile.
 
 Vincolo di leggibilità: fra la fine di un riallineamento e l'inizio del bivio
 successivo deve esserci il margine minimo, che cresce con la velocità. Due bivi non
@@ -128,10 +208,25 @@ Due sole domande: ci salto sopra o ci passo sotto?
 | Masso | A terra | Saltare |
 | Tronco caduto | A terra | Saltare |
 | Staccionata | A terra | Saltare |
-| Crepaccio | A terra, largo | Saltare al momento giusto |
+| Crepaccio | A terra, largo (4 unità) | Saltare al momento giusto |
+| Crepaccio vero | A terra, larghissimo (7 unità) | Saltare, o si **precipita** |
+| Cartello del bivio | A terra, non scavalcabile | Nessuna: si evita **scegliendo** |
 | Ramo di abete | Sospeso | Scivolare |
 | Arco di roccia | Sospeso | Scivolare |
 | Cornicione di ghiaccio | Sospeso | Scivolare |
+
+**Le due eccezioni.** Ogni ostacolo può essere assorbito dallo scudo, perdonato al
+primo impatto o sfondato in valanga. Due no, mai: il **crepaccio vero**, perché una
+caduta non è un urto — uno scudo che tiene a galla sopra un buco largo sette metri non
+si legge come una regola, si legge come un bug — e il **cartello del bivio**, perché il
+suo intero scopo è rendere costosa l'indecisione, e uno scudo che lo assorbisse
+renderebbe di nuovo gratis il non scegliere proprio nei momenti in cui si gioca meglio.
+
+Il crepaccio vero è **raro e riservato alla parte avanzata** della corsa, e non solo
+per ritmo: un buco largo si salta soltanto sopra i 15,5 u/s (più si corre, meno tempo
+si passa sospesi sul vuoto — è l'unico ostacolo del gioco per cui il nemico è la
+velocità bassa), e la rampa tardiva è il punto in cui quella velocità è garantita in
+tutti e tre i profili di difficoltà.
 
 Baite e alberi interi non spariscono dal gioco: diventano **scenografia laterale**
 lungo il tracciato, così i modelli voxel già costruiti continuano a essere usati.
@@ -244,7 +339,13 @@ Lo spirito resta quello della v1: la logica di gioco è pura e testabile senza g
 Test essenziali sul percorso:
 - un bivio si chiude sempre: dopo il riallineamento l'offset è esattamente 0;
 - due bivi non si sovrappongono mai, a nessuna velocità;
-- chi non sceglie ottiene il ramo più sgombro;
+- chi non sceglie non ottiene alcun ramo e si schianta contro il cartello;
+- la finestra di scelta dura lo stesso tempo a ogni velocità e su ogni profilo;
+- chi reagisce entro 1,5 s dall'apertura della finestra sopravvive, pur continuando
+  a schivare;
+- il cartello diventa inerte nell'istante esatto in cui la scelta viene registrata;
+- il cartello non è scavalcabile a nessuna velocità e a nessuna taglia;
+- né lo scudo né il perdono né la valanga salvano dal cartello o dal crepaccio vero;
 - una scelta cambiata prima del punto di non ritorno inverte la traslazione;
 - dopo il riallineamento le entità del ramo scartato non esistono più (nessun leak).
 

@@ -2,11 +2,20 @@ import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { createRng, type Rng } from '../core/rng';
 import { CONFIG } from '../game/config';
+import {
+  cameraDistanceFor,
+  cameraHeightFor,
+  cameraPitchFor,
+  slopeTiltY,
+  slopeTiltZ,
+  WORLD_SLOPE,
+} from './camera-rig';
 
 export interface BackdropView {
   group: THREE.Group;
   /** Riposiziona lo sfondo sul piano orizzontale (x, z) rispetto alla camera:
-   *  MAI y (l'altezza reale della camera non deve mai piegare l'orizzonte) e
+   *  MAI l'altezza della camera (che piegherebbe l'orizzonte a ogni cambio di
+   *  taglia; la quota del gruppo è una costante, vedi backdropDrop) e
    *  MAI lo shake (che qui produrrebbe un sobbalzo innaturale su elementi che
    *  devono restare immobili come un fondale dipinto). Il chiamante passa
    *  `scene.rigPosition`, che esclude entrambi apposta. `yaw` è invece
@@ -24,6 +33,138 @@ export interface BackdropView {
 /* ------------------------------------------------------------------------ *
  * Logica pura, testabile senza three.js: stesso seed → stesso panorama.
  * ------------------------------------------------------------------------ */
+
+/**
+ * Fin dove arriva il pendio davanti alla mucca, GARANTITO. I chunk scorrono
+ * verso la camera e vengono riciclati quando la loro coda supera
+ * despawnBehindZ, quindi il bordo lontano oscilla fra questo valore e uno
+ * `chunkLength` più in là: il conto che segue deve reggere anche nel momento
+ * peggiore del ciclo, cioè quando il pendio è più corto (180 unità).
+ */
+const TERRAIN_FAR_Z =
+  CONFIG.world.chunkLength * (CONFIG.world.chunkCount - 1) + CONFIG.world.despawnBehindZ;
+
+/** Margine fra la cima più alta del fondale e il bordo alto dello schermo:
+ *  un grado, cioè una ventina di pixel su uno schermo 1080p. Serve perché i
+ *  picchi sono triangoli — una cima tagliata di piatto si riconosce
+ *  immediatamente come un errore, molto più di una cima bassa. */
+const CREST_TOP_MARGIN = (1 * Math.PI) / 180;
+
+/** Passo con cui si campionano le taglie nei vincoli qui sotto. La camera
+ *  interpola con continuità fra una taglia e l'altra (render/scene.ts), quindi
+ *  non basta guardare i due estremi per dire «vale sempre». */
+const SIZE_STEP = 0.5;
+
+/** La cima più alta di UN piano di creste, alla sua profondità: è tutto ciò
+ *  che serve sapere del piano per decidere se esce dal quadro. */
+export interface RidgeCrest {
+  /** Profondità del piano, in unità davanti alla camera. */
+  depth: number;
+  /** Quota della cima più alta, nel sistema di riferimento del gruppo-fondale
+   *  (cioè comprensiva di ridgeBaseY e PRIMA dell'abbassamento). */
+  topY: number;
+}
+
+/** Posizione della camera nel mondo alla taglia data, con il rig già
+ *  inclinato sul pendio (vedi WORLD_SLOPE in camera-rig.ts). */
+function cameraOnSlope(size: number, slope: number): { y: number; z: number } {
+  const height = cameraHeightFor(size);
+  const distance = cameraDistanceFor(size);
+  return {
+    y: slopeTiltY(height, -distance, slope),
+    z: slopeTiltZ(height, -distance, slope),
+  };
+}
+
+/**
+ * Tangente dell'angolo (negativo: sotto l'orizzonte) a cui si vede svanire il
+ * pendio. Su un mondo piatto è quasi zero — il pendio muore sull'orizzonte, ed
+ * è esattamente il motivo per cui sembrava una pianura. Inclinato, tende a
+ * -slope: sopra quella linea non c'è più terreno, e quel che si vede lì è
+ * tutto e solo fondale.
+ */
+function slopeVanishTan(size: number, slope: number): number {
+  const camera = cameraOnSlope(size, slope);
+  const edgeY = -TERRAIN_FAR_Z * Math.sin(slope);
+  const edgeZ = TERRAIN_FAR_Z * Math.cos(slope);
+  return (edgeY - camera.y) / (edgeZ - camera.z);
+}
+
+/**
+ * Quota massima del gruppo-fondale perché il suo bordo VICINO resti nascosto
+ * dietro il pendio. È il vincolo che chiude il buco: il fondovalle è un
+ * quadrilatero orizzontale che comincia a `valleyDistance` dalla camera, e se
+ * il suo bordo vicino spuntasse sopra la linea in cui il pendio svanisce si
+ * vedrebbe una striscia di cielo incastrata fra i due.
+ */
+function valleyHiddenCeiling(slope: number): number {
+  const cfg = CONFIG.render.backdrop;
+  let ceiling = Number.POSITIVE_INFINITY;
+  for (let size = 1; size <= CONFIG.avalanche.maxSize; size += SIZE_STEP) {
+    const camera = cameraOnSlope(size, slope);
+    const limit = camera.y + cfg.valleyDistance * slopeVanishTan(size, slope) - cfg.valleyY;
+    if (limit < ceiling) ceiling = limit;
+  }
+  return ceiling;
+}
+
+/**
+ * Quota massima del gruppo-fondale perché nessuna cima esca dal bordo alto
+ * dello schermo. Il caso peggiore è la taglia 1 con il FOV minimo, cioè
+ * l'inquadratura di partenza: alle taglie alte la camera guarda più in basso
+ * (cameraPitchFor), ma per arrivarci serve una corsa lunga, quindi la velocità
+ * è già cresciuta e il FOV si è aperto più di quanto la camera sia scesa —
+ * verificato in backdrop.test.ts su tutte le taglie.
+ */
+function crestsInFrameCeiling(slope: number, crests: readonly RidgeCrest[]): number {
+  const camera = cameraOnSlope(1, slope);
+  const headroom =
+    (CONFIG.render.cameraMinFov / 2) * (Math.PI / 180) -
+    cameraPitchFor(1, slope) -
+    CREST_TOP_MARGIN;
+  let ceiling = Number.POSITIVE_INFINITY;
+  for (const crest of crests) {
+    const limit = camera.y + crest.depth * Math.tan(headroom) - crest.topY;
+    if (limit < ceiling) ceiling = limit;
+  }
+  return ceiling;
+}
+
+/**
+ * DI QUANTO SCENDE IL FONDALE, in unità di mondo (valore negativo).
+ *
+ * Tutti i numeri di CONFIG.render.backdrop sono tarati su un mondo piatto, in
+ * cui il pendio muore sull'orizzonte: creste e fondovalle stanno appena sotto
+ * quella linea (ridgeBaseY = valleyY = 5) perché è lì che, da quel punto di
+ * vista, sta la valle. Con il pendio inclinato la geometria cambia due volte:
+ * il terreno svanisce `slope` gradi SOTTO l'orizzonte — e sotto quella linea
+ * il fondale sarebbe nascosto dal pendio, che è opaco e più vicino — e la
+ * camera scende con il pendio, quindi l'orizzonte sale sullo schermo e sopra
+ * di esso resta molto meno spazio.
+ *
+ * L'abbassamento è il più piccolo che soddisfa entrambe le cose:
+ *
+ *  - il bordo vicino del fondovalle sotto la linea in cui il pendio svanisce
+ *    (valleyHiddenCeiling), altrimenti si apre un vuoto fra pendio e fondale;
+ *  - la cima più alta dentro il bordo dello schermo (crestsInFrameCeiling),
+ *    altrimenti le montagne si vedono tagliate di piatto.
+ *
+ * Il primo vincolo è RELATIVO al mondo piatto: a pendenza zero la funzione
+ * restituisce esattamente 0 e il panorama resta quello di prima, filo di cielo
+ * sopra l'orizzonte compreso — il fondale non è mai stato perfettamente a
+ * tenuta, e non è questo il momento di cambiarlo di nascosto. Il secondo è
+ * assoluto, perché uscire dal quadro non è una questione di confronto con
+ * prima: a pendenza zero non è vincolante e non tocca nulla.
+ *
+ * Il limite dell'impianto è il paese: sta appoggiato sul fondovalle, quindi
+ * scende insieme a lui, e oltre gli 8° circa finisce interamente dietro il
+ * pendio. Un pendio più ripido richiede prima di abbassare
+ * render.backdrop.ridgePeakHeight (che è ciò che spinge in giù il fondale).
+ */
+export function backdropDrop(slope: number, crests: readonly RidgeCrest[]): number {
+  const flatCeiling = valleyHiddenCeiling(0);
+  return Math.min(valleyHiddenCeiling(slope) - flatCeiling, crestsInFrameCeiling(slope, crests), 0);
+}
 
 /**
  * Profilo altimetrico di UNA cresta: `segments + 1` picchi equidistanti fra
@@ -350,6 +491,7 @@ export function createBackdrop(): BackdropView {
   const cfg = CONFIG.render.backdrop;
   const rng = createRng(cfg.seed);
   const group = new THREE.Group();
+  const crests: RidgeCrest[] = [];
 
   for (let layer = 0; layer < cfg.ridgeLayers; layer += 1) {
     const t = cfg.ridgeLayers <= 1 ? 0 : layer / (cfg.ridgeLayers - 1);
@@ -366,6 +508,12 @@ export function createBackdrop(): BackdropView {
       cfg.ridgePeakVariance * depthScale,
     );
     const color = lerpColor(cfg.ridgeColorNear, cfg.ridgeColorFar, t);
+    // La cima VERA di questo piano, non quella teorica (base + varianza
+    // piena): il profilo è deterministico, quindi l'abbassamento può essere
+    // tarato sulla montagna che si vede davvero invece che sulla peggiore che
+    // il generatore potrebbe produrre. Sul piano più lontano il divario vale
+    // un grado e mezzo di quadro.
+    crests.push({ depth, topY: cfg.ridgeBaseY + Math.max(...profile) });
     group.add(
       buildRidgeMesh(profile, width, depth, cfg.ridgeBaseY, color, cfg.hazeColor, cfg.ridgeHazeMix),
     );
@@ -374,8 +522,12 @@ export function createBackdrop(): BackdropView {
   group.add(buildValleyFloor());
   group.add(buildVillage(rng));
 
+  // Calcolato una volta sola: dipende dalla pendenza (una costante) e dal
+  // panorama generato (che ha un seed fisso), non dal frame.
+  const drop = backdropDrop(WORLD_SLOPE, crests);
+
   function sync(cameraX: number, cameraZ: number, yaw: number): void {
-    group.position.set(cameraX, 0, cameraZ);
+    group.position.set(cameraX, drop, cameraZ);
     group.rotation.y = yaw;
   }
 

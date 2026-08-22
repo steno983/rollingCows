@@ -28,7 +28,7 @@ import {
   createPath,
   type ForkPhase,
   type PathState,
-  rememberChoice,
+  signpostIsSolid,
   updatePath,
 } from './path';
 import { createPlayer, jump, type PlayerState, slide, updatePlayer } from './player';
@@ -52,6 +52,7 @@ import {
   resolveDifficultyProfile,
 } from './speed';
 import type { Action, Branch, Entity, EntityKind, ObstacleKind, PickupKind } from './types';
+import { isUnforgiving } from './types';
 import { createWorld, updateWorld, type WorldState } from './world';
 
 /**
@@ -186,6 +187,28 @@ export function runSummary(game: GameState): RunSummary {
  */
 const MAX_ENTITY_DEPTH = Math.max(...Object.values(ENTITY_BOX).map((box) => box.depth));
 const COLLISION_Z_WINDOW = CONFIG.player.depth + MAX_ENTITY_DEPTH;
+
+/**
+ * Questa entita' puo' colpire o essere raccolta ADESSO?
+ *
+ * Per tutto il gioco la risposta e' una proprieta' del RAMO: le entita' del
+ * tronco sono sempre solide, quelle di un ramo lo sono solo dal punto di non
+ * ritorno in poi (vedi path.ts, branchIsSolid). Il cartello del bivio e'
+ * l'unica eccezione, e ha bisogno di esserlo: sta sul tronco, cioe' al centro,
+ * dove il ramo non ha ancora significato, e la sua solidita' dipende non da
+ * dove si trova ma da COSA IL GIOCATORE HA FATTO — e' solido finche' nessuno
+ * ha scelto, inerte dall'istante esatto in cui una scelta viene registrata.
+ *
+ * La distinzione vive in una funzione sola, e non sparsa nei tre cicli che ne
+ * hanno bisogno (collisioni, conteggio degli ostacoli schivati, e chiunque
+ * domani), perche' un cartello solido dimenticato in uno di quei cicli
+ * ucciderebbe chi ha scelto: precisamente il difetto che questa regola esiste
+ * per non avere.
+ */
+export function entityIsSolid(path: PathState, entity: Entity): boolean {
+  if (entity.kind === 'signpost') return signpostIsSolid(path);
+  return branchIsSolid(path, entity.branch);
+}
 
 function isPickupKind(kind: EntityKind): kind is PickupKind {
   return (
@@ -359,19 +382,27 @@ export function handleAction(game: GameState, action: Action): void {
 }
 
 /**
- * Uno swipe laterale. Dentro la finestra di avvicinamento è una scelta, e va
- * annunciata: 'fork:chosen' è l'unico riscontro che il giocatore riceve prima
- * del punto di non ritorno. Fuori dalla finestra non fa nulla, ma resta
- * ricordata per un istante come scelta anticipata (design §4) — e solo se un
- * bivio è davvero imminente: `rememberChoice` rifiuta il resto, che quasi
- * sempre è un salto malriuscito e non una scelta (vedi path.ts).
+ * Uno swipe laterale. Vale SOLO mentre il bivio e' in avvicinamento e il punto
+ * di non ritorno non e' ancora passato; fuori di li' non fa assolutamente
+ * nulla, nemmeno restare in memoria.
+ *
+ * La scelta ANTICIPATA e' stata rimossa (design §4, regola nuova). Permetteva
+ * di decidere prima di vedere i due rami, cioe' saltava il primo dei tre tempi
+ * del bivio — la lettura, che e' l'informazione su cui la scelta si fa — e,
+ * dato che uno swipe diagonale viene letto come laterale (vedi
+ * input.horizontalDominance), trasformava un salto malriuscito in una scelta
+ * di ramo silenziosa data mezzo secondo dopo. Con l'indecisione che ora costa
+ * la corsa, una scelta che il giocatore non sa di avere dato sarebbe
+ * intollerabile: e' l'unico input del gioco che decide dove si va.
+ *
+ * 'fork:chosen' resta l'unico riscontro che il giocatore riceve prima del
+ * punto di non ritorno, ed e' ora anche il segnale che il cartello e' diventato
+ * inerte (vedi path.ts, signpostIsSolid).
  */
 function chooseSide(game: GameState, side: 'left' | 'right'): void {
   if (chooseBranch(game.path, side)) {
     game.bus.emit('fork:chosen', { side });
-    return;
   }
-  rememberChoice(game.path, side);
 }
 
 export function updateGame(game: GameState, dt: number): void {
@@ -416,7 +447,7 @@ export function updateGame(game: GameState, dt: number): void {
       entity.category === 'obstacle' &&
       zBefore > -COLLISION_Z_WINDOW &&
       entity.z <= -COLLISION_Z_WINDOW &&
-      branchIsSolid(game.path, entity.branch)
+      entityIsSolid(game.path, entity)
     ) {
       registerPassedObstacle(game.score, game.bus);
     }
@@ -446,7 +477,7 @@ export function updateGame(game: GameState, dt: number): void {
   for (let i = 0; i < entities.length; i++) {
     const entity = entities[i];
     if (entity === undefined || !entity.alive) continue;
-    if (!branchIsSolid(game.path, entity.branch)) continue;
+    if (!entityIsSolid(game.path, entity)) continue;
     if (Math.abs(entity.z) > COLLISION_Z_WINDOW) continue;
     if (!boxesOverlap(box, entityBox(entity))) continue;
 
@@ -639,6 +670,24 @@ function handleForkTransitions(
       out,
       lateProgress,
     );
+    // IL CARTELLO, esattamente nel punto in cui la strada si sdoppia e al
+    // centro (ramo 'main', cioe' scostamento nullo a qualunque apertura, vedi
+    // path.ts, branchCenterAt): il cuneo fra i due nastri. Nasce solido e
+    // diventa inerte nell'istante in cui una scelta viene registrata — non c'e'
+    // niente da spegnere, perche' la sua solidita' e' una funzione della scelta
+    // e non un flag (vedi entityIsSolid e path.ts, signpostIsSolid).
+    //
+    // Non ha bisogno di stare lontano dagli ostacoli del tronco che lo
+    // precedono, e per questo non passa dai cursori dello spawner: a chi ha
+    // scelto e' inerte, a chi non ha scelto e' la fine della corsa. Non esiste
+    // una coppia "ultimo ostacolo -> cartello" di cui garantire la
+    // superabilita', perche' il cartello non e' superabile per definizione.
+    //
+    // Vive quanto il bivio: `entity.z` e `path.forkZ` calano dello stesso
+    // `moved` a ogni frame, quindi restano incollati senza sincronizzazione, e
+    // il despawn dietro le spalle (world.despawnBehindZ = -20) lo toglie di
+    // mezzo molto prima che il bivio si chiuda a forkZ = -forkBlendZ = -28.
+    game.spawner.placeSignpost(path.forkZ, out);
     return;
   }
 
@@ -649,6 +698,17 @@ function handleForkTransitions(
   }
 
   if (phaseBefore !== 'none' && path.phase === 'none') {
+    if (activeBranchBefore === 'main') {
+      // Bivio chiuso SENZA che nessun ramo sia mai stato scelto. In una partita
+      // non ci si arriva: chi non sceglie muore contro il cartello molto prima
+      // (vedi path.ts, advanceUnchosen, che spiega perche' questa via esiste
+      // lo stesso). Se ci si arriva, il tronco e' rimasto il tronco e i due
+      // rami non sono mai diventati niente: vanno tolti entrambi, o
+      // resterebbero appesi a lato per sempre, inerti e non raccoglibili.
+      removeEntitiesOnBranch(game.entities, 'left');
+      removeEntitiesOnBranch(game.entities, 'right');
+      return;
+    }
     // Il vecchio tronco è ormai tutto alle spalle (per costruzione main.z <=
     // forkZ, e a fine riallineamento forkZ vale meno di -speed*realignSeconds)
     // ED è rimasto indietro DI LATO: è ancorato a offsetX, che in questo stesso
@@ -780,13 +840,13 @@ function collectPickup(game: GameState, entity: Entity, kind: PickupKind): void 
   }
 
   const base = CONFIG.pickups.charge[kind];
-  // Barra PIÙ serbatoio: durante la valanga la barra è congelata ma la carica
-  // non è più persa (finisce nel riporto, vedi avalanche.ts), e l'evento deve
-  // dire quanta se ne è davvero guadagnata — altrimenti l'HUD continuerebbe a
-  // raccontare zero proprio nella fase in cui il riporto si costruisce.
-  const chargeBefore = game.avalanche.charge + game.avalanche.carryOver;
+  // Carica DAVVERO guadagnata, non quella nominale: la barra si ferma alla
+  // soglia, e durante la valanga i raccoglibili non caricano affatto (vedi
+  // avalanche.ts, addCharge). L'evento deve dire quello che è successo, non
+  // quello che il tipo di raccoglibile varrebbe in astratto.
+  const chargeBefore = game.avalanche.charge;
   addCharge(game.avalanche, base, game.bus);
-  const chargeAfter = game.avalanche.charge + game.avalanche.carryOver;
+  const chargeAfter = game.avalanche.charge;
   game.bus.emit('pickup:collected', {
     kind,
     charge: chargeAfter - chargeBefore,
@@ -801,6 +861,38 @@ function hitObstacle(game: GameState, entity: Entity, kind: ObstacleKind): void 
   const branch = entity.branch;
   const z = entity.z;
   const y = entity.y;
+
+  // LE DUE ECCEZIONI, prima di ogni rete di sicurezza (vedi types.ts,
+  // isUnforgiving, che spiega quali sono e perche'). Stanno in cima e non in
+  // mezzo agli altri casi perche' e' esattamente questo il punto: non c'e'
+  // ordine di priorita' da valutare, non c'e' scudo da consumare, non c'e'
+  // carica da controllare. Sono gli unici due ostacoli del gioco che non
+  // guardano nulla dello stato del giocatore.
+  if (isUnforgiving(kind)) {
+    game.alive = false;
+    if (kind === 'chasm') {
+      // Non un urto ma una CADUTA, e va raccontata diversamente: niente
+      // esplosione di cubetti contro un ostacolo, ma la mucca che sprofonda
+      // mentre la camera resta sul bordo. Per questo 'player:fell' e non
+      // 'obstacle:hit' — chi ascolta il bus deve poter distinguere le due cose
+      // senza dedurle dal `kind`.
+      //
+      // Che la mucca fosse A TERRA e' garantito dalla geometria, non da un
+      // controllo: il crepaccio e' alto 0,1 unita', quindi le due sagome si
+      // sovrappongono in quota solo se la base della mucca sta sotto 0,1. Chi
+      // sta saltando non e' qui. Nemmeno la scivolata salva, perche' schiaccia
+      // l'altezza della sagoma senza alzarne la base: si scivola dentro il buco
+      // esattamente come ci si cammina dentro.
+      game.bus.emit('player:fell', { z });
+    } else {
+      // Il cartello e' uno schianto vero, quindi resta un 'obstacle:hit' con
+      // esito 'death': chi disegna l'urto (main.ts) non ha bisogno di sapere
+      // che questo ostacolo e' speciale, solo che ci si e' schiantati contro.
+      game.bus.emit('obstacle:hit', { kind, outcome: 'death', branch, z, y });
+    }
+    game.bus.emit('run:ended', runSummary(game));
+    return;
+  }
 
   if (canSmash(game.avalanche, kind)) {
     entity.alive = false;

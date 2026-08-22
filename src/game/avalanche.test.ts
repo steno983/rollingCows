@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { createEventBus, type EventBus, type EventName, type GameEvents } from '../core/events';
 import {
+  type AvalancheState,
   addCharge,
   applyForgivenessPenalty,
+  avalancheBarRatio,
   canSmash,
   createAvalanche,
   isInvulnerable,
@@ -85,7 +87,7 @@ describe('sizeForCharge', () => {
 describe('createAvalanche', () => {
   it('parte da carica 0, taglia 1, fase idle', () => {
     const state = createAvalanche();
-    expect(state).toEqual({ charge: 0, size: 1, phase: 'idle', timeLeft: 0, carryOver: 0 });
+    expect(state).toEqual({ charge: 0, size: 1, phase: 'idle', timeLeft: 0 });
   });
 });
 
@@ -169,7 +171,7 @@ describe('updateAvalanche', () => {
     const state = createAvalanche();
 
     updateAvalanche(state, 1, bus);
-    expect(state).toEqual({ charge: 0, size: 1, phase: 'idle', timeLeft: 0, carryOver: 0 });
+    expect(state).toEqual({ charge: 0, size: 1, phase: 'idle', timeLeft: 0 });
     expect(events).toHaveLength(0);
   });
 
@@ -234,59 +236,70 @@ describe('updateAvalanche', () => {
   });
 });
 
-describe('riporto della carica raccolta in valanga', () => {
-  it('la carica raccolta durante la valanga non tocca la barra ma finisce nel serbatoio', () => {
-    const bus = createEventBus();
+describe('durante la valanga la barra racconta il tempo, non la carica', () => {
+  /** Stato con la valanga appena innescata: la soglia raggiunta di netto. */
+  function triggered(): { state: AvalancheState; bus: EventBus } {
     const state = createAvalanche();
+    const bus = createEventBus();
     addCharge(state, CONFIG.avalanche.threshold, bus);
+    return { state, bus };
+  }
 
-    addCharge(state, 12, bus);
-    // La barra resta ferma: se salisse, la valanga si autoprolungherebbe.
-    expect(state.charge).toBe(CONFIG.avalanche.threshold);
-    expect(state.carryOver).toBe(12);
-    expect(state.timeLeft).toBe(CONFIG.avalanche.durationSeconds);
+  it('i raccoglibili presi in valanga non caricano la barra', () => {
+    const { state, bus } = triggered();
+    const chargePrima = state.charge;
+
+    addCharge(state, 40, bus);
+    addCharge(state, 40, bus);
+
+    // Valgono ancora punti (li assegna game.ts, non questo modulo), ma sulla
+    // carica non lasciano traccia: la barra in questa fase è un timer.
+    expect(state.charge).toBe(chargePrima);
   });
 
-  it('il serbatoio è versato sulla barra alla fine, con la taglia che ne consegue', () => {
-    const bus = createEventBus();
-    const state = createAvalanche();
-    addCharge(state, CONFIG.avalanche.threshold, bus);
-    addCharge(state, chargeForSize(2), bus);
+  it('la barra scende in proporzione al tempo che resta', () => {
+    const { state, bus } = triggered();
+    const durata = CONFIG.avalanche.durationSeconds;
 
-    updateAvalanche(state, CONFIG.avalanche.durationSeconds, bus);
+    expect(avalancheBarRatio(state)).toBeCloseTo(1, 5);
+    updateAvalanche(state, durata / 4, bus);
+    expect(avalancheBarRatio(state)).toBeCloseTo(0.75, 5);
+    updateAvalanche(state, durata / 4, bus);
+    expect(avalancheBarRatio(state)).toBeCloseTo(0.5, 5);
+    updateAvalanche(state, durata / 4, bus);
+    expect(avalancheBarRatio(state)).toBeCloseTo(0.25, 5);
+  });
+
+  it('scende in modo monotono per tutta la fase, senza risalite', () => {
+    // È la proprietà che rende la barra leggibile: se risalisse anche una
+    // volta sola — per esempio raccogliendo — smetterebbe di dire quanto manca.
+    const { state, bus } = triggered();
+    let precedente = avalancheBarRatio(state);
+    for (let i = 0; i < 200; i += 1) {
+      addCharge(state, 4, bus);
+      updateAvalanche(state, 1 / 60, bus);
+      if (state.phase === 'idle') break;
+      const ora = avalancheBarRatio(state);
+      expect(ora).toBeLessThanOrEqual(precedente);
+      precedente = ora;
+    }
+  });
+
+  it('fuori dalla valanga la barra torna a essere la carica', () => {
+    const state = createAvalanche();
+    const bus = createEventBus();
+    addCharge(state, CONFIG.avalanche.threshold / 2, bus);
+    expect(avalancheBarRatio(state)).toBeCloseTo(0.5, 5);
+  });
+
+  it('alla fine della valanga la barra riparte da zero', () => {
+    const { state, bus } = triggered();
+    addCharge(state, 80, bus);
+    updateAvalanche(state, CONFIG.avalanche.durationSeconds + 0.1, bus);
 
     expect(state.phase).toBe('idle');
-    expect(state.charge).toBe(chargeForSize(2));
-    expect(state.carryOver).toBe(0);
-    // La taglia segue la carica: non si torna a 1 se la barra non è a zero.
-    expect(state.size).toBe(2);
-  });
-
-  it('il riporto è tagliato a carryOverRatio della soglia, quindi non innesca la valanga successiva', () => {
-    const bus = createEventBus();
-    const state = createAvalanche();
-    addCharge(state, CONFIG.avalanche.threshold, bus);
-
-    // Molto più di quanto il tetto consenta: 607 fiocchi per corsa era la
-    // misura reale del profilo che sceglie sempre il ramo ricco.
-    for (let i = 0; i < 200; i++) addCharge(state, CONFIG.pickups.charge.snowflake, bus);
-    const cap = CONFIG.avalanche.threshold * CONFIG.avalanche.carryOverRatio;
-    expect(state.carryOver).toBe(cap);
-
-    updateAvalanche(state, CONFIG.avalanche.durationSeconds, bus);
-    expect(state.charge).toBe(cap);
-    expect(state.charge).toBeLessThan(CONFIG.avalanche.threshold);
-    expect(state.phase).toBe('idle');
-  });
-
-  it('il perdono azzera anche il serbatoio', () => {
-    const bus = createEventBus();
-    const state = createAvalanche();
-    addCharge(state, CONFIG.avalanche.threshold, bus);
-    addCharge(state, 20, bus);
-
-    applyForgivenessPenalty(state, bus);
-    expect(state.carryOver).toBe(0);
+    expect(state.charge).toBe(0);
+    expect(avalancheBarRatio(state)).toBe(0);
   });
 });
 

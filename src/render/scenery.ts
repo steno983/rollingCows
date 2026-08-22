@@ -3,6 +3,7 @@ import { createRng } from '../core/rng';
 import { CONFIG } from '../game/config';
 import type { WorldState } from '../game/world';
 import { cameraDistanceFor, worldToViewX } from './camera-rig';
+import { createContactShadowMesh } from './contact-shadow';
 import { buildGeometry, MODELS } from './models';
 import { heightAt } from './terrain';
 
@@ -136,37 +137,16 @@ export interface SceneryView {
 const CONTACT_SHADOW_LIFT = 0.12;
 
 /**
- * Ombra di contatto finta: un gradiente radiale su canvas, generato a runtime
- * come ogni altra texture del progetto (nessun asset esterno). Le ombre VERE
- * sono escluse apposta: la scenografia vive fra minLateral e maxLateral unità
- * di lato (12 e 46) e
- * allargare fin lì il frustum della shadow map sacrificherebbe i texel dove
- * servono davvero, sugli ostacoli (vedi CONFIG.render.shadow). Il colore non è
- * nero ma il blu di PALETTE[20] (ombra del ghiaccio): su una distesa di neve
- * un'ombra grigia legge come sporco.
+ * Ombra di contatto finta: la tecnica (texture, materiale, InstancedMesh) vive
+ * in render/contact-shadow.ts perché la usano anche gli ostacoli SOSPESI, dove
+ * dice al giocatore la cosa più importante del gioco dopo la forma
+ * dell'ostacolo: che quello sta in quota e ci si passa sotto.
+ *
+ * Qui le ombre VERE sono escluse apposta: la scenografia vive fra minLateral e
+ * maxLateral unità di lato (12 e 46) e allargare fin lì il frustum della
+ * shadow map sacrificherebbe i texel dove servono davvero, sugli ostacoli
+ * (vedi CONFIG.render.shadow).
  */
-function createContactShadowTexture(): THREE.CanvasTexture {
-  const size = 64;
-  const canvas = document.createElement('canvas');
-  canvas.width = size;
-  canvas.height = size;
-  const ctx = canvas.getContext('2d');
-  if (ctx === null) {
-    throw new Error("Contesto 2D non disponibile per l'ombra di contatto");
-  }
-
-  const half = size / 2;
-  const gradient = ctx.createRadialGradient(half, half, 0, half, half, half);
-  gradient.addColorStop(0, 'rgba(43, 74, 99, 1)');
-  gradient.addColorStop(0.45, 'rgba(43, 74, 99, 0.72)');
-  gradient.addColorStop(1, 'rgba(43, 74, 99, 0)');
-  ctx.fillStyle = gradient;
-  ctx.fillRect(0, 0, size, size);
-
-  const texture = new THREE.CanvasTexture(canvas);
-  texture.colorSpace = THREE.SRGBColorSpace;
-  return texture;
-}
 
 /**
  * Una InstancedMesh per modello decorativo più una per le ombre di contatto:
@@ -207,20 +187,7 @@ export function createScenery(): SceneryView {
     group.add(mesh);
   }
 
-  const shadowGeometry = new THREE.PlaneGeometry(1, 1).rotateX(-Math.PI / 2);
-  const shadowMaterial = new THREE.MeshBasicMaterial({
-    map: createContactShadowTexture(),
-    transparent: true,
-    opacity: cfg.contactShadowOpacity,
-    // Il quad è appoggiato sul pendio e va letto attraverso: scrivere la
-    // profondità farebbe sparire le ombre che si sovrappongono fra loro.
-    depthWrite: false,
-  });
-  const shadows = new THREE.InstancedMesh(shadowGeometry, shadowMaterial, capacity);
-  shadows.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-  shadows.count = 0;
-  shadows.visible = false;
-  shadows.frustumCulled = false;
+  const shadows = createContactShadowMesh(capacity, cfg.contactShadowOpacity);
   group.add(shadows);
 
   // I sei layout, uno per id di chunk, calcolati UNA volta: prima sync

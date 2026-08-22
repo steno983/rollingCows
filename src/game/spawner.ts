@@ -31,7 +31,28 @@ const GROUND_OBSTACLES: readonly GroundObstacleKind[] = Object.values({
   log: 'log',
   fence: 'fence',
   crevasse: 'crevasse',
+  chasm: 'chasm',
 } satisfies { [K in GroundObstacleKind]: K });
+
+/**
+ * Il pool da cui si estrae un ostacolo a terra ORDINARIO: tutti tranne il
+ * crepaccio vero, che ha un'estrazione sua (vedi `pickObstacleKind`).
+ *
+ * Derivato per FILTRO dall'elenco esaustivo invece di essere un secondo elenco
+ * scritto a mano, e la differenza non e' stilistica: un secondo letterale
+ * perderebbe la verifica di copertura del compilatore, cioe' esattamente la
+ * garanzia per cui l'elenco sopra e' costruito come record chiave->chiave. Con
+ * il filtro, aggiungere domani un tipo a terra continua a rompere la
+ * compilazione se non lo si elenca, e continua a farlo comparire qui.
+ *
+ * NOTA SUL DETERMINISMO: ha gli stessi quattro elementi che `GROUND_OBSTACLES`
+ * aveva prima dell'arrivo del crepaccio, nello stesso ordine, quindi ogni
+ * `rng.pick` su questo array restituisce cio' che restituiva prima. Una corsa
+ * generata senza rampa tardiva e' identica a quella di ieri, seed per seed.
+ */
+const COMMON_GROUND_OBSTACLES: readonly GroundObstacleKind[] = GROUND_OBSTACLES.filter(
+  (kind) => kind !== 'chasm',
+);
 
 const OVERHEAD_OBSTACLES: readonly OverheadObstacleKind[] = Object.values({
   branch: 'branch',
@@ -81,10 +102,22 @@ const TRAVERSABILITY_EPSILON = 1e-9;
  * bilanciamento in più da tarare (vedi la regola di progetto omonima in
  * architecture.test.ts), e si muove da solo il giorno in cui il fiocco cambia
  * dimensione. Il valore che ne esce, 0,4, è ciò che serve: sommato alla
- * semisomma più profonda del gioco (crepaccio + fiocco = 2,4) resta sotto il
- * passo della fila (`spawn.trailSpacing` = 3), quindi il filtro toglie il
- * fiocco AL CENTRO dell'ostacolo senza toccare quello successivo, che sta
- * sopra il bordo ed è voluto.
+ * semisomma di una crepa e di un fiocco (2,4) resta sotto il passo della fila
+ * (`spawn.trailSpacing` = 3), quindi il filtro toglie il fiocco AL CENTRO
+ * dell'ostacolo senza toccare quello successivo, che sta sopra il bordo ed è
+ * voluto.
+ *
+ * L'UNICA ECCEZIONE È IL CREPACCIO VERO (`chasm`, profondo 7): lì la soglia
+ * sale a 4,3, cioè copre due passi di fila. È corretto che sia così — un
+ * fiocco a quota zero dentro un buco largo sette metri galleggerebbe sul
+ * vuoto — e non svuota comunque la fila, perché il filtro guarda la QUOTA
+ * prima della distanza: sopra un crepaccio, alto 0,1, sopravvive qualunque
+ * fiocco che stia sopra il bordo, cioè tutta la parte alta dell'arco. Restano
+ * filtrati solo i due estremi a quota zero, ed è il caso in cui una fila da
+ * DUE soli fiocchi (possibile solo sul ramo sgombro, dove la fila è corta)
+ * sparisce del tutto: un crepaccio senza il suo indizio di fiocchi. Si
+ * accetta, perché un buco di sette metri è di gran lunga l'ostacolo più
+ * leggibile del gioco anche senza indizio.
  */
 const PICKUP_CLEARANCE = ENTITY_BOX.snowflake.depth / 2;
 
@@ -243,6 +276,24 @@ export interface Spawner {
    * `branchSpawnStartZ(forkZ)`, non con `forkZ` nudo.
    */
   copyCursor(from: Branch, to: Branch, minZ: number): void;
+  /**
+   * Piazza il CARTELLO del bivio alla distanza `z`, sul tronco.
+   *
+   * L'unica entita' del gioco che non nasce dal ritmo: non la sceglie la
+   * generazione, la piazza il bivio (vedi game.ts, handleForkTransitions) nel
+   * punto esatto in cui la strada si sdoppia. Sta comunque qui, e non in
+   * game.ts, per una ragione sola ma sufficiente: gli id delle entita' sono
+   * allocati dallo spawner, e un id duplicato non e' un dettaglio estetico —
+   * l'id e' la chiave con cui i consumatori distinguono un'entita' dall'altra
+   * (la vista per le istanze, i test per sapere cosa hanno gia' visto passare).
+   *
+   * NON tocca alcun cursore e NON estrae numeri pseudocasuali: il cartello non
+   * fa parte della spaziatura degli ostacoli (a chi ha scelto e' inerte, a chi
+   * non ha scelto e' la fine della corsa, quindi non c'e' alcuna coppia di cui
+   * garantire la superabilita') e non deve spostare di un bit la corsa che il
+   * seed descrive.
+   */
+  placeSignpost(z: number, out: Entity[]): void;
   reset(): void;
 }
 
@@ -350,8 +401,17 @@ export function createSpawner(
     return rich ? Math.max(overheadShareRich, ramped) : ramped;
   }
 
-  function pickObstacleKind(overheadShare: number): ObstacleKind {
-    return rng.chance(overheadShare) ? rng.pick(OVERHEAD_OBSTACLES) : rng.pick(GROUND_OBSTACLES);
+  /**
+   * `chasmChance` e' la probabilita' che un ostacolo A TERRA sia il crepaccio
+   * vero. Vale 0 prima di `spawn.lateRampStart` e in quel caso non viene
+   * estratto alcun numero pseudocasuale: la sequenza di una corsa senza rampa
+   * tardiva resta bit per bit quella di prima, seed per seed. E' anche il
+   * motivo per cui il tiro sta QUI dentro e non nel ciclo del chiamante.
+   */
+  function pickObstacleKind(overheadShare: number, chasmChance: number): ObstacleKind {
+    if (rng.chance(overheadShare)) return rng.pick(OVERHEAD_OBSTACLES);
+    if (chasmChance > 0 && rng.chance(chasmChance)) return 'chasm';
+    return rng.pick(COMMON_GROUND_OBSTACLES);
   }
 
   /** Il ramo ricco di un bivio pesca dai pesi "rari"; tronco e ramo sgombro
@@ -469,6 +529,13 @@ export function createSpawner(
         ? minObstacleGap * CONFIG.spawn.clearBranchGapRatio
         : minObstacleGap;
       const overheadShare = overheadShareFor(rich, late);
+      // Il crepaccio vero e' riservato alla parte avanzata della corsa: la
+      // probabilita' cresce con la rampa tardiva e vale zero prima di
+      // spawn.lateRampStart. Il perche' non e' solo di ritmo ma aritmetico —
+      // un buco largo 7 unita' si salta solo sopra i 15,5 u/s, e la rampa
+      // tardiva e' il punto in cui quella velocita' e' garantita in tutti i
+      // profili (il conto sta in config, collisions.entityBox.chasm).
+      const chasmChance = CONFIG.spawn.chasmChanceLate * late;
       // Il cursore del ramo: dove era rimasto, mai prima dell'inizio del
       // segmento richiesto (un ramo appena nato, o un buco di copertura,
       // ripartono dal bordo).
@@ -488,9 +555,14 @@ export function createSpawner(
       let previousGapTight = lastGapWasTight[branch];
 
       while (cursorZ < endZ) {
+        // ONBOARDING: il primo ostacolo pesca dal pool ordinario, mai dal
+        // crepaccio. Non basterebbe la rampa tardiva a escluderlo (a inizio
+        // corsa vale gia' 0), ma il pool ordinario lo dice esplicitamente:
+        // il primo ostacolo di una corsa deve essere quello che insegna il
+        // salto, non quello che punisce chi non l'ha ancora imparato.
         const kind = firstObstaclePending
-          ? rng.pick(GROUND_OBSTACLES)
-          : pickObstacleKind(overheadShare);
+          ? rng.pick(COMMON_GROUND_OBSTACLES)
+          : pickObstacleKind(overheadShare, chasmChance);
         if (firstObstaclePending && cursorZ >= CONFIG.world.spawnSafeZ)
           firstObstaclePending = false;
         const overhead = isOverhead(kind);
@@ -592,6 +664,9 @@ export function createSpawner(
       lastObstacleZ.main -= moved;
       lastObstacleZ.left -= moved;
       lastObstacleZ.right -= moved;
+    },
+    placeSignpost(z: number, out: Entity[]): void {
+      emit(out, 'signpost', 'obstacle', 'main', z, 0);
     },
     copyCursor(from: Branch, to: Branch, minZ: number): void {
       nextObstacleZ[to] = Math.max(minZ, nextObstacleZ[from]);

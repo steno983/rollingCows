@@ -13,7 +13,14 @@ import {
   startRun,
   updateGame,
 } from './game';
-import { activeBranchOf, createPath, forkApproaching, type PathState } from './path';
+import {
+  activeBranchOf,
+  choiceIsOpen,
+  createPath,
+  forkApproaching,
+  forkZOf,
+  type PathState,
+} from './path';
 import { createScore, registerPassedObstacle, streakMultiplier } from './score';
 import { createSpawner } from './spawner';
 import { DEFAULT_DIFFICULTY_PROFILE, difficultyAt, lateRampAt, speedAt } from './speed';
@@ -42,6 +49,7 @@ const ALL_EVENTS: EventName[] = [
   'buff:gained',
   'buff:expired',
   'shield:consumed',
+  'player:fell',
   'streak:changed',
   'record:beaten',
 ];
@@ -84,6 +92,28 @@ function overheadObstacle(branch: Branch = 'main', z = 5): Entity {
 
 function snowflake(branch: Branch = 'main', z = 5): Entity {
   return { id: 3, kind: 'snowflake', category: 'pickup', branch, z, y: 0, alive: true };
+}
+
+/** Crepaccio VERO: quota 0 come tutti gli ostacoli a terra, ma profondo 7. */
+function chasm(z = 5): Entity {
+  return { id: 4, kind: 'chasm', category: 'obstacle', branch: 'main', z, y: 0, alive: true };
+}
+
+/** Cartello del bivio: sempre sul tronco, sempre a terra. */
+function signpost(z = 5): Entity {
+  return { id: 5, kind: 'signpost', category: 'obstacle', branch: 'main', z, y: 0, alive: true };
+}
+
+/**
+ * Un cartello davanti alla mucca, con un bivio in corso e NESSUNA scelta data:
+ * la sola condizione in cui il cartello e' solido (vedi path.ts,
+ * signpostIsSolid). Senza il bivio montato il cartello e' inerte, e un test che
+ * lo dimenticasse verificherebbe il contrario di quello che crede.
+ */
+function unchosenFork(seed: number, z = 5): { game: GameState; events: Recorded[] } {
+  const built = scenario(seed, signpost(z));
+  mountPath(built.game, forkApproaching({ forkZ: CONFIG.path.previewZ }));
+  return built;
 }
 
 /**
@@ -592,6 +622,10 @@ describe('updateGame — bivio', () => {
       snowflake('right', CONFIG.path.previewZ - 5),
     );
 
+    // La scelta va data: chi non sceglie non arriva piu' a 'committed', va a
+    // sbattere contro il cartello (design §4, regola nuova).
+    handleAction(game, 'CHOOSE_LEFT');
+
     let frame = 0;
     while (game.path.phase !== 'committed' && frame < 600) {
       updateGame(game, STEP);
@@ -699,20 +733,21 @@ describe('handleAction', () => {
 
     const events = recordEvents(bus);
 
-    // Con il prossimo bivio ancora lontano lo swipe non è una scelta e NON
-    // viene ricordato: quasi sempre è un salto malriuscito, e ricordarlo
-    // significava imboccare un ramo senza averlo deciso (vedi path.ts,
-    // rememberChoice).
-    mountPath(game, { ...createPath(), nextForkIn: CONFIG.path.earlyChoiceWindowZ + 1 });
+    // Fuori da un bivio lo swipe non fa NIENTE, nemmeno restare in memoria:
+    // la scelta anticipata non esiste più (design §4, regola nuova). Quasi
+    // sempre uno swipe dato lontano da un bivio è un salto malriuscito, e con
+    // l'indecisione che ora costa la corsa una scelta data senza saperlo
+    // sarebbe intollerabile.
+    mountPath(game, createPath());
     handleAction(game, 'CHOOSE_LEFT');
-    expect(game.path.pendingChoice).toBeNull();
+    expect(game.path.phase).toBe('none');
     expect(countOf(events, 'fork:chosen')).toBe(0);
 
-    // Con il bivio imminente, invece, resta in memoria come scelta anticipata
-    // (design §4) — e nemmeno allora annuncia nulla, perché il bivio non c'è.
-    mountPath(game, { ...createPath(), nextForkIn: CONFIG.path.earlyChoiceWindowZ - 1 });
-    handleAction(game, 'CHOOSE_LEFT');
-    expect(game.path.pendingChoice).toBe('left');
+    // Nemmeno con il bivio imminente: la finestra di scelta comincia quando il
+    // bivio COMPARE, cioè quando c'è qualcosa da leggere.
+    mountPath(game, { ...createPath(), nextForkIn: 1 });
+    handleAction(game, 'CHOOSE_RIGHT');
+    expect(game.path.phase).toBe('none');
     expect(countOf(events, 'fork:chosen')).toBe(0);
 
     // Si legge la scelta dal riferimento tipizzato al bivio invece che da
@@ -1092,5 +1127,266 @@ describe('rampa tardiva', () => {
     const early = overheadShareAt(0);
     const late = overheadShareAt(CONFIG.spawn.lateRampStart + CONFIG.spawn.lateRampDistance);
     expect(late).toBeGreaterThan(early);
+  });
+});
+
+describe('CREPACCIO (chasm): ci si precipita dentro, non ci si sbatte contro', () => {
+  it('uccide chi è a terra, e lo racconta con player:fell invece che con obstacle:hit', () => {
+    const { game, events } = scenario(1, chasm());
+    game.forgivenessUsed = true;
+
+    runFrames(game, 60);
+
+    expect(game.alive).toBe(false);
+    // È il punto della richiesta: cadere non è sbattere. Chi ascolta il bus
+    // deve poter disegnare una mucca che sprofonda invece di un'esplosione di
+    // cubetti contro un ostacolo, e non deve dedurlo dal `kind`.
+    expect(countOf(events, 'player:fell')).toBe(1);
+    expect(countOf(events, 'obstacle:hit')).toBe(0);
+    expect(countOf(events, 'run:ended')).toBe(1);
+  });
+
+  it('perdona chi lo salta: alla velocità di partenza il salto lo copre', () => {
+    const { game } = scenario(1, chasm());
+
+    handleAction(game, 'JUMP');
+    runFrames(game, 60);
+
+    expect(game.alive).toBe(true);
+  });
+
+  it('la scivolata NON salva: schiaccia la sagoma, non ne alza la base', () => {
+    const { game, events } = scenario(1, chasm());
+    game.forgivenessUsed = true;
+
+    handleAction(game, 'SLIDE');
+    runFrames(game, 60);
+
+    expect(game.alive).toBe(false);
+    expect(countOf(events, 'player:fell')).toBe(1);
+  });
+
+  it('lo SCUDO non assorbe la caduta', () => {
+    const { game, events } = scenario(1, chasm());
+    applyBuff(game.buffs, 'bell', game.bus);
+    expect(game.buffs.shield).toBe(true);
+
+    runFrames(game, 60);
+
+    expect(game.alive).toBe(false);
+    // Lo scudo non viene nemmeno consumato: la caduta non passa da lì.
+    expect(game.buffs.shield).toBe(true);
+    expect(countOf(events, 'shield:consumed')).toBe(0);
+    expect(countOf(events, 'player:fell')).toBe(1);
+  });
+
+  it('il PERDONO non assorbe la caduta, nemmeno al primissimo impatto della corsa', () => {
+    // Con forgiveness.firstHitFree un masso, qui, sarebbe perdonato: è
+    // esattamente il confronto che rende il test significativo.
+    const { game, events } = scenario(1, chasm());
+    expect(game.forgivenessUsed).toBe(false);
+    expect(game.firstHitUsed).toBe(false);
+
+    runFrames(game, 60);
+
+    expect(game.alive).toBe(false);
+    expect(game.forgivenessUsed).toBe(false);
+    expect(countOf(events, 'player:fell')).toBe(1);
+  });
+
+  it('la VALANGA non lo sfonda, a nessuna taglia', () => {
+    for (let size = CONFIG.avalanche.smashMinSize; size <= CONFIG.avalanche.maxSize; size++) {
+      const { game, events } = scenario(1, chasm());
+      const threshold = CONFIG.avalanche.sizeThresholds[size - 1] ?? 0;
+      if (threshold > 0) addCharge(game.avalanche, threshold, game.bus);
+      expect(game.avalanche.size).toBe(size);
+      game.forgivenessUsed = true;
+      game.chargeRatioBefore = 1;
+
+      runFrames(game, 60);
+
+      expect(game.alive).toBe(false);
+      expect(countOf(events, 'player:fell')).toBe(1);
+      expect(payloadsOf(events, 'obstacle:hit').map((hit) => hit.outcome)).toEqual([]);
+    }
+  });
+});
+
+describe('CARTELLO DEL BIVIO (signpost): scegliere o schiantarsi', () => {
+  it('nasce con il bivio, sul tronco, alla distanza esatta della biforcazione', () => {
+    const bus = createEventBus();
+    const game = createGame(4, bus);
+    startRun(game);
+
+    let frame = 0;
+    while (game.path.phase === 'none' && frame < 600) {
+      updateGame(game, STEP);
+      frame += 1;
+    }
+    expect(game.path.phase).toBe('approaching');
+
+    const signs = game.entities.filter((entity) => entity.kind === 'signpost');
+    expect(signs).toHaveLength(1);
+    const sign = signs[0];
+    if (sign === undefined) throw new Error('cartello mancante');
+    // Sul TRONCO: è così che sta al centro, nel cuneo fra i due rami, a
+    // scostamento nullo qualunque sia l'apertura (vedi path.ts, branchCenterAt).
+    expect(sign.branch).toBe('main');
+    expect(sign.y).toBe(0);
+    expect(sign.z).toBe(forkZOf(game.path));
+    // Ha un id suo: lo alloca lo spawner apposta (placeSignpost), perché due
+    // entità con lo stesso id sono indistinguibili per chi le consuma.
+    expect(game.entities.filter((entity) => entity.id === sign.id)).toHaveLength(1);
+  });
+
+  it('resta incollato alla biforcazione mentre il mondo scorre', () => {
+    const bus = createEventBus();
+    const game = createGame(4, bus);
+    startRun(game);
+    while (game.path.phase === 'none') updateGame(game, STEP);
+    handleAction(game, 'CHOOSE_LEFT');
+
+    let checked = 0;
+    for (let frame = 0; frame < 120; frame++) {
+      updateGame(game, STEP);
+      const sign = game.entities.find((entity) => entity.kind === 'signpost');
+      const forkZ = forkZOf(game.path);
+      if (sign === undefined || forkZ === null) break;
+      // Entità e bivio calano dello stesso `moved` a ogni frame: nessuna
+      // sincronizzazione, e quindi niente da poter perdere di vista.
+      expect(sign.z).toBeCloseTo(forkZ, 9);
+      checked += 1;
+    }
+    expect(checked).toBeGreaterThan(60);
+  });
+
+  it('chi NON sceglie ci si schianta e la corsa finisce lì', () => {
+    // Corsa vera, dal primo frame: il bivio nasce da solo e il cartello con
+    // lui. Gli altri ostacoli vengono tolti di mezzo a ogni frame perché la
+    // domanda è una sola — chi non sceglie arriva vivo al bivio e poi muore lì?
+    const bus = createEventBus();
+    const game = createGame(4, bus);
+    startRun(game);
+    const events = recordEvents(bus);
+
+    let frame = 0;
+    while (game.alive && frame < 1200) {
+      for (const entity of game.entities) {
+        if (entity.category === 'obstacle' && entity.kind !== 'signpost') entity.alive = false;
+      }
+      updateGame(game, STEP);
+      frame += 1;
+    }
+
+    expect(game.alive).toBe(false);
+    const deaths = payloadsOf(events, 'obstacle:hit').filter((hit) => hit.outcome === 'death');
+    expect(deaths.map((hit) => hit.kind)).toEqual(['signpost']);
+    expect(countOf(events, 'run:ended')).toBe(1);
+    // Nessun ramo è mai stato imboccato d'ufficio: è la regola nuova.
+    expect(countOf(events, 'fork:resolved')).toBe(0);
+    // E la morte arriva alla biforcazione, non prima: il cartello si vede
+    // arrivare da 110 unità.
+    expect(countOf(events, 'fork:appeared')).toBe(1);
+  });
+
+  it('chi sceglie gli passa accanto: resta vivo e il bivio si risolve', () => {
+    for (const side of ['CHOOSE_LEFT', 'CHOOSE_RIGHT'] as const) {
+      const bus = createEventBus();
+      const game = createGame(4, bus);
+      startRun(game);
+      const events = recordEvents(bus);
+      // Il pilota non salta e non scivola: qui interessa solo che il cartello
+      // non lo uccida, quindi si tolgono di mezzo gli altri ostacoli a ogni
+      // frame e resta solo il bivio da attraversare.
+      let frame = 0;
+      let chosen = false;
+      while (game.alive && frame < 1200 && countOf(events, 'fork:resolved') === 0) {
+        // `choiceIsOpen` e non la sola fase: il bivio si vede da previewZ ma
+        // la scelta si apre a ridosso (CONFIG.path.choiceWindowSeconds).
+        if (!chosen && choiceIsOpen(game.path)) {
+          handleAction(game, side);
+          chosen = true;
+        }
+        for (const entity of game.entities) {
+          if (entity.category === 'obstacle' && entity.kind !== 'signpost') entity.alive = false;
+        }
+        updateGame(game, STEP);
+        frame += 1;
+      }
+
+      expect(game.alive).toBe(true);
+      expect(countOf(events, 'fork:resolved')).toBe(1);
+      expect(countOf(events, 'obstacle:hit')).toBe(0);
+    }
+  });
+
+  it('NON è scavalcabile: nemmeno all-apice del salto le due sagome si separano', () => {
+    // Il conto sta in config (collisions.entityBox.signpost): l'apice della
+    // base della mucca è jumpHeight = 3,2 e il cartello è alto 3,6. Qui lo si
+    // verifica sul comportamento invece che sull-aritmetica, saltando in ogni
+    // istante possibile: se esistesse un frame buono, "scegli o muori"
+    // sarebbe "scegli o salta".
+    for (let jumpFrame = 0; jumpFrame < 40; jumpFrame++) {
+      const { game } = unchosenFork(1, 12);
+      game.forgivenessUsed = true;
+      for (let frame = 0; frame < 90 && game.alive; frame++) {
+        if (frame === jumpFrame) handleAction(game, 'JUMP');
+        updateGame(game, STEP);
+      }
+      expect(game.alive, `saltando al frame ${jumpFrame} il cartello è stato scavalcato`).toBe(
+        false,
+      );
+    }
+  });
+
+  it('lo SCUDO non lo assorbe', () => {
+    const { game, events } = unchosenFork(1);
+    applyBuff(game.buffs, 'bell', game.bus);
+
+    runFrames(game, 60);
+
+    expect(game.alive).toBe(false);
+    expect(game.buffs.shield).toBe(true);
+    expect(countOf(events, 'shield:consumed')).toBe(0);
+  });
+
+  it('il PERDONO non lo assorbe, nemmeno al primissimo impatto della corsa', () => {
+    const { game, events } = unchosenFork(1);
+    expect(game.forgivenessUsed).toBe(false);
+
+    runFrames(game, 60);
+
+    expect(game.alive).toBe(false);
+    expect(game.forgivenessUsed).toBe(false);
+    expect(payloadsOf(events, 'obstacle:hit').map((hit) => hit.outcome)).toEqual(['death']);
+  });
+
+  it('la VALANGA non lo sfonda, a nessuna taglia', () => {
+    for (let size = CONFIG.avalanche.smashMinSize; size <= CONFIG.avalanche.maxSize; size++) {
+      const { game, events } = unchosenFork(1);
+      const threshold = CONFIG.avalanche.sizeThresholds[size - 1] ?? 0;
+      if (threshold > 0) addCharge(game.avalanche, threshold, game.bus);
+      game.forgivenessUsed = true;
+      game.chargeRatioBefore = 1;
+
+      runFrames(game, 60);
+
+      expect(game.alive).toBe(false);
+      expect(payloadsOf(events, 'obstacle:hit').map((hit) => hit.outcome)).toEqual(['death']);
+    }
+  });
+
+  it('è inerte per chi ha scelto, anche se sta esattamente addosso al giocatore', () => {
+    // La solidità del cartello è una funzione della scelta, non uno stato: qui
+    // la si mette alla prova nel caso peggiore, con il cartello dentro la
+    // sagoma della mucca.
+    const { game } = scenario(1, signpost(0));
+    mountPath(game, forkApproaching({ forkZ: CONFIG.path.previewZ }));
+    handleAction(game, 'CHOOSE_LEFT');
+    game.forgivenessUsed = true;
+
+    runFrames(game, 5);
+
+    expect(game.alive).toBe(true);
   });
 });

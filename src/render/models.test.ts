@@ -1,8 +1,18 @@
 import * as THREE from 'three';
 import { describe, expect, it } from 'vitest';
 import { CONFIG } from '../game/config';
+import { branchCenterAt, forkApproaching } from '../game/path';
 import type { EntityKind } from '../game/types';
-import { buildGeometry, MODELS, PALETTE, type VoxelModel } from './models';
+import { worldToViewX } from './camera-rig';
+import {
+  buildGeometry,
+  MODELS,
+  PALETTE,
+  SIGNPOST_STATES,
+  SIGNPOST_VARIANTS,
+  type SignpostState,
+  type VoxelModel,
+} from './models';
 
 type ModelKind = 'cow' | 'cabin' | 'tree' | 'hay' | EntityKind;
 
@@ -15,6 +25,8 @@ const ALL_KINDS: readonly ModelKind[] = [
   'log',
   'fence',
   'crevasse',
+  'chasm',
+  'signpost',
   'branch',
   'arch',
   'cornice',
@@ -25,7 +37,17 @@ const ALL_KINDS: readonly ModelKind[] = [
   'bell',
 ];
 
-const OBSTACLE_KINDS = ['rock', 'log', 'fence', 'crevasse', 'branch', 'arch', 'cornice'] as const;
+const OBSTACLE_KINDS = [
+  'rock',
+  'log',
+  'fence',
+  'crevasse',
+  'chasm',
+  'signpost',
+  'branch',
+  'arch',
+  'cornice',
+] as const;
 const BUFF_KINDS = ['crystal', 'star', 'magnet', 'bell'] as const;
 const SCENERY_KINDS = ['cow', 'cabin', 'tree', 'hay'] as const;
 
@@ -374,5 +396,239 @@ describe('leggibilità: la scenografia non deve mentire', () => {
     // è il raccoglibile più frequente del gioco ed era bianco su neve bianca
     const brightest = Math.max(...usedColors('snowflake').map(chroma));
     expect(brightest).toBeGreaterThan(chroma(PALETTE[ICE_INDEX] ?? 0));
+  });
+});
+
+/** Le celle del modello alla quota `y`, con il loro colore risolto. */
+function cellsAtLayer(kind: ModelKind, y: number): { x: number; z: number; hex: number }[] {
+  const model = MODELS[kind];
+  const out: { x: number; z: number; hex: number }[] = [];
+  for (const voxel of model.voxels) {
+    if ((voxel[1] ?? 0) !== y) continue;
+    out.push({
+      x: voxel[0] ?? 0,
+      z: voxel[2] ?? 0,
+      hex: model.palette[voxel[3] ?? 0] ?? 0,
+    });
+  }
+  return out;
+}
+
+function extentOf(kind: ModelKind, axis: 0 | 1 | 2): { min: number; max: number } {
+  const values = MODELS[kind].voxels.map((voxel) => voxel[axis] ?? 0);
+  return { min: Math.min(...values), max: Math.max(...values) };
+}
+
+describe('crepaccio: deve leggersi come un BUCO', () => {
+  const box = buildGeometry(MODELS.chasm, CONFIG.render.voxelSize).boundingBox;
+  const width = (box?.max.x ?? 0) - (box?.min.x ?? 0);
+  const depth = (box?.max.z ?? 0) - (box?.min.z ?? 0);
+
+  it('è largo più del corridoio e profondo quanto il suo ingombro di gioco', () => {
+    // Un crepaccio che si possa costeggiare non è un crepaccio; e se il
+    // modello fosse più corto della sagoma di collisione si morirebbe sulla
+    // neve, davanti al buco.
+    expect(width).toBeGreaterThan(CONFIG.world.trackWidth);
+    expect(depth).toBeGreaterThan(CONFIG.collisions.entityBox.chasm.depth * 0.9);
+  });
+
+  it('il fondo si scurisce verso il giocatore, come la parete di un pozzo vero', () => {
+    // Da una camera che guarda in basso, di un pozzo si vede il FONDO della
+    // parete lontana in basso sullo schermo (il punto più scuro) e la sua cima
+    // in alto. Senza questo ordine resta una macchia di vernice.
+    const floorY = extentOf('chasm', 1).min;
+    const perRow = new Map<number, number[]>();
+    for (const cell of cellsAtLayer('chasm', floorY)) {
+      const row = perRow.get(cell.z) ?? [];
+      row.push(luma(cell.hex));
+      perRow.set(cell.z, row);
+    }
+    const rows = [...perRow.entries()]
+      .sort((a, b) => a[0] - b[0])
+      .map(([, values]) => values.reduce((sum, v) => sum + v, 0) / values.length);
+
+    expect(rows.length).toBeGreaterThan(4);
+    for (let i = 1; i < rows.length; i += 1) {
+      expect(rows[i] ?? 0).toBeGreaterThanOrEqual(rows[i - 1] ?? 0);
+    }
+    expect(rows[rows.length - 1] ?? 0).toBeGreaterThan(rows[0] ?? 0);
+    // e tutto il fondo resta molto più scuro della neve, a ogni riga
+    for (const row of rows) expect(row).toBeLessThan(luma(PALETTE[0] ?? 0) * 0.3);
+  });
+
+  it('il bordo rialzato non chiude la visuale sul lato VICINO', () => {
+    // Un labbro alto h nasconde h·(z+d)/(H−h) unità di terreno dietro di sé:
+    // con la camera attuale, a 40 unità, un bordo tutto intorno cancellerebbe
+    // il buio proprio alla distanza da cui il crepaccio va letto. Sul lato
+    // vicino può alzarsi solo agli spigoli.
+    const floorY = extentOf('chasm', 1).min;
+    const nearZ = extentOf('chasm', 2).min;
+    const sideX = extentOf('chasm', 0).max;
+    for (const voxel of MODELS.chasm.voxels) {
+      if ((voxel[1] ?? 0) === floorY) continue;
+      if ((voxel[2] ?? 0) !== nearZ) continue;
+      expect(Math.abs(voxel[0] ?? 0)).toBe(sideX);
+    }
+  });
+
+  it('costa meno di 700 triangoli malgrado sia largo quanto la pista', () => {
+    // Ci riesce con cubetti più grossi: il costo di una superficie va col
+    // quadrato della risoluzione (vedi VoxelModel.cellScale).
+    expect(MODELS.chasm.cellScale ?? 1).toBeGreaterThan(1);
+    expect(faceCount(buildGeometry(MODELS.chasm, CONFIG.render.voxelSize)) * 2).toBeLessThan(700);
+  });
+});
+
+describe('cartello del bivio: deve dire "di qua o di là"', () => {
+  const box = buildGeometry(MODELS.signpost, CONFIG.render.voxelSize).boundingBox;
+
+  it('è più alto della sua sagoma di collisione, che nessun salto supera', () => {
+    // CONFIG.collisions.entityBox.signpost.height è tarato SOPRA l'apice del
+    // salto perché non esista una quota a cui passare: un modello più basso
+    // direbbe al giocatore l'esatto contrario.
+    expect(box?.max.y ?? 0).toBeGreaterThanOrEqual(CONFIG.collisions.entityBox.signpost.height);
+  });
+
+  it('le due frecce sono speculari cella per cella', () => {
+    // Il modello vive in coordinate di vista, dove worldToViewX specchia l'asse
+    // X (vedi camera-rig.ts): se le due frecce non fossero simmetriche,
+    // "sinistra" e "destra" dipenderebbero da quella convenzione.
+    const { min, max } = extentOf('signpost', 0);
+    const key = (x: number, y: number, z: number, c: number): string => `${x}|${y}|${z}|${c}`;
+    const cells = new Set(
+      MODELS.signpost.voxels.map((v) => key(v[0] ?? 0, v[1] ?? 0, v[2] ?? 0, v[3] ?? 0)),
+    );
+    for (const v of MODELS.signpost.voxels) {
+      const mirrored = key(min + max - (v[0] ?? 0), v[1] ?? 0, v[2] ?? 0, v[3] ?? 0);
+      expect(cells.has(mirrored), `manca lo specchio di ${v.join(',')}`).toBe(true);
+    }
+  });
+
+  it('la freccia si assottiglia verso la punta: la sagoma dice la direzione', () => {
+    // È la SAGOMA scura contro la neve a leggersi per prima, molto prima del
+    // dettaglio interno: se le tavole fossero rettangolari non direbbero nulla.
+    const { max } = extentOf('signpost', 0);
+    const heightAtColumn = (x: number): number =>
+      MODELS.signpost.voxels.filter((v) => (v[0] ?? 0) === x).length;
+    expect(heightAtColumn(max)).toBeLessThan(heightAtColumn(max - 2));
+  });
+
+  it('è scuro e spento: è funzionale, non un buff da raccogliere', () => {
+    const weakestBuff = Math.min(...BUFF_KINDS.map((kind) => chroma(dominantColorHex(kind))));
+    expect(chroma(dominantColorHex('signpost'))).toBeLessThan(weakestBuff);
+    // e stacca dalla neve per luminanza, che è ciò che si legge da lontano
+    expect(luma(dominantColorHex('signpost'))).toBeLessThan(luma(PALETTE[0] ?? 0) * 0.45);
+  });
+});
+
+describe('sospesi: la faccia inferiore in ombra', () => {
+  it('tutti e tre hanno una fila scura sotto, non solo arco e cornicione', () => {
+    // Il ramo era di un solo marrone: la linea scura sotto è ciò che dice a
+    // colpo d'occhio dove FINISCE un ostacolo sotto cui bisogna passare.
+    for (const kind of ['branch', 'arch', 'cornice'] as const) {
+      const floorY = extentOf(kind, 1).min;
+      const bottom = cellsAtLayer(kind, floorY);
+      const darkest = Math.min(...bottom.map((cell) => luma(cell.hex)));
+      const brightestElsewhere = Math.max(
+        ...MODELS[kind].voxels
+          .filter((v) => (v[1] ?? 0) !== floorY)
+          .map((v) => luma(MODELS[kind].palette[v[3] ?? 0] ?? 0)),
+      );
+      expect(darkest).toBeLessThan(brightestElsewhere);
+      expect(darkest).toBeLessThan(luma(PALETTE[0] ?? 0) * 0.45);
+    }
+  });
+});
+
+describe('cartello: le due frecce mostrano la scelta', () => {
+  /** Celle di UN braccio: il palo occupa le colonne −1 e 0, tutto il resto è
+   *  tavola. `sideSign` è il verso lungo x del modello. */
+  function armCells(model: VoxelModel, sideSign: 1 | -1): readonly number[][] {
+    return model.voxels.filter((v) => (sideSign > 0 ? (v[0] ?? 0) >= 1 : (v[0] ?? 0) <= -2));
+  }
+
+  function armLuma(model: VoxelModel, sideSign: 1 | -1): number {
+    const cells = armCells(model, sideSign);
+    const total = cells.reduce((sum, v) => sum + luma(model.palette[v[3] ?? 0] ?? 0), 0);
+    return total / cells.length;
+  }
+
+  it('le tre varianti hanno la STESSA geometria: cambia solo il colore', () => {
+    // È il requisito che rende gratuito il cambio di stato: la vista scambia
+    // solo l'attributo `color` di una geometria sola. Se le varianti avessero
+    // celle diverse, i vertici non corrisponderebbero e i colori finirebbero
+    // sulle facce sbagliate.
+    const shape = (model: VoxelModel): string =>
+      model.voxels.map((v) => `${v[0]}|${v[1]}|${v[2]}`).join(' ');
+    for (const state of SIGNPOST_STATES) {
+      expect(shape(SIGNPOST_VARIANTS[state]), state).toBe(shape(SIGNPOST_VARIANTS.none));
+    }
+    const colors = (state: SignpostState): number =>
+      buildGeometry(SIGNPOST_VARIANTS[state], CONFIG.render.voxelSize).getAttribute('color').count;
+    for (const state of SIGNPOST_STATES) {
+      expect(colors(state)).toBe(colors('none'));
+    }
+  });
+
+  it('senza scelta le due frecce hanno lo stesso peso: il cartello CHIEDE', () => {
+    expect(armLuma(SIGNPOST_VARIANTS.none, 1)).toBeCloseTo(armLuma(SIGNPOST_VARIANTS.none, -1), 6);
+  });
+
+  it('con una scelta le due frecce si separano di quasi mezzo grado di luminanza', () => {
+    // Il contrasto di LUMINANZA è ciò che si legge a quaranta unità: una
+    // freccia che cambiasse solo tinta non direbbe niente da lontano. La media
+    // sull'intero braccio è la misura giusta, perché a quella distanza la
+    // tavola è alta una decina di pixel e l'occhio la integra: oggi vale 0,41
+    // contro 0,85, e il tetto qui sotto è il minimo che resta leggibile.
+    // e le due varianti sono l'una lo specchio dell'altra
+    expect(armLuma(SIGNPOST_VARIANTS.left, 1)).toBeCloseTo(armLuma(SIGNPOST_VARIANTS.right, -1), 6);
+  });
+
+  it('la freccia ACCESA è la più scura: su neve, acceso vuol dire contrasto', () => {
+    // Su fondo bianco "più chiaro" significa meno visibile: la freccia scelta
+    // resta legno pieno, quella scartata sbianca fin quasi alla neve.
+    const lit = Math.min(armLuma(SIGNPOST_VARIANTS.left, 1), armLuma(SIGNPOST_VARIANTS.left, -1));
+    const off = Math.max(armLuma(SIGNPOST_VARIANTS.left, 1), armLuma(SIGNPOST_VARIANTS.left, -1));
+    expect(lit).toBeLessThan(luma(PALETTE[0] ?? 0) * 0.45);
+    expect(off).toBeGreaterThan(luma(PALETTE[0] ?? 0) * 0.7);
+  });
+
+  it('la freccia accesa sta dalla parte in cui si vede il ramo che indica', () => {
+    // La mano NON si ricopia dal commento: si ricava dalle due funzioni che la
+    // decidono davvero. branchCenterAt mette il ramo 'left' a x di mondo
+    // negativa, worldToViewX nega l'asse, quindi in coordinate di vista (le
+    // stesse in cui vive il modello) il ramo 'left' sta a x positiva — ed è lì
+    // che deve stare la freccia accesa dalla variante 'left'.
+    const path = forkApproaching({ forkZ: 40 });
+    const leftOnScreen = Math.sign(worldToViewX(branchCenterAt(path, 'left', 90)));
+    expect(leftOnScreen).not.toBe(0);
+    for (const state of ['left', 'right'] as const) {
+      const model = SIGNPOST_VARIANTS[state];
+      const litSide = armLuma(model, 1) < armLuma(model, -1) ? 1 : -1;
+      const expected = state === 'left' ? leftOnScreen : -leftOnScreen;
+      expect(litSide, `variante ${state}`).toBe(expected);
+    }
+  });
+
+  it('ogni indice colore delle varianti esiste nella palette', () => {
+    for (const state of SIGNPOST_STATES) {
+      for (const voxel of SIGNPOST_VARIANTS[state].voxels) {
+        expect(SIGNPOST_VARIANTS[state].palette[voxel[3] ?? -1]).toBeTypeOf('number');
+      }
+    }
+  });
+
+  it('nessuna variante è accesa quanto un buff: resta legno, non un premio', () => {
+    const weakestBuff = Math.min(...BUFF_KINDS.map((kind) => chroma(dominantColorHex(kind))));
+    for (const state of SIGNPOST_STATES) {
+      const model = SIGNPOST_VARIANTS[state];
+      const counts = new Map<number, number>();
+      for (const voxel of model.voxels) {
+        const index = voxel[3] ?? 0;
+        counts.set(index, (counts.get(index) ?? 0) + 1);
+      }
+      const dominant = [...counts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? 0;
+      expect(chroma(model.palette[dominant] ?? 0), state).toBeLessThan(weakestBuff);
+    }
   });
 });

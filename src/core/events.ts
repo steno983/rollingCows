@@ -54,6 +54,11 @@ export interface GameEvents {
    *  tonfo in base a quanto si è saltato in alto. */
   'player:jumped': Record<string, never>;
   'player:landed': { airborneSeconds: number };
+  /** La mucca è precipitata in un crepaccio: non è un impatto ma una caduta,
+   *  e va raccontata diversamente — niente esplosione di cubetti contro un
+   *  ostacolo, ma la mucca che sprofonda mentre la camera resta sul bordo.
+   *  Emesso una volta sola, al momento in cui il vuoto la prende. */
+  'player:fell': { z: number };
   'player:slid': Record<string, never>;
   /** La scivolata è finita (per scadenza o interrotta da un salto): chiude il
    *  rumore in loop che accompagna lo scivolamento. */

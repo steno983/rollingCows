@@ -4,6 +4,7 @@ import { createAudio } from './audio/audio';
 import { createEventBus } from './core/events';
 import { createLoop } from './core/loop';
 import { createStateMachine, type GameStateName } from './core/state-machine';
+import { avalancheBarRatio } from './game/avalanche';
 import { CONFIG } from './game/config';
 import {
   armDeath,
@@ -51,7 +52,7 @@ import {
 } from './platform/storage';
 import { createAvalancheFx } from './render/avalanche-fx';
 import { createBackdrop } from './render/backdrop';
-import { worldToViewX } from './render/camera-rig';
+import { WORLD_SLOPE, worldToViewX } from './render/camera-rig';
 import { cameraRollFor, curveMotionScale, playerTiltFor, worldYawFor } from './render/curve';
 import { avalancheTrail, burstFromModel, resetDebris } from './render/debris';
 import { createEntitiesView, entityWorldOffsetX } from './render/entities-view';
@@ -163,6 +164,17 @@ function main(): void {
   worldGroup.add(scenery.group);
   worldGroup.add(entitiesView.group);
   worldGroup.add(pool.mesh);
+  // La discesa: il gruppo-mondo è inclinato attorno all'asse X, stesso perno
+  // dello sterzo dei bivi (l'origine, dove sta la mucca). Si scrive una volta
+  // perché non cambia mai; syncViews tocca solo rotation.y, e con l'ordine di
+  // Eulero predefinito lo sterzo resta applicato PRIMA dell'inclinazione, cioè
+  // attorno alla normale del pendio — che è il modo in cui una pista curva
+  // davvero su una montagna. Camera e mucca ruotano dello stesso angolo dentro
+  // i rispettivi moduli, quindi la geometria fra camera e pendio non cambia e
+  // nessuna quota di collisione è coinvolta: a cambiare è solo ciò che NON
+  // ruota, cioè cielo e fondale, ed è quella fascia a dire "stai scendendo".
+  worldGroup.rotation.x = WORLD_SLOPE;
+
   view.scene.add(backdrop.group);
   view.scene.add(worldGroup);
   view.scene.add(playerView.group);
@@ -364,7 +376,6 @@ function main(): void {
     runMaxSize = 1;
     runSnowflakes = 0;
     hitStop = 0;
-    hud.setFork(false);
     hud.clearRecordBeaten();
     hud.setStreak(0);
     hud.setMultiplier(1);
@@ -517,23 +528,20 @@ function main(): void {
     hud.setAvalancheFx(false);
   });
 
-  bus.on('fork:appeared', (payload) => {
-    hud.setFork(true);
-    // Il pannello non rivela più QUALE ramo è ricco — quello lo dice già il
-    // mondo, che ne è pieno di fiocchi — ma quale si ottiene NON facendo
-    // nulla, che è l'unica informazione che il mondo non può dare. È
-    // l'opposto del ramo ricco.
-    hud.setForkDefault(payload.richBranch === 'left' ? 'right' : 'left');
+  bus.on('fork:appeared', () => {
+    // Niente più pannello con le frecce nell'interfaccia. Faceva tre lavori e
+    // due sono decaduti: "c'è un bivio" ora lo dice il cartello piantato nella
+    // biforcazione, e "quale ramo prendi se non fai nulla" non esiste più,
+    // perché non scegliere significa schiantarsi. Il terzo — "cosa ho scelto",
+    // l'unico riscontro che il mondo non dava e la cui assenza faceva swipare
+    // due volte finendo dalla parte opposta — se lo prende il cartello stesso,
+    // accendendo la propria freccia. Detto dal mondo invece che dai bordi
+    // dello schermo, dove su un telefono c'era il pollice.
     promptFor('fork');
   });
 
-  bus.on('fork:chosen', (payload) => {
-    hud.setForkChoice(payload.side);
+  bus.on('fork:chosen', () => {
     teach('fork');
-  });
-
-  bus.on('fork:resolved', () => {
-    hud.setFork(false);
   });
 
   bus.on('buff:gained', () => {
@@ -585,6 +593,27 @@ function main(): void {
     playerView.squashLand();
     burstFromModel(pool, MODELS.snowflake, 0, 0.1, 0, CONFIG.feel.landBurstPower * particleScale);
     view.shake(CONFIG.feel.landShake);
+  });
+
+  bus.on('player:fell', (payload) => {
+    // Cadere non è sbattere, e va raccontato diversamente: non c'è un ostacolo
+    // da disintegrare, c'è un buco. Niente burst dell'ostacolo e niente scossa
+    // d'impatto — al loro posto una manciata di neve che sprofonda con lei dal
+    // bordo, che è l'unica cosa che si vedrebbe davvero.
+    //
+    // `run:ended` arriva nello stesso frame e nasconde la mucca: è lui a far
+    // partire il rallentatore, ed è giusto che la mucca sparisca, perché sotto
+    // il piano del terreno non c'è nulla da vedere (la linea di vista incontra
+    // la neve prima). Quello che resta a schermo è la neve che cade nel punto
+    // in cui il vuoto l'ha presa.
+    burstFromModel(
+      pool,
+      MODELS.snowflake,
+      0,
+      0.2,
+      payload.z,
+      CONFIG.feel.deathBurstPower * particleScale,
+    );
   });
 
   bus.on('player:slid', () => {
@@ -671,7 +700,11 @@ function main(): void {
 
   function syncHud(): void {
     hud.setPoints(game.score.points);
-    hud.setCharge(game.avalanche.charge / CONFIG.avalanche.threshold);
+    // Non `charge / threshold`: durante la valanga la barra è il tempo che
+    // resta e scende (vedi avalancheBarRatio). La regola di cosa la barra stia
+    // raccontando vive nel livello di gioco, non qui: la vista la mostra e
+    // basta.
+    hud.setCharge(avalancheBarRatio(game.avalanche));
     hud.setSize(game.avalanche.size);
     hud.setAvalanche(game.avalanche.phase !== 'idle', game.avalanche.phase === 'warning');
     hud.setBuffs(game.buffs.shield, game.buffs.starTimeLeft, game.buffs.magnetTimeLeft);

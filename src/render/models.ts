@@ -5,6 +5,19 @@ export interface VoxelModel {
   /** [x, y, z, colorIndex] per cubetto */
   voxels: readonly number[][];
   palette: readonly number[];
+  /**
+   * Quanto è grande un cubetto di QUESTO modello rispetto a
+   * CONFIG.render.voxelSize. Vale 1 per tutti i modelli tranne il crepaccio.
+   *
+   * Non è un vezzo: buildGeometry emette una faccia per ogni lato esposto,
+   * senza greedy meshing, quindi il costo di una superficie cresce col
+   * QUADRATO della risoluzione. Un crepaccio largo 4,4 unità e profondo 6,9
+   * disegnato con cubetti da 0,25 sono 27 × 17 celle di solo fondo, cioè oltre
+   * 1500 triangoli per un buco: dieci volte una mucca intera. Con cubetti più
+   * grossi la stessa forma costa un quinto e legge anche meglio, perché un
+   * ghiacciaio spezzato è fatto di blocchi grandi, non di granelli.
+   */
+  cellScale?: number;
 }
 
 /**
@@ -41,6 +54,9 @@ export const PALETTE: readonly number[] = [
   0x2b4a63, // 20 ombra del ghiaccio, per staccare il cornicione dalla neve
   0x3c4149, // 21 ombra della roccia, per staccare l'arco dalla neve
   0x4aa8d8, // 22 nucleo del fiocco di neve, azzurro saturo
+  0x081826, // 23 abisso: il fondo del crepaccio, più cupo del buio 11
+  0x33200f, // 24 ombra del legno, per la faccia inferiore del ramo sospeso
+  0xd3d9de, // 25 legno sbiancato: la freccia SPENTA del cartello, quasi neve
 ];
 
 const SNOW = 0;
@@ -66,6 +82,9 @@ const BRASS = 19;
 const ICE_SHADOW = 20;
 const ROCK_SHADOW = 21;
 const ICE_CORE = 22;
+const ABYSS = 23;
+const WOOD_SHADOW = 24;
+const PALE_WOOD = 25;
 
 /**
  * Griglia logica in cui vivono i modelli: 64³ celle centrate sull'origine.
@@ -81,7 +100,8 @@ function packKey(x: number, y: number, z: number): number {
 interface VoxelBuilder {
   set(x: number, y: number, z: number, color: number): void;
   box(x: number, y: number, z: number, w: number, h: number, d: number, color: number): void;
-  build(): VoxelModel;
+  /** `cellScale` finisce nel modello: vedi VoxelModel.cellScale. */
+  build(cellScale?: number): VoxelModel;
 }
 
 function createBuilder(): VoxelBuilder {
@@ -107,7 +127,7 @@ function createBuilder(): VoxelBuilder {
     }
   };
 
-  const build = (): VoxelModel => {
+  const build = (cellScale = 1): VoxelModel => {
     const voxels: number[][] = [];
     for (const [key, color] of cells) {
       const z = (key % GRID) - GRID_ORIGIN;
@@ -115,7 +135,7 @@ function createBuilder(): VoxelBuilder {
       const x = Math.floor(key / (GRID * GRID)) - GRID_ORIGIN;
       voxels.push([x, y, z, color]);
     }
-    return { voxels, palette: PALETTE };
+    return { voxels, palette: PALETTE, cellScale };
   };
 
   return { set, box, build };
@@ -259,10 +279,196 @@ function buildCrevasse(): VoxelModel {
   return b.build();
 }
 
-/** Ramo sospeso: sbarra orizzontale con tre ciuffi di aghi. */
+/**
+ * Cubetto del crepaccio, in multipli di CONFIG.render.voxelSize: 2,5 volte
+ * quello di tutti gli altri modelli, cioè 0,625 unità. Vedi VoxelModel
+ * .cellScale per il perché (il costo di una superficie va col quadrato della
+ * risoluzione, e questo è l'unico modello largo quanto la pista).
+ */
+export const CHASM_CELL_SCALE = 2.5;
+
+/**
+ * Crepaccio VERO, quello in cui si cade — `crevasse` resta la lastra piatta
+ * che si salta.
+ *
+ * Il vincolo che ne detta tutta la forma: il pendio è una mesh continua e
+ * nessuno può bucarla (render/terrain.ts). Da una camera che sta SOPRA quel
+ * piano, qualunque cosa disegnata sotto y = 0 finisce dietro alla neve e
+ * sparisce: un pozzo con pareti che scendono davvero non si vedrebbe affatto.
+ * Il buco quindi si recita interamente sopra il piano, e a farlo leggere sono
+ * tre cose:
+ *
+ *  1. un fondo scuro a filo della neve (la vista lo affonda di una cella, vedi
+ *     CHASM_Y_BIAS in entities-view.ts, così la faccia superiore combacia col
+ *     pendio invece di sporgere come una piattaforma);
+ *  2. un gradiente in profondità — abisso vicino, buio in mezzo, ombra del
+ *     ghiaccio in fondo. Non è decorazione: da una camera che guarda in basso
+ *     di ~13° un pozzo vero mostra il FONDO della parete lontana in basso
+ *     sullo schermo (il punto più scuro) e la sua CIMA in alto, verso il bordo
+ *     opposto. Il gradiente copia quell'ordine, ed è ciò che distingue un buco
+ *     da una macchia di vernice;
+ *  3. un bordo di ghiaccio spezzato rialzato di una cella — ma solo sui
+ *     fianchi e sul lato LONTANO. Sul lato vicino resta piatto apposta: un
+ *     labbro alto h nasconde h·(z+d)/(H−h) unità di terreno dietro di sé, che
+ *     a 40 unità di distanza con la camera attuale (H ≈ 6,1, d ≈ 9) fa 5,6
+ *     unità su 6,9 di crepaccio. Un bordo tutto intorno, cioè, cancellerebbe
+ *     il buio proprio alla distanza da cui il crepaccio va letto.
+ */
+function buildChasm(): VoxelModel {
+  const b = createBuilder();
+  const halfX = 3; // 7 celle = 4,375 unità: più largo del corridoio (4)
+  const halfZ = 5; // 11 celle = 6,875 unità in profondità
+
+  for (let x = -halfX; x <= halfX; x += 1) {
+    for (let z = -halfZ; z <= halfZ; z += 1) {
+      const color = z <= -halfZ + 2 ? ABYSS : z <= 1 ? VOID : ICE_SHADOW;
+      b.set(x, 0, z, color);
+    }
+  }
+
+  // Blocchi di bordo alternati fra ghiaccio e ombra: un anello tutto dello
+  // stesso azzurro pallido, su neve bianca, non si stacca da niente.
+  const rim = (x: number, z: number, y = 1): void => {
+    b.set(x, y, z, Math.abs(x * 2 + z) % 3 === 0 ? ICE_SHADOW : ICE);
+  };
+  for (let z = -halfZ; z <= halfZ; z += 1) {
+    rim(-halfX, z);
+    rim(halfX, z);
+  }
+  for (let x = -halfX + 1; x <= halfX - 1; x += 1) rim(x, halfZ);
+  // Blocchi accavallati, perché la sagoma di un crepaccio non è un rettangolo:
+  // costano cinque facce l'uno e si vedono subito. Stanno TUTTI sui fianchi,
+  // a |x| ≥ 1,56 unità: sporgono 1,27 sopra la neve, e la mucca è larga due
+  // unità, quindi nemmeno il salto peggiore fra quelli che riescono (quello
+  // che esce dal crepaccio con la pancia a 0,1, il minimo che la collisione
+  // concede) può attraversarli. In mezzo, dove la mucca passa, il bordo non
+  // supera mai una cella.
+  rim(-halfX, halfZ, 2);
+  rim(-halfX, 1, 2);
+  rim(-halfX, -halfZ, 2);
+  rim(halfX, 3, 2);
+  rim(halfX, -2, 2);
+  rim(halfX, -halfZ, 2);
+
+  return b.build(CHASM_CELL_SCALE);
+}
+
+/**
+ * Cartello del bivio: palo scuro piantato nella neve e due frecce che puntano
+ * una a destra e una a sinistra. Va nel cuneo fra i due rami, ed è un elemento
+ * FUNZIONALE — ci si schianta se non si sceglie — quindi ha il diritto di
+ * essere leggibile; ma resta legno spento, perché caldo e saturo nel gioco
+ * significa "da raccogliere" e basta.
+ *
+ * Quello che si legge per primo, a sessanta unità, è la SAGOMA scura contro la
+ * neve: per questo la tavola è tutta di legno scuro e finisce a punta, e la
+ * striscia chiara che corre lungo l'asse — leggibile solo più da vicino — sta
+ * DENTRO la sagoma, per non mangiarne il contrasto proprio sul bordo.
+ *
+ * LO STATO DELLA SCELTA. Il cartello è anche il riscontro di "cosa ho scelto",
+ * che nessun altro elemento del mondo può dare: `lit` accende una freccia e ne
+ * spegne l'altra. Su un fondo BIANCO "acceso" non può voler dire più chiaro —
+ * più chiaro vuol dire meno contrasto, cioè meno visibile. Vuol dire più
+ * SCURO: la freccia scelta resta legno pieno e prende una striscia di neve
+ * dentro (massimo contrasto interno), quella scartata sbianca in un grigio
+ * quasi-neve e piatto, senza dettaglio. A quaranta unità restano due macchie
+ * con 0,6 di luminanza di differenza, che è un salto che si legge a colpo
+ * d'occhio anche quando la freccia è larga pochi pixel.
+ *
+ * DA CHE PARTE STA "SINISTRA". Il modello vive in coordinate di VISTA, ed è
+ * l'unico punto del progetto in cui la mano conta davvero. La camera sta a z
+ * negativo e guarda verso +z, quindi il suo asse destro è −x: l'asse +x della
+ * vista cade a SINISTRA sullo schermo. È esattamente per questo che esiste
+ * worldToViewX (camera-rig.ts), che nega la x di mondo affinché il ramo
+ * 'left' — che branchCenterAt mette a x di mondo negativa — finisca a sinistra
+ * di chi guarda. Ne segue che il braccio a +x del modello è quello del ramo
+ * 'left'. Non è un ragionamento da fidarsene: c'è un test che lo verifica
+ * partendo da branchCenterAt e worldToViewX, non ricopiando questa conclusione.
+ */
+export type SignpostState = 'none' | 'left' | 'right';
+
+export const SIGNPOST_STATES: readonly SignpostState[] = ['none', 'left', 'right'];
+
+function buildSignpost(lit: SignpostState): VoxelModel {
+  const b = createBuilder();
+  /** 15 celle = 3,75 unità, cioè appena PIÙ del suo ingombro di collisione
+   *  (CONFIG.collisions.entityBox.signpost.height = 3,6). Non è un dettaglio
+   *  estetico: quell'altezza è tarata sopra l'apice del salto perché non
+   *  esista una quota a cui passare, e un modello più basso della propria
+   *  sagoma direbbe al giocatore l'esatto contrario — che saltando ci passa. */
+  const postTop = 15;
+  b.box(-1, 0, -1, 2, postTop, 2, WOOD);
+  // Come la staccionata: la base sparisce nella neve invece di finire netta.
+  b.box(-1, 0, -1, 2, 1, 2, SNOW);
+
+  for (const side of [-1, 1]) {
+    // Vedi la nota sulla mano qui sopra: +x della vista è la sinistra dello
+    // schermo, cioè il ramo 'left'.
+    const arm: SignpostState = side > 0 ? 'left' : 'right';
+    const off = lit !== 'none' && lit !== arm;
+    const board = off ? PALE_WOOD : WOOD;
+    // Freccia spenta: tinta piatta, nessuna striscia. Il dettaglio interno è
+    // esso stesso un segnale di "questa conta", e va tolto con la luminanza.
+    const stripe = off ? PALE_WOOD : lit === arm ? SNOW : LIGHT_WOOD;
+
+    /** Colonna a distanza `d` dal palo. Con d = 0 si cade sul palo stesso, e
+     *  le due frecce restano speculari cella per cella. */
+    const col = (d: number): number => (side > 0 ? d : -1 - d);
+    const plank = (d: number, from: number, to: number): void => {
+      for (let y = from; y <= to; y += 1) b.set(col(d), y, -1, board);
+    };
+    // asta
+    plank(1, 9, 11);
+    plank(2, 9, 11);
+    plank(3, 9, 11);
+    // punta: si allarga e poi si chiude, così la freccia si legge di sagoma
+    plank(4, 8, 12);
+    plank(5, 9, 11);
+    plank(6, 10, 10);
+    for (let d = 1; d <= 4; d += 1) b.set(col(d), 10, -1, stripe);
+  }
+
+  return b.build();
+}
+
+/**
+ * Le tre varianti del cartello: STESSA geometria, colori diversi.
+ *
+ * Che la geometria sia identica non è un caso ma il requisito che rende la
+ * cosa gratuita: la vista tiene UNA sola InstancedMesh e, quando la scelta
+ * cambia, scambia solo l'attributo `color` (vedi entities-view.ts). Nessuna
+ * mesh in più, nessuna draw call in più, nessun materiale in più — e nessun
+ * salto di sagoma nel frame in cui la freccia si accende, che di un cambio di
+ * stato sarebbe la lettura sbagliata.
+ */
+export const SIGNPOST_VARIANTS: Readonly<Record<SignpostState, VoxelModel>> = {
+  none: buildSignpost('none'),
+  left: buildSignpost('left'),
+  right: buildSignpost('right'),
+};
+
+/**
+ * Ramo sospeso: sbarra orizzontale con tre ciuffi di aghi.
+ *
+ * La fila più bassa è in ombra, come già l'arco e il cornicione: sono i tre
+ * ostacoli SOSPESI, cioè quelli che chiedono la reazione più anticipata, e la
+ * linea scura sotto è ciò che dice a colpo d'occhio dove FINISCE l'ostacolo,
+ * che è poi l'unica quota che conta per decidere se ci si passa sotto. I due
+ * tagli d'estremità sono in legno chiaro come quelli del tronco caduto.
+ *
+ * Nessun sostegno che arrivi a terra, e nessun ciuffo appeso più in basso: la
+ * quota del modello è quella di `entity.y` (CONFIG.spawn.overheadY) e la sua
+ * faccia inferiore è la sagoma su cui è tarata la scivolata (vedi i commenti
+ * di CONFIG.spawn). Aggiungere celle sotto abbasserebbe l'ostacolo, non lo
+ * renderebbe più leggibile: quel lavoro lo fa l'ombra di contatto a terra
+ * (render/contact-shadow.ts), che non tocca la geometria.
+ */
 function buildBranch(): VoxelModel {
   const b = createBuilder();
   b.box(-4, 0, 0, 9, 2, 2, WOOD);
+  b.box(-4, 0, 0, 9, 1, 2, WOOD_SHADOW);
+  b.box(-4, 1, 0, 1, 1, 2, LIGHT_WOOD);
+  b.box(4, 1, 0, 1, 1, 2, LIGHT_WOOD);
   b.set(-3, 2, 0, PINE);
   b.set(-3, 2, 1, PINE);
   b.set(0, 2, 0, PINE_DARK);
@@ -484,8 +690,16 @@ function buildBell(): VoxelModel {
  * laterale: NON è più un raccoglibile (in v2 `PickupKind` non la contiene).
  * `cabin`, `tree` e `hay` restano per lo stesso motivo — scenografia, non
  * entità di gioco. Tutti gli altri kind sono gli `EntityKind` di v2.
+ *
+ * `chasm` e `signpost` sono elencati anche a mano nell'unione delle chiavi:
+ * i due tipi arrivano in `EntityKind` (game/types.ts) insieme alle meccaniche
+ * che li usano, e nominarli qui fa sì che questo file compili sia prima sia
+ * dopo — a unione fatta i due letterali si riassorbono e non cambia nulla.
  */
-export const MODELS: Record<'cow' | 'cabin' | 'tree' | 'hay' | EntityKind, VoxelModel> = {
+export const MODELS: Record<
+  'cow' | 'cabin' | 'tree' | 'hay' | 'chasm' | 'signpost' | EntityKind,
+  VoxelModel
+> = {
   cow: buildCow(),
   cabin: buildCabin(),
   tree: buildTree(),
@@ -494,6 +708,8 @@ export const MODELS: Record<'cow' | 'cabin' | 'tree' | 'hay' | EntityKind, Voxel
   log: buildLog(),
   fence: buildFence(),
   crevasse: buildCrevasse(),
+  chasm: buildChasm(),
+  signpost: SIGNPOST_VARIANTS.none,
   branch: buildBranch(),
   arch: buildArch(),
   cornice: buildCornice(),
@@ -642,6 +858,9 @@ function vertexAo(
 export function buildGeometry(model: VoxelModel, voxelSize: number): THREE.BufferGeometry {
   const geometry = new THREE.BufferGeometry();
   if (model.voxels.length === 0) return geometry;
+  // Il lato vero del cubetto: quasi sempre voxelSize, più grosso per i modelli
+  // che sono pezzi di TERRENO invece che oggetti (vedi VoxelModel.cellScale).
+  const cellSize = voxelSize * (model.cellScale ?? 1);
 
   const occupied = new Set<number>();
   let minX = Infinity;
@@ -689,9 +908,9 @@ export function buildGeometry(model: VoxelModel, voxelSize: number): THREE.Buffe
         const level = vertexAo(occupied, x + face.nx, y + face.ny, z + face.nz, face, corner);
         ao.push(level);
         positions.push(
-          (x + corner[0] + offsetX) * voxelSize,
-          (y + corner[1] + offsetY) * voxelSize,
-          (z + corner[2] + offsetZ) * voxelSize,
+          (x + corner[0] + offsetX) * cellSize,
+          (y + corner[1] + offsetY) * cellSize,
+          (z + corner[2] + offsetZ) * cellSize,
         );
         normals.push(face.nx, face.ny, face.nz);
         const shade = AO_SHADE[level] ?? 1;

@@ -5,30 +5,54 @@ import type { Branch } from './types';
 
 export type ForkPhase = 'none' | 'approaching' | 'committed' | 'realigning';
 
-/**
- * Campi che esistono in OGNI fase, e che quindi si possono leggere senza
- * chiedersi a che punto sia il bivio.
- */
-interface PathCommon {
-  /** Scelta data FUORI dalla finestra di avvicinamento (design §4: "uno swipe
-   *  dato appena prima che il bivio compaia vale come scelta anticipata").
-   *  Vale solo finché `pendingChoiceTimeLeft` è positivo. */
-  pendingChoice: 'left' | 'right' | null;
-  pendingChoiceTimeLeft: number;
-}
-
 /** Nessun bivio in corso: il tracciato è dritto e se ne aspetta uno. */
-export interface PathNone extends PathCommon {
+export interface PathNone {
   phase: 'none';
   /** Distanza ancora da percorrere prima che il prossimo bivio COMPAIA. */
   nextForkIn: number;
 }
 
-/** Il bivio è visibile e la scelta è ancora cambiabile. */
-export interface PathApproaching extends PathCommon {
+/**
+ * Il bivio è visibile.
+ *
+ * Fase più lunga di quanto il nome suggerisca: da `previewZ` fino alla
+ * biforcazione se NESSUNO SCEGLIE. Chi sceglie passa a 'committed' al punto di
+ * non ritorno (`commitZ`); chi non sceglie non ha alcun ramo da impegnare,
+ * quindi resta qui, va dritto in mezzo ai due nastri e incontra il cartello
+ * (design §4, regola nuova: l'indecisione costa la corsa, non il premio).
+ * `forkZ` può quindi diventare negativa in questa fase, ed è normale.
+ *
+ * VEDERE E POTER SCEGLIERE SONO DUE COSE DIVERSE, e questa fase le contiene
+ * entrambe: comincia quando il bivio diventa visibile, ma la scelta si apre
+ * dopo (vedi `choiceOpen`).
+ */
+export interface PathApproaching {
   phase: 'approaching';
-  /** Distanza della biforcazione dal giocatore: positiva, cala a ogni frame. */
+  /** Distanza della biforcazione dal giocatore. Positiva finché la scelta è
+   *  possibile; se nessuno sceglie continua a calare e passa sotto zero. */
   forkZ: number;
+  /**
+   * La finestra di scelta è aperta.
+   *
+   * Si apre a `commitZ + speed * CONFIG.path.choiceWindowSeconds`, cioè a un
+   * TEMPO fisso dal punto di non ritorno invece che a una distanza fissa: era
+   * la stessa soglia della visibilità (`previewZ`), e una distanza fissa dura
+   * tempi diversi a velocità diverse — 2,15 s al tetto di "Normale" ma 4,78 s
+   * a velocità di partenza, cioè cinque secondi di bivio fermo davanti con la
+   * decisione già presa. Il proprietario: «devo poter scegliere solo a ridosso
+   * del bivio, non ore prima».
+   *
+   * È un campo e non una funzione perché `speed` non è nota a chi la
+   * interroga: `chooseBranch` riceve solo il percorso. Il posto in cui la
+   * velocità si conosce è `updatePath`, che infatti è l'unico a scriverlo.
+   *
+   * A SENSO UNICO: una volta aperta non si richiude. La velocità sale sempre,
+   * quindi in pratica non potrebbe comunque; ma se un giorno potesse
+   * scendere, una finestra che si richiude spegnerebbe il pannello delle
+   * frecce sotto le dita del giocatore e rifarebbe partire 'fork:appeared'
+   * al giro dopo.
+   */
+  choiceOpen: boolean;
   /** Ramo verso cui il giocatore è orientato: null finché non sceglie. */
   choice: 'left' | 'right' | null;
   /** Quale dei due rami è quello ricco (più fiocchi e buff, più ostacoli). */
@@ -37,7 +61,7 @@ export interface PathApproaching extends PathCommon {
 
 /** Punto di non ritorno superato: il ramo è deciso e già solido, ma la
  *  biforcazione non è ancora stata raggiunta. */
-export interface PathCommitted extends PathCommon {
+export interface PathCommitted {
   phase: 'committed';
   /** Ancora positiva: quanto manca alla biforcazione. */
   forkZ: number;
@@ -50,7 +74,7 @@ export interface PathCommitted extends PathCommon {
 
 /** Biforcazione superata: il mondo trasla lateralmente per riportare il ramo
  *  scelto al centro. */
-export interface PathRealigning extends PathCommon {
+export interface PathRealigning {
   phase: 'realigning';
   /** Da qui in giù è NEGATIVA: il suo valore assoluto è la distanza percorsa
    *  oltre la biforcazione, che a velocità nota si converte in "quanto tempo è
@@ -98,8 +122,6 @@ export function createPath(): PathNone {
     // comandi spesso muore prima di arrivarci. I bivi successivi, alla
     // chiusura del riallineamento qui sotto, tornano a minGap/gapPerSpeed.
     nextForkIn: CONFIG.path.firstForkIn,
-    pendingChoice: null,
-    pendingChoiceTimeLeft: 0,
   };
 }
 
@@ -251,42 +273,60 @@ export function branchIsSolid(path: PathState, branch: Branch): boolean {
 
 /**
  * Registra o cambia la scelta. Restituisce false se non c'è un bivio
- * scegliibile (nessun bivio in corso, o punto di non ritorno già superato).
- * Non emette eventi: la firma non riceve il bus, quindi 'fork:chosen' è
- * responsabilità del chiamante (l'orchestratore), che lo emette quando questa
+ * scegliibile (nessun bivio in corso, o punto di non ritorno gia' superato).
+ * Non emette eventi: la firma non riceve il bus, quindi 'fork:chosen' e'
+ * responsabilita' del chiamante (l'orchestratore), che lo emette quando questa
  * funzione restituisce true.
+ *
+ * Il controllo su `commitZ` e' esplicito e prima non serviva: finche' chi non
+ * sceglieva riceveva d'ufficio il ramo sgombro, al punto di non ritorno la fase
+ * diventava 'committed' da sola e il solo test sulla fase bastava a chiudere la
+ * finestra. Ora la fase 'approaching' sopravvive al punto di non ritorno
+ * proprio nel caso in cui nessuno ha scelto (vedi advanceApproaching), quindi
+ * senza questa riga la scelta resterebbe possibile fino al cartello — cioe' il
+ * punto di non ritorno sparirebbe esattamente nel caso per cui esiste.
  */
 export function chooseBranch(path: PathState, side: 'left' | 'right'): boolean {
   if (path.phase !== 'approaching') return false;
+  if (!path.choiceOpen) return false;
+  if (path.forkZ <= CONFIG.path.commitZ) return false;
   path.choice = side;
-  path.pendingChoice = null;
-  path.pendingChoiceTimeLeft = 0;
   return true;
 }
 
 /**
- * Memorizza uno swipe laterale dato quando NON c'è un bivio scegliibile — ma
- * SOLO se il prossimo bivio è imminente, cioè se manca al massimo
- * `CONFIG.path.earlyChoiceWindowZ` alla sua comparsa. Restituisce true se la
- * scelta è stata davvero memorizzata.
- *
- * La finestra non è un dettaglio di taratura: senza, uno swipe dato in mezzo
- * al nulla restava valido 0,6 s e veniva applicato a qualunque bivio nascesse
- * in quel lasso, senza che il giocatore lo sapesse. Combinato col fatto che
- * uno swipe diagonale veniva letto come laterale (vedi
- * input.horizontalDominance), un salto malriuscito diventava una scelta di
- * ramo silenziosa — e la scelta al bivio è LA decisione del gioco.
- *
- * Le fasi diverse da 'none' escono subito, e ora è il tipo stesso a spiegare
- * perché: `nextForkIn` esiste SOLO in `PathNone`. Durante un bivio in corso
- * non c'è alcuna distanza dal prossimo bivio da confrontare con la finestra.
+ * La finestra di scelta e' aperta ADESSO, cioe' uno swipe laterale farebbe
+ * qualcosa? E' `chooseBranch` senza l'effetto: serve a chi deve mostrare le
+ * frecce o spiegare perche' uno swipe non ha fatto nulla, e sta qui perche' le
+ * due condizioni devono restare una sola definizione.
  */
-export function rememberChoice(path: PathState, side: 'left' | 'right'): boolean {
-  if (path.phase !== 'none') return false;
-  if (path.nextForkIn > CONFIG.path.earlyChoiceWindowZ) return false;
-  path.pendingChoice = side;
-  path.pendingChoiceTimeLeft = CONFIG.path.earlyChoiceSeconds;
-  return true;
+export function choiceIsOpen(path: PathState): boolean {
+  return path.phase === 'approaching' && path.choiceOpen && path.forkZ > CONFIG.path.commitZ;
+}
+
+/**
+ * Il CARTELLO del bivio e' solido?
+ *
+ * Il cartello sta nel cuneo fra i due rami, cioe' al centro (x = 0 in
+ * coordinate del tronco), alla distanza della biforcazione. E' solido solo
+ * finche' nessuno ha scelto: nell'istante in cui la scelta viene registrata la
+ * mucca appartiene a un ramo, che la geometria del bivio porta a
+ * `branchSeparation` unita' di lato, e il cartello le passa ACCANTO. Diventa
+ * quindi inerte, non sparisce: farlo svanire davanti al muso sarebbe una
+ * sparizione a vista, mentre passargli di fianco e' quello che davvero succede.
+ *
+ * La condizione e' una sola espressione, e questo e' il punto: la solidita' del
+ * cartello NON e' uno stato da mantenere in sincrono con la scelta (un flag da
+ * spegnere, un'entita' da rimuovere, un ordine di operazioni da rispettare), e'
+ * una funzione della scelta. Non esiste alcun frame in cui i due possano
+ * divergere, perche' non c'e' niente da aggiornare.
+ *
+ * Nelle fasi 'committed' e 'realigning' una scelta esiste per costruzione (il
+ * tipo lo garantisce: `choice` non e' nullable la'), quindi inerte. In 'none'
+ * non c'e' alcun bivio, quindi nemmeno alcun cartello.
+ */
+export function signpostIsSolid(path: PathState): boolean {
+  return path.phase === 'approaching' && path.choice === null;
 }
 
 /**
@@ -301,21 +341,11 @@ export function updatePath(
   rng: Rng,
   bus: EventBus,
 ): PathState {
-  // La scelta anticipata scade nel TEMPO, non nella distanza (design §4: "per
-  // un breve istante"). Il dt non è un parametro perché updatePath ragiona in
-  // distanze, ma si ricava esatto: updateWorld calcola travelled = speed * dt
-  // con la stessa `speed` passata qui.
-  if (path.pendingChoiceTimeLeft > 0) {
-    const dt = speed > 0 ? travelled / speed : 0;
-    path.pendingChoiceTimeLeft = Math.max(0, path.pendingChoiceTimeLeft - dt);
-    if (path.pendingChoiceTimeLeft === 0) path.pendingChoice = null;
-  }
-
   switch (path.phase) {
     case 'none':
-      return advanceNone(path, travelled, rng, bus);
+      return advanceNone(path, travelled, speed, rng, bus);
     case 'approaching':
-      return advanceApproaching(path, travelled, bus);
+      return advanceApproaching(path, travelled, speed, bus);
     case 'committed':
       return advanceCommitted(path, travelled, speed);
     case 'realigning':
@@ -324,8 +354,38 @@ export function updatePath(
   }
 }
 
+/**
+ * Apre la finestra di scelta quando e' ora, e annuncia il bivio.
+ *
+ * 'fork:appeared' e' emesso QUI e non alla nascita del bivio, ed e' un
+ * cambio voluto: quell'evento accende il pannello con le due frecce, e il
+ * pannello deve comparire quando si puo' davvero scegliere. Il bivio, di suo,
+ * si vede arrivare molto prima — la Y del tracciato da `previewZ` e il
+ * cartello piantato in mezzo — ed e' giusto cosi': il cartello e' il segnale
+ * diegetico che «qui bisogna decidere», le frecce sono il momento in cui lo si
+ * puo' fare.
+ *
+ * La soglia e' il MINIMO fra il tempo concesso e cio' che la visibilita'
+ * permette, e non serve scriverlo: se `commitZ + speed * choiceWindowSeconds`
+ * supera `previewZ` la condizione e' gia' vera al primo frame del bivio, e la
+ * finestra si apre alla nascita. Succede sopra i 43 u/s, cioe' solo per "Toro"
+ * vicino al suo tetto.
+ */
+function openChoiceIfDue(path: PathApproaching, speed: number, bus: EventBus): void {
+  if (path.choiceOpen) return;
+  if (path.forkZ > CONFIG.path.commitZ + speed * CONFIG.path.choiceWindowSeconds) return;
+  path.choiceOpen = true;
+  bus.emit('fork:appeared', { richBranch: path.richBranch });
+}
+
 /** Attesa del prossimo bivio, e sua nascita. */
-function advanceNone(path: PathNone, travelled: number, rng: Rng, bus: EventBus): PathState {
+function advanceNone(
+  path: PathNone,
+  travelled: number,
+  speed: number,
+  rng: Rng,
+  bus: EventBus,
+): PathState {
   path.nextForkIn -= travelled;
   if (path.nextForkIn > 0) return path;
 
@@ -337,45 +397,92 @@ function advanceNone(path: PathNone, travelled: number, rng: Rng, bus: EventBus)
   const next: PathApproaching = {
     phase: 'approaching',
     forkZ: CONFIG.path.previewZ - overshoot,
+    // Il bivio nasce VISIBILE ma non ancora scegliibile: la finestra si apre
+    // a ridosso, e a farlo e' openChoiceIfDue, che e' anche l'unico posto da
+    // cui esce 'fork:appeared'. Alle velocita' piu' alte le due cose
+    // coincidono, ed e' lo stesso codice a stabilirlo.
+    choiceOpen: false,
+    // Nessuna scelta ereditata: la scelta ANTICIPATA non esiste piu'.
+    // Consentiva di decidere prima ancora di vedere i due rami, il che era in
+    // contraddizione col primo dei tre tempi del bivio (design §4, "lettura":
+    // il giocatore vede COSA contengono prima di scegliere) e, con lo swipe
+    // diagonale letto come laterale, trasformava un salto malriuscito in una
+    // scelta silenziosa. Ora la scelta si fa solo mentre il bivio e' in
+    // avvicinamento, cioe' solo quando c'e' qualcosa da leggere.
     choice: null,
     richBranch,
-    // La scelta anticipata si consuma qui, in un modo o nell'altro: o diventa
-    // la scelta del bivio appena nato, o non serve più a niente.
-    pendingChoice: null,
-    pendingChoiceTimeLeft: 0,
   };
-  bus.emit('fork:appeared', { richBranch });
-
-  // Scelta anticipata: lo swipe dato poco prima che il bivio comparisse
-  // vale come scelta, ed è a tutti gli effetti una scelta del giocatore,
-  // quindi emette 'fork:chosen' come se fosse arrivata adesso.
-  const pending = path.pendingChoice;
-  if (pending !== null) {
-    next.choice = pending;
-    bus.emit('fork:chosen', { side: pending });
-  }
+  // Sopra i 43 u/s la finestra e' gia' dovuta nel frame in cui il bivio nasce
+  // (commitZ + speed * choiceWindowSeconds supera previewZ): va aperta subito,
+  // o 'fork:appeared' arriverebbe con un frame di ritardo e, peggio, uno swipe
+  // dato in quel frame verrebbe buttato via.
+  openChoiceIfDue(next, speed, bus);
   return next;
 }
 
-/** Avvicinamento, e punto di non ritorno. */
-function advanceApproaching(path: PathApproaching, travelled: number, bus: EventBus): PathState {
+/**
+ * Avvicinamento, punto di non ritorno, e il caso di chi non ha scelto.
+ *
+ * REGOLA NUOVA (design §4): non esiste piu' un ramo di default. Chi arriva al
+ * punto di non ritorno senza avere scelto non imbocca il ramo sgombro, non
+ * imbocca NIENTE: resta in mezzo, la fase non cambia, e la biforcazione gli
+ * arriva addosso insieme al cartello che ci sta piantato davanti. Prima
+ * l'indecisione costava il premio, ora costa la corsa — perche' un bivio in cui
+ * non scegliere e' comunque una mossa giocabile non e' una decisione, e la
+ * scelta al bivio e' LA decisione di questo gioco.
+ *
+ * Notare che qui non muore nessuno e non si emette nulla: la morte e' una
+ * collisione come le altre, contro un'entita' vera che sta sul percorso (vedi
+ * game.ts, il cartello piazzato alla nascita del bivio). Questa funzione si
+ * limita a non inventare una scelta che il giocatore non ha dato.
+ */
+function advanceApproaching(
+  path: PathApproaching,
+  travelled: number,
+  speed: number,
+  bus: EventBus,
+): PathState {
   path.forkZ -= travelled;
+  openChoiceIfDue(path, speed, bus);
   if (path.forkZ > CONFIG.path.commitZ) return path;
 
-  // Punto di non ritorno: chi non ha scelto imbocca il ramo più sgombro,
-  // cioè quello NON ricco. L'indecisione costa il premio, mai la corsa.
-  const resolved = path.choice ?? (path.richBranch === 'left' ? 'right' : 'left');
+  const resolved = path.choice;
+  if (resolved === null) return advanceUnchosen(path, speed);
+
   const next: PathCommitted = {
     phase: 'committed',
     forkZ: path.forkZ,
     choice: resolved,
     richBranch: path.richBranch,
     activeBranch: resolved,
-    pendingChoice: path.pendingChoice,
-    pendingChoiceTimeLeft: path.pendingChoiceTimeLeft,
   };
   bus.emit('fork:resolved', { side: resolved });
   return next;
+}
+
+/**
+ * RETE DI SICUREZZA, non una regola di gioco: chiude un bivio mai scelto una
+ * volta che la biforcazione e' del tutto alle spalle.
+ *
+ * In una partita non ci si arriva mai. Il cartello e' alto piu' dell'apice del
+ * salto (vedi collisions.entityBox.signpost), nessuna rete lo assorbe (vedi
+ * types.ts, isUnforgiving) e la finestra di collisione e' larga 8,4 unita'
+ * contro gli 0,77 che il mondo percorre nel frame piu' veloce possibile: chi
+ * arriva qui senza avere scelto e' gia' morto da un pezzo.
+ *
+ * Esiste comunque perche' una macchina a stati non deve poter restare bloccata
+ * per una ragione che vive in un altro modulo. Senza, se un giorno il cartello
+ * non venisse piazzato — un bug, un test che monta lo stato a mano — la fase
+ * resterebbe 'approaching' per sempre: mai piu' un bivio, mai piu' un
+ * riallineamento, `forkZ` a scendere all'infinito. `game.ts` sa gestire questa
+ * chiusura senza ramo vincente (vedi handleForkTransitions).
+ */
+function advanceUnchosen(path: PathApproaching, speed: number): PathState {
+  if (path.forkZ > -CONFIG.path.forkBlendZ) return path;
+  return {
+    phase: 'none',
+    nextForkIn: CONFIG.path.minGap + CONFIG.path.gapPerSpeed * speed,
+  };
 }
 
 /** Ultimo tratto prima della biforcazione vera e propria: il ramo è già solido
@@ -391,8 +498,6 @@ function advanceCommitted(path: PathCommitted, travelled: number, speed: number)
     choice: path.choice,
     richBranch: path.richBranch,
     activeBranch: path.activeBranch,
-    pendingChoice: path.pendingChoice,
-    pendingChoiceTimeLeft: path.pendingChoiceTimeLeft,
     realignProgress: 0,
   };
   // Nessuna uscita anticipata: l'eccedenza di questo passo è già distanza
@@ -432,8 +537,6 @@ function applyRealignment(path: PathRealigning, speed: number): PathState {
   return {
     phase: 'none',
     nextForkIn: CONFIG.path.minGap + CONFIG.path.gapPerSpeed * speed,
-    pendingChoice: path.pendingChoice,
-    pendingChoiceTimeLeft: path.pendingChoiceTimeLeft,
   };
 }
 
@@ -452,14 +555,17 @@ export function forkApproaching(options: {
   forkZ: number;
   richBranch?: 'left' | 'right';
   choice?: 'left' | 'right' | null;
+  /** Default true: il costruttore produce un bivio GIA' scegliibile, che e' lo
+   *  stato su cui quasi tutti i test vogliono lavorare. Chi verifica
+   *  l'apertura della finestra passa esplicitamente false. */
+  choiceOpen?: boolean;
 }): PathApproaching {
   return {
     phase: 'approaching',
     forkZ: options.forkZ,
+    choiceOpen: options.choiceOpen ?? true,
     choice: options.choice ?? null,
     richBranch: options.richBranch ?? 'left',
-    pendingChoice: null,
-    pendingChoiceTimeLeft: 0,
   };
 }
 
@@ -474,8 +580,6 @@ export function forkCommitted(options: {
     choice: options.activeBranch,
     richBranch: options.richBranch ?? 'left',
     activeBranch: options.activeBranch,
-    pendingChoice: null,
-    pendingChoiceTimeLeft: 0,
   };
 }
 
@@ -493,8 +597,6 @@ export function forkRealigning(options: {
     choice: options.activeBranch,
     richBranch: options.richBranch ?? 'left',
     activeBranch: options.activeBranch,
-    pendingChoice: null,
-    pendingChoiceTimeLeft: 0,
     realignProgress: options.realignProgress,
   };
 }

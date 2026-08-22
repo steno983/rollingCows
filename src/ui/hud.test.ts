@@ -136,82 +136,19 @@ describe('createHud', () => {
     expect(need('[data-buff="magnet"]').textContent).toBe('4s CALAMITA');
   });
 
-  it('setFork mostra e nasconde il pannello del bivio', () => {
-    const hud = createHud(root);
-    const fork = need('.hud__fork');
-
-    hud.setFork(true);
-    expect(fork.classList.contains('hud__fork--visible')).toBe(true);
-
-    hud.setFork(false);
-    expect(fork.classList.contains('hud__fork--visible')).toBe(false);
+  it("l'HUD non ha più un pannello del bivio: lo dice il cartello nel mondo", () => {
+    // Le frecce a schermo facevano tre lavori e due sono decaduti: "c'è un
+    // bivio" ora lo dice il cartello piantato nella biforcazione, e "quale
+    // ramo prendi se non fai nulla" non esiste più, perché non scegliere
+    // significa schiantarsi contro quel cartello. Il terzo — "cosa ho
+    // scelto" — se lo prende il cartello stesso accendendo la propria
+    // freccia. Questo test è quello che impedisce che il pannello rientri
+    // dalla finestra insieme a un metodo "solo per comodità".
+    createHud(root);
+    expect(root.querySelector('.hud__fork')).toBeNull();
+    expect(root.querySelector('[data-side="left"]')).toBeNull();
+    expect(root.querySelector('[data-side="right"]')).toBeNull();
   });
-
-  it('il pannello del bivio non evidenzia più il ramo ricco (quello lo dice già il pendio)', () => {
-    const hud = createHud(root);
-
-    hud.setFork(true);
-
-    // Nessuna delle due frecce nasce accesa: l'informazione che il mondo sa
-    // già dare non va ripetuta, quella che non sa dare arriva da
-    // setForkDefault/setForkChoice.
-    for (const side of ['left', 'right']) {
-      const el = need(`[data-side="${side}"]`);
-      expect(el.classList.contains('hud__fork-side--chosen')).toBe(false);
-      expect(el.classList.contains('hud__fork-side--default')).toBe(false);
-    }
-  });
-
-  it('setForkChoice illumina solo il lato scelto', () => {
-    const hud = createHud(root);
-
-    hud.setFork(true);
-    hud.setForkChoice('left');
-    expect(need('[data-side="left"]').classList.contains('hud__fork-side--chosen')).toBe(true);
-    expect(need('[data-side="right"]').classList.contains('hud__fork-side--chosen')).toBe(false);
-
-    hud.setForkChoice('right');
-    expect(need('[data-side="left"]').classList.contains('hud__fork-side--chosen')).toBe(false);
-    expect(need('[data-side="right"]').classList.contains('hud__fork-side--chosen')).toBe(true);
-
-    hud.setForkChoice(null);
-    expect(need('[data-side="right"]').classList.contains('hud__fork-side--chosen')).toBe(false);
-  });
-
-  it('setForkDefault lampeggia sul ramo che si ottiene restando fermi, e si spegne da solo', () => {
-    vi.useFakeTimers();
-    const hud = createHud(root);
-
-    hud.setFork(true);
-    hud.setForkDefault('right');
-    expect(need('[data-side="right"]').classList.contains('hud__fork-side--default')).toBe(true);
-
-    vi.advanceTimersByTime(1000);
-    expect(need('[data-side="right"]').classList.contains('hud__fork-side--default')).toBe(false);
-
-    vi.useRealTimers();
-  });
-
-  it('nascondere il bivio azzera scelta e lato di default', () => {
-    vi.useFakeTimers();
-    const hud = createHud(root);
-
-    hud.setFork(true);
-    hud.setForkChoice('left');
-    hud.setForkDefault('left');
-    hud.setFork(false);
-
-    const left = need('[data-side="left"]');
-    expect(left.classList.contains('hud__fork-side--chosen')).toBe(false);
-    expect(left.classList.contains('hud__fork-side--default')).toBe(false);
-
-    // Il timer pendente non deve riaccendere nulla dopo la chiusura.
-    vi.advanceTimersByTime(1000);
-    expect(left.classList.contains('hud__fork-side--default')).toBe(false);
-
-    vi.useRealTimers();
-  });
-
   it('setMultiplier mostra il moltiplicatore TOTALE e lo accende solo sopra ×1', () => {
     const hud = createHud(root);
     const el = need('.hud__multiplier');

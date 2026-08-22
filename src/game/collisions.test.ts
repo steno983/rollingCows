@@ -2,10 +2,12 @@ import { describe, expect, it } from 'vitest';
 import type { Box } from './collisions';
 import { boxesOverlap, ENTITY_BOX, entityBox, playerBox } from './collisions';
 import { CONFIG } from './config';
+import { createPlayer, jump, updatePlayer } from './player';
+import { resolveDifficultyProfile, speedAt } from './speed';
 import type { Entity, EntityKind } from './types';
 import { isOverhead } from './types';
 
-const GROUND_KINDS: readonly EntityKind[] = ['rock', 'log', 'fence', 'crevasse'];
+const GROUND_KINDS: readonly EntityKind[] = ['rock', 'log', 'fence', 'crevasse', 'chasm'];
 const OVERHEAD_KINDS: readonly EntityKind[] = ['branch', 'arch', 'cornice'];
 const ALL_SIZES = [1, 2, 3, 4, 5];
 
@@ -180,5 +182,96 @@ describe('invariante di design: l-azione richiesta resta sempre possibile', () =
   it('il margine peggiore in piedi (taglia minima) resta strettamente positivo', () => {
     const smallestUprightTop = playerBox(0, 1, false).height;
     expect(smallestUprightTop).toBeGreaterThan(CONFIG.spawn.overheadY);
+  });
+});
+
+describe('CREPACCIO: la superabilità è una proprietà da verificare, non da dichiarare', () => {
+  const STEP = 1 / 60;
+
+  /**
+   * Simula un salto contro un crepaccio che arriva a velocità `speed`, con il
+   * salto avviato dopo `jumpDelay` secondi, e dice se la mucca è passata.
+   *
+   * Usa le funzioni vere — la parabola di player.ts e il test AABB di
+   * collisions.ts — invece della formula chiusa scritta in config: la formula
+   * è il RAGIONAMENTO, questo è il controllo che il gioco si comporti come il
+   * ragionamento dice. Fuori dal gioco completo perché qui interessa una cosa
+   * sola: se il crepaccio, da solo, si salta.
+   */
+  function clears(speed: number, jumpDelay: number): boolean {
+    const bus = { on: () => () => {}, emit: () => {}, clear: () => {} };
+    const player = createPlayer();
+    const chasm = makeEntity('chasm', (CONFIG.player.depth + ENTITY_BOX.chasm.depth) / 2 + speed);
+    let elapsed = 0;
+    let jumped = false;
+    while (chasm.z > -(CONFIG.player.depth + ENTITY_BOX.chasm.depth)) {
+      if (!jumped && elapsed >= jumpDelay) {
+        jump(player, bus);
+        jumped = true;
+      }
+      updatePlayer(player, STEP, bus);
+      chasm.z -= speed * STEP;
+      elapsed += STEP;
+      if (boxesOverlap(playerBox(player.y, 1, player.sliding), entityBox(chasm))) return false;
+    }
+    return jumped;
+  }
+
+  /** Le velocità a cui un crepaccio può davvero nascere: dalla più lenta
+   *  possibile (il tetto di "Vitellino", che a spawn.lateRampStart è già
+   *  raggiunto) alla più alta del gioco. */
+  const SPEEDS = (['calf', 'normal', 'bull'] as const).flatMap((name) => {
+    const profile = resolveDifficultyProfile(name);
+    return [
+      { name: `${name} @ lateRampStart`, speed: speedAt(CONFIG.spawn.lateRampStart, profile) },
+      { name: `${name} @ tetto`, speed: profile.maxSpeed },
+    ];
+  });
+
+  it('a nessuna di quelle velocità il crepaccio è impossibile', () => {
+    for (const { name, speed } of SPEEDS) {
+      const windows: number[] = [];
+      for (let step = 0; step * STEP < 2; step++) {
+        if (clears(speed, step * STEP)) windows.push(step);
+      }
+      // 0,2 s è il margine di errore che il gioco concede altrove sulla
+      // spaziatura (vedi spawn.minObstacleGap): sotto quella soglia si
+      // smetterebbe di reagire e si comincerebbe a memorizzare.
+      const seconds = windows.length * STEP;
+      expect(`${name}: ${seconds.toFixed(3)} s`).toBe(
+        seconds >= 0.2 ? `${name}: ${seconds.toFixed(3)} s` : `${name}: >= 0.200 s`,
+      );
+      // Contigua: se i salti che salvano non fossero consecutivi il margine
+      // sarebbe un artefatto del passo di simulazione, non una finestra.
+      const first = windows[0];
+      const last = windows[windows.length - 1];
+      if (first === undefined || last === undefined) throw new Error('nessun salto riuscito');
+      expect(last - first + 1).toBe(windows.length);
+    }
+  });
+
+  it('resta più largo di una crepa: sono due ostacoli diversi, non due nomi', () => {
+    expect(ENTITY_BOX.chasm.depth).toBeGreaterThan(ENTITY_BOX.crevasse.depth * 1.5);
+  });
+});
+
+describe('CARTELLO: non è scavalcabile per costruzione', () => {
+  it('è più alto dell-apice del salto, quindi non esiste una quota a cui passare', () => {
+    // `jumpHeight` è l-apice della BASE della sagoma: più in alto la base non
+    // arriva mai, a nessuna velocità e con nessuna gravità (il tuffo abbassa
+    // l-apice, non lo alza). Se questa disuguaglianza cadesse, "scegli o
+    // muori" diventerebbe "scegli o salta".
+    expect(ENTITY_BOX.signpost.height).toBeGreaterThan(CONFIG.player.jumpHeight);
+  });
+
+  it('le due sagome si sovrappongono a OGNI quota raggiungibile e a ogni taglia', () => {
+    const sign = makeEntity('signpost', 0);
+    for (const size of ALL_SIZES) {
+      for (let y = 0; y <= CONFIG.player.jumpHeight; y += 0.05) {
+        for (const sliding of [false, true]) {
+          expect(boxesOverlap(playerBox(y, size, sliding), entityBox(sign))).toBe(true);
+        }
+      }
+    }
   });
 });

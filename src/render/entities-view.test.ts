@@ -9,9 +9,18 @@ import {
   type PathNone,
   type PathState,
 } from '../game/path';
-import type { Entity, EntityKind } from '../game/types';
-import { createEntitiesView, type EntitiesView, entityWorldOffsetX } from './entities-view';
+import { type Entity, type EntityKind, isOverhead } from '../game/types';
+import {
+  CHASM_Y_BIAS,
+  contactShadowSize,
+  createEntitiesView,
+  type EntitiesView,
+  entityWorldOffsetX,
+  signpostStateFor,
+  type ViewKind,
+} from './entities-view';
 import { INSTANCE_CAPACITY } from './instancing';
+import { MODELS } from './models';
 import { trackCenterOffsets } from './terrain';
 
 /** Percorso dritto, cioè lo stato in cui si passa la maggior parte del tempo.
@@ -106,11 +115,13 @@ function entity(kind: EntityKind, overrides: Partial<Entity> = {}): Entity {
 
 /** Stesso ordine di ENTITY_KINDS in entities-view.ts: la vista aggiunge le
  *  mesh al gruppo in quell'ordine e non espone la mappa. */
-const ENTITY_ORDER: readonly EntityKind[] = [
+const ENTITY_ORDER: readonly ViewKind[] = [
   'rock',
   'log',
   'fence',
   'crevasse',
+  'chasm',
+  'signpost',
   'branch',
   'arch',
   'cornice',
@@ -121,10 +132,29 @@ const ENTITY_ORDER: readonly EntityKind[] = [
   'bell',
 ];
 
-function meshFor(view: EntitiesView, kind: EntityKind): THREE.InstancedMesh {
+function meshFor(view: EntitiesView, kind: ViewKind): THREE.InstancedMesh {
   const child = view.group.children[ENTITY_ORDER.indexOf(kind)];
   if (!(child instanceof THREE.InstancedMesh)) throw new Error(`nessuna mesh per ${kind}`);
   return child;
+}
+
+/** Le ombre di contatto dei sospesi: una sola InstancedMesh, in coda a
+ *  quelle dei tipi (vedi createEntitiesView). */
+function shadowMesh(view: EntitiesView): THREE.InstancedMesh {
+  const child = view.group.children[ENTITY_ORDER.length];
+  if (!(child instanceof THREE.InstancedMesh)) throw new Error('nessuna mesh di ombre');
+  return child;
+}
+
+/** Traslazione (x, y, z) dell'istanza `index`. */
+function positionOf(mesh: THREE.InstancedMesh, index: number): THREE.Vector3 {
+  const matrix = new THREE.Matrix4();
+  mesh.getMatrixAt(index, matrix);
+  return new THREE.Vector3(
+    matrix.elements[12] ?? 0,
+    matrix.elements[13] ?? 0,
+    matrix.elements[14] ?? 0,
+  );
 }
 
 /** Angolo attorno a y letto dalla matrice. Non via Euler: la decomposizione
@@ -230,5 +260,203 @@ describe('createEntitiesView — sync', () => {
     view.sync([flake], straight(), 1 / 60);
     meshFor(view, 'snowflake').getMatrixAt(0, matrix);
     expect(matrix.elements[14]).toBeCloseTo(12, 6);
+  });
+});
+
+describe('createEntitiesView — ombre di contatto dei sospesi', () => {
+  const overheadY = CONFIG.spawn.overheadY;
+
+  it("ogni sospeso ha un'ombra a terra ESATTAMENTE sotto di sé", () => {
+    // È l'informazione che il giocatore legge: l'ombra sta alla stessa (x, z)
+    // dell'ostacolo ma a terra, e lo scarto verticale fra le due è la quota.
+    const view = createEntitiesView();
+    view.sync([entity('cornice', { y: overheadY, z: 42 })], straight(), 1 / 60);
+
+    const shadows = shadowMesh(view);
+    expect(shadows.count).toBe(1);
+    const obstacle = positionOf(meshFor(view, 'cornice'), 0);
+    const shadow = positionOf(shadows, 0);
+    expect(shadow.x).toBeCloseTo(obstacle.x, 6);
+    expect(shadow.z).toBeCloseTo(obstacle.z, 6);
+    expect(shadow.y).toBeGreaterThan(0);
+    expect(shadow.y).toBeLessThan(0.1);
+    expect(obstacle.y - shadow.y).toBeGreaterThan(1);
+  });
+
+  it("segue l'ostacolo di lato durante un bivio, invece di restare al centro", () => {
+    // Se l'ombra non passasse dalla stessa entityWorldOffsetX dell'ostacolo,
+    // durante un bivio direbbe la quota di qualcosa che sta da un'altra parte.
+    const view = createEntitiesView();
+    const path = forkCommitted({ forkZ: CONFIG.path.commitZ, activeBranch: 'right' });
+    view.sync([entity('arch', { y: overheadY, z: 80, branch: 'left' })], path, 1 / 60);
+
+    const obstacle = positionOf(meshFor(view, 'arch'), 0);
+    const shadow = positionOf(shadowMesh(view), 0);
+    expect(Math.abs(obstacle.x)).toBeGreaterThan(1);
+    expect(shadow.x).toBeCloseTo(obstacle.x, 6);
+  });
+
+  it('la riceve UN sospeso su tre tipi e nessun altro: è quello il segno', () => {
+    // Se la prendessero anche gli ostacoli a terra smetterebbe di distinguere
+    // alcunché, che è tutto il suo scopo.
+    for (const kind of ENTITY_ORDER) {
+      const view = createEntitiesView();
+      view.sync([entity(kind, { y: isOverhead(kind) ? overheadY : 0 })], straight(), 1 / 60);
+      expect(shadowMesh(view).count, `ombra di contatto per '${kind}'`).toBe(
+        isOverhead(kind) ? 1 : 0,
+      );
+    }
+  });
+
+  it('costa UNA sola draw call per tutti e tre i tipi di sospeso', () => {
+    const view = createEntitiesView();
+    expect(view.group.children).toHaveLength(ENTITY_ORDER.length + 1);
+
+    view.sync(
+      [
+        entity('branch', { y: overheadY }),
+        entity('arch', { y: overheadY }),
+        entity('cornice', { y: overheadY }),
+        entity('branch', { y: overheadY }),
+      ],
+      straight(),
+      1 / 60,
+    );
+    expect(shadowMesh(view).count).toBe(4);
+  });
+
+  it('sparisce di scena quando non c e nessun sospeso, non resta a count 0', () => {
+    const view = createEntitiesView();
+    const shadows = shadowMesh(view);
+    expect(shadows.visible).toBe(false);
+
+    view.sync([entity('branch', { y: overheadY })], straight(), 1 / 60);
+    expect(shadows.visible).toBe(true);
+
+    view.sync([entity('rock')], straight(), 1 / 60);
+    expect(shadows.visible).toBe(false);
+  });
+
+  it("è larga quanto l'ostacolo che la getta, non un disco uguale per tutti", () => {
+    const view = createEntitiesView();
+    view.sync(
+      [entity('branch', { y: overheadY }), entity('arch', { y: overheadY, z: 40 })],
+      straight(),
+      1 / 60,
+    );
+    const shadows = shadowMesh(view);
+    const first = new THREE.Matrix4();
+    const second = new THREE.Matrix4();
+    shadows.getMatrixAt(0, first);
+    shadows.getMatrixAt(1, second);
+    const branchWidth = first.elements[0] ?? 0;
+    const archWidth = second.elements[0] ?? 0;
+    expect(archWidth).toBeGreaterThan(branchWidth);
+  });
+
+  it("non è mai più stretta del minimo, e altrimenti allarga l'ingombro", () => {
+    // Il ramo è profondo mezza unità: senza il minimo la sua ombra sarebbe un
+    // trattino, cioè nessun contatto.
+    expect(contactShadowSize(0.5)).toBeGreaterThan(1);
+    expect(contactShadowSize(4)).toBeGreaterThan(4);
+    expect(contactShadowSize(4)).toBeLessThan(4 * 2);
+  });
+});
+
+describe('crepaccio: affondato, non appoggiato', () => {
+  const cell = CONFIG.render.voxelSize * (MODELS.chasm.cellScale ?? 1);
+
+  it('il fondo scuro finisce a filo della neve e il bordo resta sopra', () => {
+    // Il modello ha lo strato di fondo spesso una cella: appoggiato sulla neve
+    // sarebbe una piattaforma scura, non un buco (vedi buildChasm).
+    expect(CHASM_Y_BIAS).toBeLessThan(0);
+    // faccia superiore del fondo: appena sopra la neve, mai sotto
+    expect(CHASM_Y_BIAS + cell).toBeGreaterThan(0);
+    expect(CHASM_Y_BIAS + cell).toBeLessThan(0.05);
+  });
+
+  it('la vista lo disegna affondato, e nessun altro ostacolo a terra lo è', () => {
+    const view = createEntitiesView();
+    view.sync([entity('chasm', { z: 30 }), entity('rock', { z: 30 })], straight(), 1 / 60);
+    expect(positionOf(meshFor(view, 'chasm'), 0).y).toBeCloseTo(CHASM_Y_BIAS, 6);
+    expect(positionOf(meshFor(view, 'rock'), 0).y).toBeCloseTo(0, 6);
+  });
+
+  it('nessuna ombra di contatto: non è sospeso, è un buco', () => {
+    const view = createEntitiesView();
+    view.sync([entity('chasm'), entity('signpost')], straight(), 1 / 60);
+    expect(shadowMesh(view).count).toBe(0);
+  });
+});
+
+describe('signpostStateFor', () => {
+  it('senza bivio non c e nessuna scelta da mostrare', () => {
+    expect(signpostStateFor(straight())).toBe('none');
+  });
+
+  it("in avvicinamento mostra la scelta solo quando c'è", () => {
+    expect(signpostStateFor(forkApproaching({ forkZ: 40 }))).toBe('none');
+    expect(signpostStateFor(forkApproaching({ forkZ: 40, choice: 'left' }))).toBe('left');
+    expect(signpostStateFor(forkApproaching({ forkZ: 40, choice: 'right' }))).toBe('right');
+  });
+
+  it('dopo il punto di non ritorno continua a mostrarla, mentre sfila accanto', () => {
+    // È lì che serve di più: la mucca sta ancora andando verso la
+    // biforcazione e il cartello è l'unica conferma di dove finirà.
+    expect(
+      signpostStateFor(forkCommitted({ forkZ: CONFIG.path.commitZ, activeBranch: 'right' })),
+    ).toBe('right');
+    expect(
+      signpostStateFor(forkRealigning({ forkZ: -8, activeBranch: 'left', realignProgress: 0.4 })),
+    ).toBe('left');
+  });
+});
+
+describe('createEntitiesView — il cartello mostra la scelta', () => {
+  function colorsOf(view: EntitiesView): THREE.BufferAttribute | THREE.InterleavedBufferAttribute {
+    return meshFor(view, 'signpost').geometry.getAttribute('color');
+  }
+
+  it('cambia i colori quando cambia la scelta, senza toccare la geometria', () => {
+    const view = createEntitiesView();
+    const sign = [entity('signpost', { z: 30 })];
+    const positions = meshFor(view, 'signpost').geometry.getAttribute('position');
+
+    view.sync(sign, forkApproaching({ forkZ: 40 }), 1 / 60);
+    const neutral = colorsOf(view);
+
+    view.sync(sign, forkApproaching({ forkZ: 40, choice: 'left' }), 1 / 60);
+    const chosen = colorsOf(view);
+    expect(chosen).not.toBe(neutral);
+    // Stessa geometria: è ciò che rende il cambio di stato gratuito e che
+    // evita un salto di sagoma nel frame in cui la freccia si accende.
+    expect(meshFor(view, 'signpost').geometry.getAttribute('position')).toBe(positions);
+    expect(chosen.count).toBe(neutral.count);
+
+    view.sync(sign, forkApproaching({ forkZ: 40, choice: 'right' }), 1 / 60);
+    expect(colorsOf(view)).not.toBe(chosen);
+
+    // e tornando allo stato neutro si rimonta lo STESSO attributo di prima:
+    // i tre buffer restano tre, non se ne creano a ogni bivio.
+    view.sync(sign, straight(), 1 / 60);
+    expect(colorsOf(view)).toBe(neutral);
+  });
+
+  it('non rimonta nulla se la scelta non cambia', () => {
+    // Il confronto per frame deve costare un confronto, non un caricamento di
+    // buffer: qui si verifica proprio che l'attributo resti lo stesso oggetto.
+    const view = createEntitiesView();
+    const path = forkApproaching({ forkZ: 40, choice: 'left' });
+    view.sync([entity('signpost')], path, 1 / 60);
+    const first = colorsOf(view);
+    for (let i = 0; i < 5; i += 1) view.sync([entity('signpost')], path, 1 / 60);
+    expect(colorsOf(view)).toBe(first);
+  });
+
+  it('resta UNA sola mesh e una sola draw call per tutti e tre gli stati', () => {
+    const view = createEntitiesView();
+    expect(view.group.children).toHaveLength(ENTITY_ORDER.length + 1);
+    view.sync([entity('signpost')], forkApproaching({ forkZ: 40, choice: 'left' }), 1 / 60);
+    expect(meshFor(view, 'signpost').count).toBe(1);
   });
 });

@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { CONFIG } from '../game/config';
 import type { PlayerState } from '../game/player';
+import { WORLD_SLOPE } from './camera-rig';
 import { starTrail } from './debris';
 import { buildGeometry, MODELS, PALETTE } from './models';
 import type { VoxelPool } from './voxel-pool';
@@ -316,6 +317,19 @@ export function createPlayerView(pool: VoxelPool | null = null): PlayerView {
   group.add(pivot);
   group.add(shield);
   group.add(magnetPivot);
+  // La mucca sta FUORI dal gruppo-mondo (è tutto il resto a muoversi attorno a
+  // lei, vedi main.ts), quindi l'inclinazione del pendio non le arriva da
+  // sola: senza questa riga resterebbe verticale su un pendio inclinato, come
+  // un birillo. Uno sciatore in discesa è inclinato quanto la pista.
+  //
+  // Si scrive UNA volta e non in sync perché non cambia mai. Regge perché sync
+  // tocca solo rotation.z (la piegata dei bivi): con l'ordine di Eulero
+  // predefinito (XYZ) la piegata viene applicata PRIMA dell'inclinazione, cioè
+  // nel sistema del pendio — che è l'ordine giusto, ed è lo stesso con cui
+  // main.ts compone lo sterzo del bivio sul gruppo-mondo. Chi in futuro
+  // riscrivesse sync con un group.rotation.set(...) cancellerebbe questa riga:
+  // c'è un test apposta (player-view.test.ts).
+  group.rotation.x = WORLD_SLOPE;
 
   let roll = 0;
   let shieldSpin = 0;
@@ -405,6 +419,9 @@ export function createPlayerView(pool: VoxelPool | null = null): PlayerView {
     // nodo. Lo scudo (figlio di group, non di pivot) si piega insieme al
     // resto dell'assieme: essendo una sfera, non si nota, ed è comunque
     // corretto che segua la mucca che protegge.
+    //
+    // SOLO z: group.rotation.x porta l'inclinazione del pendio, scritta una
+    // volta alla costruzione e da non toccare qui.
     group.rotation.z = tilt;
 
     shield.visible = shielded;
@@ -431,9 +448,11 @@ export function createPlayerView(pool: VoxelPool | null = null): PlayerView {
       );
     }
 
-    // Calamita: l'anello resta orizzontale e appoggiato al pavimento del
-    // corridoio, qualunque cosa faccia la mucca sopra di esso (salta, si
-    // piega, cresce).
+    // Calamita: l'anello resta appoggiato al pavimento del corridoio,
+    // qualunque cosa faccia la mucca sopra di esso (salta, si piega, cresce).
+    // La compensazione annulla la sola piegata del bivio: l'inclinazione del
+    // pendio invece deve restare, perché il pavimento è inclinato anche lui —
+    // ed essendo su group, resta per costruzione.
     const magnetLevel = buffEffectLevel(frame.magnetTimeLeft, effectTime);
     magnetPivot.visible = magnetLevel > 0;
     if (magnetLevel > 0) {

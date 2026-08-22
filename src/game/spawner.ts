@@ -1,4 +1,5 @@
 import type { Rng } from '../core/rng';
+import { ENTITY_BOX } from './collisions';
 import { CONFIG } from './config';
 import { DEFAULT_DIFFICULTY_PROFILE, type DifficultyProfile } from './speed';
 import type {
@@ -8,6 +9,7 @@ import type {
   GroundObstacleKind,
   ObstacleKind,
   OverheadObstacleKind,
+  PickupKind,
 } from './types';
 import { isOverhead } from './types';
 
@@ -55,8 +57,103 @@ const BUFF_KINDS: readonly BuffKind[] = Object.values({
  */
 const TRAVERSABILITY_EPSILON = 1e-9;
 
+/**
+ * Aria richiesta fra la sagoma di un raccoglibile e quella di un ostacolo, in
+ * aggiunta alla semisomma delle profondità.
+ *
+ * DIFETTO MISURATO. La fila ad arco terminava per costruzione ESATTAMENTE
+ * sull'ostacolo a terra: l'ultimo fiocco nasceva a quota 0 nello stesso punto
+ * in cui nasceva la sagoma dell'ostacolo. Su 20 corse da 60 s la simulazione
+ * contava 9130 coppie raccoglibile/ostacolo compenetrate per frame; sul solo
+ * spawner, con il test AABB esatto, una compenetrazione per OGNI fila ad arco
+ * (~20 700 su 200 seed × 2 rami nel profilo normale), su tutti e quattro gli
+ * ostacoli a terra. Il caso peggiore è il crepaccio, profondo 4 unità: il
+ * fiocco spariva dentro la fenditura. Il proprietario lo ha visto giocando e
+ * lo ha descritto come «fiocchi dentro altri oggetti».
+ *
+ * Il test AABB puro (`|Δz| ≥ (dA+dB)/2`, vedi collisions.ts) dichiara "non
+ * compenetrati" anche due box che si TOCCANO, e due modelli voxel a contatto a
+ * schermo sono indistinguibili da due modelli incastrati. Mezzo fiocco di aria
+ * è il margine più piccolo che si legge come "accanto" invece che "attaccato".
+ *
+ * DERIVATO e non scelto: è mezza sagoma del fiocco, la misura che il difetto
+ * riguarda, e vive già in `collisions.entityBox`. Non è quindi un numero di
+ * bilanciamento in più da tarare (vedi la regola di progetto omonima in
+ * architecture.test.ts), e si muove da solo il giorno in cui il fiocco cambia
+ * dimensione. Il valore che ne esce, 0,4, è ciò che serve: sommato alla
+ * semisomma più profonda del gioco (crepaccio + fiocco = 2,4) resta sotto il
+ * passo della fila (`spawn.trailSpacing` = 3), quindi il filtro toglie il
+ * fiocco AL CENTRO dell'ostacolo senza toccare quello successivo, che sta
+ * sopra il bordo ed è voluto.
+ */
+const PICKUP_CLEARANCE = ENTITY_BOX.snowflake.depth / 2;
+
 function clamp01(value: number): number {
   return Math.min(1, Math.max(0, value));
+}
+
+/** Quota della base di un ostacolo: i sospesi nascono a `spawn.overheadY`, gli
+ *  altri a terra. Una funzione sola perché la regola serve sia a chi emette
+ *  l'ostacolo sia a chi deve sapere che spazio occupa (`pickupPenetrates`). */
+function obstacleY(kind: ObstacleKind): number {
+  return isOverhead(kind) ? CONFIG.spawn.overheadY : 0;
+}
+
+/**
+ * Vero se un raccoglibile piazzato in (z, y) finirebbe DENTRO la sagoma di un
+ * ostacolo dello stesso ramo (vedi PICKUP_CLEARANCE per il difetto che
+ * questa funzione esiste per impedire).
+ *
+ * Guarda la QUOTA prima della distanza, ed è la parte che conta: i fiocchi ad
+ * arco sopra un ostacolo a terra e le file basse sotto un ostacolo sospeso
+ * sono elementi di design dichiarati — sono il suggerimento di saltare e di
+ * scivolare. Se le due sagome non si sovrappongono in altezza il raccoglibile
+ * è sopra o sotto l'ostacolo, quindi legittimo per qualunque distanza in z, e
+ * la funzione esce subito. Solo quando le quote si intersecano davvero la
+ * distanza in z deve superare la semisomma delle profondità più il margine.
+ *
+ * `obstacleKind` può mancare (nessun ostacolo precedente su questo ramo):
+ * accettarlo qui evita di duplicare il controllo su ogni posto di chiamata.
+ */
+function pickupPenetrates(
+  pickupKind: PickupKind,
+  z: number,
+  y: number,
+  obstacleKind: ObstacleKind | undefined,
+  obstacleZ: number,
+): boolean {
+  if (obstacleKind === undefined) return false;
+  const pickup = ENTITY_BOX[pickupKind];
+  const obstacle = ENTITY_BOX[obstacleKind];
+  const baseY = obstacleY(obstacleKind);
+  if (y + pickup.height <= baseY) return false;
+  if (baseY + obstacle.height <= y) return false;
+  const required = (pickup.depth + obstacle.depth) / 2 + PICKUP_CLEARANCE;
+  return Math.abs(z - obstacleZ) < required;
+}
+
+/**
+ * Gli ostacoli che una fila di fiocchi può incrociare: quello a cui la fila
+ * appartiene e quello che lo precede sullo stesso ramo.
+ *
+ * Bastano due. Una fila lunga arriva indietro al massimo
+ * `(trailMax - 1) * trailSpacing` = 27 unità, e il passo minimo fra due
+ * ostacoli è 26 nel profilo più duro: la fila può quindi sfiorare l'ostacolo
+ * precedente (misurato: 191 compenetrazioni su 600 seed nascevano proprio
+ * così, non dal fiocco terminale) ma non può in alcun modo raggiungere il
+ * penultimo.
+ */
+interface TrailObstacles {
+  readonly kind: ObstacleKind;
+  readonly z: number;
+  readonly previousKind: ObstacleKind | undefined;
+  readonly previousZ: number;
+}
+
+/** Vero se questo fiocco è dentro uno dei due ostacoli che la fila incrocia. */
+function flakeIsBuried(z: number, y: number, obstacles: TrailObstacles): boolean {
+  if (pickupPenetrates('snowflake', z, y, obstacles.kind, obstacles.z)) return true;
+  return pickupPenetrates('snowflake', z, y, obstacles.previousKind, obstacles.previousZ);
 }
 
 /**
@@ -64,11 +161,13 @@ function clamp01(value: number): number {
  *
  * ZONA FRANCA DOPO LA BIFORCAZIONE. Il ramo scelto diventa solido al punto di
  * non ritorno, ma il mondo trasla lateralmente solo DOPO la biforcazione e per
- * tutto `path.realignSeconds`: nel frattempo un ostacolo del ramo — disegnato
- * fino a `path.branchSeparation` di lato, cioè 6 unità fuori da un corridoio
- * largo 4 — è già letale pur essendo visibilmente fuori pista. Misurato: il
- * 3,43% degli ostacoli letali uccideva così, l'unica classe di morte che il
- * giocatore non può né prevedere né imparare.
+ * tutto `path.forkBlendZ` (era `path.realignSeconds`, rimosso: la traslazione
+ * segue ora la geometria dell'apertura invece di un orologio proprio): nel
+ * frattempo un ostacolo del ramo — disegnato fino a `path.branchSeparation` di
+ * lato, cioè 6 unità fuori da un corridoio largo 4 — è già letale pur essendo
+ * visibilmente fuori pista. Misurato: il 3,43% degli ostacoli letali uccideva
+ * così, l'unica classe di morte che il giocatore non può né prevedere né
+ * imparare.
  *
  * Vive qui e non in game.ts perché è una regola su DOVE lo spawner può
  * cominciare a popolare, e va usata sia per il cursore (`copyCursor`) sia per
@@ -192,6 +291,18 @@ export function createSpawner(
     left: -Infinity,
     right: -Infinity,
   };
+  /** Tipo dell'ULTIMO ostacolo già emesso su ciascun ramo, accanto alla sua z.
+   *  Senza il tipo non si conosce la sua sagoma, e la fila di fiocchi del
+   *  prossimo ostacolo — che arriva indietro fino a 27 unità, più del passo
+   *  minimo del profilo "Toro" — non potrebbe sapere se sta finendo dentro di
+   *  lui. Record separato e non un oggetto per ramo perché la z va fatta
+   *  scorrere a ogni frame (`advance`) mentre il tipo no, e perché così
+   *  `copyCursor` non può creare due rami che condividono lo stesso oggetto. */
+  const lastObstacleKind: Record<Branch, ObstacleKind | undefined> = {
+    main: undefined,
+    left: undefined,
+    right: undefined,
+  };
   /** Il passo appena emesso su questo ramo era quello di una coppia stretta?
    *  Serve a impedire le CATENE: una coppia stretta è una figura di due
    *  ostacoli, e tre o quattro di fila al limite della traversabilità non
@@ -266,22 +377,32 @@ export function createSpawner(
     return fallback;
   }
 
-  /** Fila ad arco che insegna il salto: termina esattamente sull'ostacolo a terra
-   *  (l'ultimo fiocco coincide con esso), apice a trailArcHeight a metà fila. I
-   *  punti che cadrebbero prima dell'inizio del segmento, o prima dell'ostacolo
-   *  precedente, vengono scartati: senza questo secondo limite, quando il gap
-   *  fra due ostacoli scende vicino al minimo giocabile una fila lunga potrebbe
-   *  sporgere all'indietro oltre l'ostacolo precedente e interfogliarsi con la
-   *  sua stessa fila ad arco, rompendo la forma unimodale di entrambe. */
+  /** Fila ad arco che insegna il salto: punta all'ostacolo a terra, apice a
+   *  trailArcHeight a metà fila. I punti che cadrebbero prima dell'inizio del
+   *  segmento, o prima dell'ostacolo precedente, vengono scartati: senza questo
+   *  secondo limite, quando il gap fra due ostacoli scende vicino al minimo
+   *  giocabile una fila lunga potrebbe sporgere all'indietro oltre l'ostacolo
+   *  precedente e interfogliarsi con la sua stessa fila ad arco, rompendo la
+   *  forma unimodale di entrambe.
+   *
+   *  La fila terminava per costruzione DENTRO l'ostacolo (l'ultimo punto ha
+   *  t = 1, cioè z dell'ostacolo e quota 0: le due sagome coincidevano). Ora
+   *  quel punto viene saltato, e con lui ogni altro punto sepolto. Saltarlo e
+   *  proseguire, invece di spostarlo: il buco che lascia è occupato
+   *  dall'ostacolo stesso, quindi la fila continua a leggersi come "questa
+   *  rampa finisce lì", mentre spostare il fiocco significherebbe o rialzarlo
+   *  sopra l'ostacolo — rompendo la forma unimodale, con un fiocco che risale
+   *  all'improvviso dopo essere sceso — o arretrarlo, rompendo la spaziatura
+   *  costante che è ciò che rende la fila leggibile come una traiettoria. */
   function emitArcTrail(
-    obstacleZ: number,
+    obstacles: TrailObstacles,
     branch: Branch,
     count: number,
     floorZ: number,
     out: Entity[],
   ): void {
     for (let i = 0; i < count; i++) {
-      const z = obstacleZ - (count - 1 - i) * trailSpacing;
+      const z = obstacles.z - (count - 1 - i) * trailSpacing;
       if (z < floorZ) continue;
       const t = count > 1 ? i / (count - 1) : 0.5;
       const rawY = trailArcHeight * Math.sin(Math.PI * t);
@@ -290,14 +411,18 @@ export function createSpawner(
       // residuo infinitesimale ma positivo farebbe sembrare l'ultimo fiocco
       // "in aria" e lo saldrebbe visivamente alla fila ad arco successiva.
       const y = Math.abs(rawY) < 1e-9 ? 0 : rawY;
+      if (flakeIsBuried(z, y, obstacles)) continue;
       emit(out, 'snowflake', 'pickup', branch, z, y);
     }
   }
 
   /** Fila bassa che insegna la scivolata: centrata sull'ostacolo sospeso, a quota
-   *  0 (sotto la sua base, spawn.overheadY). */
+   *  0 (sotto la sua base, spawn.overheadY). Il filtro anti-compenetrazione
+   *  non tocca MAI questa fila rispetto al proprio ostacolo — è esattamente il
+   *  caso in cui le quote non si sovrappongono — ma la fila si estende di
+   *  mezza lunghezza all'indietro, e lì può incontrare l'ostacolo precedente. */
   function emitLowTrail(
-    obstacleZ: number,
+    obstacles: TrailObstacles,
     branch: Branch,
     count: number,
     startZ: number,
@@ -306,8 +431,9 @@ export function createSpawner(
   ): void {
     const half = (count - 1) / 2;
     for (let i = 0; i < count; i++) {
-      const z = obstacleZ + (i - half) * trailSpacing;
+      const z = obstacles.z + (i - half) * trailSpacing;
       if (z < startZ || z >= endZ) continue;
+      if (flakeIsBuried(z, 0, obstacles)) continue;
       emit(out, 'snowflake', 'pickup', branch, z, 0);
     }
   }
@@ -358,6 +484,7 @@ export function createSpawner(
       // prossimo, così due file non si interfogliano quando il gap è stretto
       // (vedi commento su emitArcTrail).
       let previousObstacleZ = lastObstacleZ[branch];
+      let previousObstacleKind = lastObstacleKind[branch];
       let previousGapTight = lastGapWasTight[branch];
 
       while (cursorZ < endZ) {
@@ -400,7 +527,7 @@ export function createSpawner(
         const gap = tight ? minTraversableGap * (1 + TRAVERSABILITY_EPSILON) : normalGap;
         previousGapTight = tight;
 
-        emit(out, kind, 'obstacle', branch, cursorZ, overhead ? CONFIG.spawn.overheadY : 0);
+        emit(out, kind, 'obstacle', branch, cursorZ, obstacleY(kind));
         firstObstacleFloorZ = undefined;
 
         // Ramo ricco: fila lunga (trailMin..trailMax). Ramo sgombro: fila corta
@@ -409,16 +536,41 @@ export function createSpawner(
           ? rng.int(trailMin, trailMax + 1)
           : rng.int(1, Math.ceil(trailMin / 2) + 1);
 
+        // I due ostacoli che questa fila può incrociare. `previousObstacleZ`
+        // arriva qui grezzo, NON limitato a startZ come il pavimento della
+        // fila: un ostacolo appena prima del bordo del segmento ha comunque
+        // una sagoma che sporge dentro il segmento, e un fiocco che ci finisce
+        // dentro è compenetrato quanto gli altri.
+        const trailObstacles: TrailObstacles = {
+          kind,
+          z: cursorZ,
+          previousKind: previousObstacleKind,
+          previousZ: previousObstacleZ,
+        };
         if (overhead) {
-          emitLowTrail(cursorZ, branch, trailCount, startZ, endZ, out);
+          emitLowTrail(trailObstacles, branch, trailCount, startZ, endZ, out);
         } else {
-          emitArcTrail(cursorZ, branch, trailCount, Math.max(startZ, previousObstacleZ), out);
+          emitArcTrail(
+            trailObstacles,
+            branch,
+            trailCount,
+            Math.max(startZ, previousObstacleZ),
+            out,
+          );
         }
         previousObstacleZ = cursorZ;
+        previousObstacleKind = kind;
 
         // Il ramo ricco di un bivio è più generoso — è ciò che rende la scelta
         // una scelta vera — ma i buff comuni nascono ovunque: il design §7
         // colloca il cristallo "a terra sul tracciato", non dentro un bivio.
+        // Il buff nasce a metà del passo, cioè ad almeno 13 unità dai due
+        // ostacoli che lo circondano (il passo minimo è 26 nel profilo più
+        // duro): quattro volte la distanza che servirebbe a compenetrare il
+        // crepaccio, la sagoma più profonda del gioco. Non serve filtrarlo, e
+        // un filtro qui costerebbe: la sua estrazione (`pickBuffKind`)
+        // consuma numeri pseudocasuali, quindi saltarla cambierebbe la
+        // sequenza e con essa ogni corsa a parità di seed.
         const chance = rich ? CONFIG.spawn.buffChance : CONFIG.spawn.commonBuffChance;
         if (rng.chance(chance)) {
           const buffZ = cursorZ + gap / 2;
@@ -430,6 +582,7 @@ export function createSpawner(
 
       nextObstacleZ[branch] = cursorZ;
       lastObstacleZ[branch] = previousObstacleZ;
+      lastObstacleKind[branch] = previousObstacleKind;
       lastGapWasTight[branch] = previousGapTight;
     },
     advance(moved: number): void {
@@ -443,6 +596,10 @@ export function createSpawner(
     copyCursor(from: Branch, to: Branch, minZ: number): void {
       nextObstacleZ[to] = Math.max(minZ, nextObstacleZ[from]);
       lastObstacleZ[to] = lastObstacleZ[from];
+      // La sagoma dell'ultimo ostacolo segue la sua z: il ramo che eredita il
+      // cursore eredita anche l'ingombro da cui la prima fila deve stare
+      // fuori, altrimenti il fiocco compenetrato ricomparirebbe a ogni bivio.
+      lastObstacleKind[to] = lastObstacleKind[from];
       // Anche la memoria della coppia stretta segue il cursore: un ramo che
       // eredita un passo stretto non deve poterne aprire subito un altro.
       lastGapWasTight[to] = lastGapWasTight[from];
@@ -457,6 +614,9 @@ export function createSpawner(
       lastObstacleZ.main = -Infinity;
       lastObstacleZ.left = -Infinity;
       lastObstacleZ.right = -Infinity;
+      lastObstacleKind.main = undefined;
+      lastObstacleKind.left = undefined;
+      lastObstacleKind.right = undefined;
       lastGapWasTight.main = false;
       lastGapWasTight.left = false;
       lastGapWasTight.right = false;

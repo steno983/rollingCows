@@ -92,10 +92,14 @@ describe('worldYawFor', () => {
       expect(yaw).not.toBe(0);
 
       // Stessa X di vista che entities-view.ts calcola davvero per un'entità
-      // del ramo sinistro (worldToViewX + entityWorldOffsetX), a una
-      // profondità rappresentativa della zona del bivio.
-      const sceneX = worldToViewX(entityWorldOffsetX(path, { branch: 'left' }));
-      const z = 15;
+      // del ramo sinistro (worldToViewX + entityWorldOffsetX). La z va
+      // passata, ed è la stessa usata nella rotazione: lo scostamento di
+      // un'entità dipende da dove sta il suo pezzo di strada a QUELLA
+      // distanza, e a monte della biforcazione i due rami coincidono ancora
+      // col tronco. Si sceglie un punto oltre la fine dell'apertura, dove il
+      // ramo esiste come strada separata.
+      const z = CONFIG.path.commitZ / 2 + CONFIG.path.forkBlendZ + 10;
+      const sceneX = worldToViewX(entityWorldOffsetX(path, { branch: 'left', z }));
       // Stessa rotazione Y che subirà il gruppo-mondo in three.js
       // (convenzione standard: x' = x·cosθ + z·sinθ per rotation.y = θ).
       const rotatedX = sceneX * Math.cos(yaw) + z * Math.sin(yaw);
@@ -109,8 +113,8 @@ describe('worldYawFor', () => {
       activeBranch: 'right',
     });
     const yaw = worldYawFor(path);
-    const sceneX = worldToViewX(entityWorldOffsetX(path, { branch: 'right' }));
-    const z = 15;
+    const z = CONFIG.path.commitZ / 2 + CONFIG.path.forkBlendZ + 10;
+    const sceneX = worldToViewX(entityWorldOffsetX(path, { branch: 'right', z }));
     const rotatedX = sceneX * Math.cos(yaw) + z * Math.sin(yaw);
     expect(Math.abs(rotatedX)).toBeLessThan(Math.abs(sceneX));
   });
@@ -192,8 +196,9 @@ describe('riduzione del movimento', () => {
     // Stessa verifica geometrica del test a piena ampiezza: la riduzione
     // cambia quanto, mai cosa.
     const yaw = worldYawFor(path, curveMotionScale(true));
-    const sceneX = worldToViewX(entityWorldOffsetX(path, { branch: 'left' }));
-    const rotatedX = sceneX * Math.cos(yaw) + 15 * Math.sin(yaw);
+    const z = CONFIG.path.commitZ / 2 + CONFIG.path.forkBlendZ + 10;
+    const sceneX = worldToViewX(entityWorldOffsetX(path, { branch: 'left', z }));
+    const rotatedX = sceneX * Math.cos(yaw) + z * Math.sin(yaw);
     expect(Math.abs(rotatedX)).toBeLessThan(Math.abs(sceneX));
   });
 });

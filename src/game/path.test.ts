@@ -3,9 +3,10 @@ import type { EventBus, GameEvents } from '../core/events';
 import { createEventBus } from '../core/events';
 import { createRng } from '../core/rng';
 import { CONFIG } from './config';
-import type { PathState } from './path';
+import type { ForkPhase, PathState } from './path';
 import {
   activeBranchOf,
+  branchCenterAt,
   branchIsSolid,
   branchOffsetX,
   chooseBranch,
@@ -18,6 +19,9 @@ import {
 import { speedAt } from './speed';
 
 const STEP = 1 / 60;
+
+/** I due rami, per i test che devono provarli entrambi. */
+const SIDES = ['left', 'right'] as const;
 
 /** Bus di test: accumula i payload di un evento, nell'ordine di emissione. */
 function recordedBus<K extends keyof GameEvents>(
@@ -87,7 +91,9 @@ describe('createPath', () => {
     const path: PathState = createPath();
     expect(path.phase).toBe('none');
     expect(activeBranchOf(path)).toBe('main');
-    expect(path.offsetX).toBe(0);
+    // Pista dritta: senza bivio nessun ramo è scostato, a nessuna distanza.
+    expect(branchCenterAt(path, 'left', 60)).toBe(0);
+    expect(branchCenterAt(path, 'right', 60)).toBe(0);
     expect(choiceOf(path)).toBeNull();
   });
 });
@@ -115,11 +121,11 @@ describe('updatePath — comparsa del bivio', () => {
     const { bus, payloads } = recordedBus('fork:appeared');
     let path: PathState = createPath();
     const rng = createRng(1);
-    const totalToClose =
-      CONFIG.path.minGap +
-      CONFIG.path.previewZ +
-      CONFIG.path.realignSeconds * CONFIG.world.startSpeed +
-      5;
+    // Il riallineamento non dura più un TEMPO ma una DISTANZA fissa
+    // (forkBlendZ: si chiude quando il ramo scelto è arrivato al centro, vedi
+    // applyRealignment), quindi il costo di un bivio in unità non dipende più
+    // dalla velocità.
+    const totalToClose = CONFIG.path.minGap + CONFIG.path.previewZ + CONFIG.path.forkBlendZ + 5;
     path = travel(path, totalToClose, CONFIG.world.startSpeed, rng, bus);
     expect(path.phase).toBe('none');
     expect(payloads.length).toBe(1);
@@ -237,7 +243,7 @@ describe('branchIsSolid', () => {
 });
 
 describe('riallineamento', () => {
-  it('finisce sempre con offsetX esattamente 0, phase none, activeBranch main', () => {
+  it('finisce con la pista dritta a OGNI distanza, phase none, activeBranch main', () => {
     const bus = createEventBus();
     let path: PathState = createPath();
     const rng = createRng(3);
@@ -245,44 +251,64 @@ describe('riallineamento', () => {
     chooseBranch(path, 'right');
     path = travel(
       path,
-      CONFIG.path.previewZ + CONFIG.path.realignSeconds * CONFIG.world.startSpeed + 5,
+      CONFIG.path.previewZ + CONFIG.path.forkBlendZ + 5,
       CONFIG.world.startSpeed,
       rng,
       bus,
     );
 
     expect(path.phase).toBe('none');
-    expect(path.offsetX).toBe(0);
     expect(activeBranchOf(path)).toBe('main');
+    // Non più "offsetX è 0" (quel campo non esiste più: non c'è nessuna
+    // traslazione del mondo da riportare a zero) ma la cosa che quella
+    // condizione voleva davvero dire — la strada è dritta — verificata dove
+    // conta, cioè a ogni distanza e non solo sotto la mucca.
+    for (let z = 0; z <= 240; z += 4) {
+      expect(branchCenterAt(path, 'left', z)).toBe(0);
+      expect(branchCenterAt(path, 'right', z)).toBe(0);
+    }
   });
 
-  it('durante il riallineamento la posizione a schermo del ramo scelto converge al centro monotonamente', () => {
+  it('il ramo scelto converge al centro senza mai tornare indietro', () => {
     const bus = createEventBus();
     let path: PathState = createPath();
     const rng = createRng(3);
     path = travel(path, CONFIG.path.firstForkIn + 1, CONFIG.world.startSpeed, rng, bus);
     chooseBranch(path, 'right');
-    path = travel(path, CONFIG.path.previewZ, CONFIG.world.startSpeed, rng, bus);
-    expect(path.phase === 'committed' || path.phase === 'realigning').toBe(true);
+    path = travel(
+      path,
+      CONFIG.path.previewZ - CONFIG.path.commitZ - 1,
+      CONFIG.world.startSpeed,
+      rng,
+      bus,
+    );
+    expect(path.phase).toBe('approaching');
 
-    // "Posizione a schermo del ramo scelto" = branchOffsetX('right') + offsetX:
-    // parte da +branchSeparation (ramo ancora tutto spostato) e deve scendere
-    // verso 0 senza mai risalire. Il confronto vale solo MENTRE il ramo è
-    // ancora 'right': appena il riallineamento finisce, activeBranch torna a
-    // 'main' e offsetX viene azzerato nello stesso frame (fine di un
-    // riallineamento, non un nuovo movimento da misurare), quindi il loop si
-    // ferma lì e verifica l'esito finale a parte.
-    const chosenOffset = CONFIG.path.branchSeparation; // branchOffsetX(path, 'right')
-    let previous = Math.abs(chosenOffset + path.offsetX);
-    for (let i = 0; i < 60; i++) {
+    // Lo scostamento PEGGIORE del ramo scelto su tutta la pista visibile, non
+    // quello alla sola quota della mucca: è la misura che si accorge di una
+    // pista storta in lontananza mentre sotto il muso è centrata, cioè
+    // esattamente il difetto («la strada si deforma») che il controllo a
+    // z = 0 da solo lasciava passare.
+    const worstDeviation = (state: PathState): number => {
+      let worst = 0;
+      for (let z = 0; z <= 240; z += 4) {
+        worst = Math.max(worst, Math.abs(branchCenterAt(state, 'right', z)));
+      }
+      return worst;
+    };
+
+    let previous = worstDeviation(path);
+    expect(previous).toBeCloseTo(CONFIG.path.branchSeparation, 6);
+    let guard = 0;
+    while (path.phase !== 'none' && guard < 5000) {
       path = updatePath(path, CONFIG.world.startSpeed * STEP, CONFIG.world.startSpeed, rng, bus);
-      if (path.phase === 'none') break;
-      const current = Math.abs(chosenOffset + path.offsetX);
+      const current = worstDeviation(path);
       expect(current).toBeLessThanOrEqual(previous + 1e-9);
       previous = current;
+      guard += 1;
     }
     expect(path.phase).toBe('none');
-    expect(path.offsetX).toBe(0);
+    expect(previous).toBe(0);
   });
 });
 
@@ -315,7 +341,7 @@ describe('simulazione lunga', () => {
       path = updatePath(path, travelled, speed, rng, bus);
       distance += travelled;
 
-      if (!wasNone && path.phase === 'none' && path.offsetX === 0) {
+      if (!wasNone && path.phase === 'none') {
         expect(forkOpen).toBe(true);
         forkOpen = false;
         closedCount += 1;
@@ -325,7 +351,7 @@ describe('simulazione lunga', () => {
     }
 
     // Con la curva di velocità di CONFIG.world (18→40 u/s) e gapPerSpeed=6, il
-    // costo di un bivio (minGap + gapPerSpeed*speed + previewZ + realignSeconds*speed)
+    // costo di un bivio (minGap + gapPerSpeed*speed + previewZ + forkBlendZ)
     // cresce con la velocità: in 60 s simulati un seed qualsiasi ne produce
     // stabilmente 4 (verificato su più seed). La soglia resta comunque sotto
     // quel valore, per non legare il test a un numero magico ottenuto per tentativi.
@@ -494,6 +520,192 @@ describe('scelta anticipata', () => {
   });
 });
 
+/**
+ * I test che mancavano, ed è il difetto per cui questa revisione esiste. Il
+ * proprietario, guardando il gioco: prima «la curva ha un effetto
+ * stranissimo», la mucca che sembra finire fuori pista; poi, corretto quello,
+ * «la telecamera curva bene ma poi la strada si deforma e viene presa la
+ * strada di sinistra come strada principale, con un orrendo glitch grafico».
+ *
+ * Due difetti diversi con la stessa radice: la posizione di un pezzo di strada
+ * calcolata in due modi che non coincidono. La prima volta erano l'apertura
+ * della Y (geometrica, dipendente da z) e una traslazione del mondo su base
+ * temporale: fino a 4,01 unità di scarto fra la mucca e il centro del proprio
+ * nastro. La seconda volta la traslazione era corretta a z = 0 ma restava una
+ * sola per TUTTE le z, mentre l'apertura dipende da z: la pista era centrata
+ * sotto la mucca, aveva un GOMITO otto unità più avanti e restava scostata di
+ * 1,3 unità per tutto il resto della vista.
+ *
+ * Da qui la forma dei due test: il primo misura la mucca (z = 0), il secondo
+ * misura TUTTA la pista visibile. Il primo da solo era verde anche mentre il
+ * secondo difetto era in produzione — ed è esattamente il motivo per cui il
+ * secondo esiste.
+ */
+describe('allineamento della mucca al centro del nastro attivo', () => {
+  /** Distanza fra la mucca (x = 0) e il centro del nastro su cui sta
+   *  correndo, alla sua stessa quota (z = 0). */
+  function playerOffTrack(path: PathState): number {
+    return Math.abs(branchCenterAt(path, activeBranchOf(path), 0));
+  }
+
+  /** Un dodicesimo della larghezza della pista: la soglia sotto la quale uno
+   *  scostamento non si vede. È comunque larghissima rispetto al valore reale,
+   *  che è 0 esatto. */
+  const MAX_OFF_TRACK = 0.25;
+
+  it('in ogni frame di un bivio completo, a ogni velocità e su entrambi i rami', () => {
+    const speeds = [CONFIG.world.startSpeed, 28, CONFIG.world.maxSpeed];
+    let worst = 0;
+    let detail = '';
+    let realignFrames = 0;
+
+    for (const speed of speeds) {
+      for (const side of SIDES) {
+        for (let seed = 1; seed <= 5; seed++) {
+          const bus = createEventBus();
+          const rng = createRng(seed);
+          let path: PathState = createPath();
+          let chosen = false;
+          let closed = false;
+
+          for (let frame = 0; frame < 20000 && !closed; frame++) {
+            path = updatePath(path, speed * STEP, speed, rng, bus);
+            if (!chosen && path.phase === 'approaching') {
+              chooseBranch(path, side);
+              chosen = true;
+            }
+            if (path.phase === 'realigning') realignFrames += 1;
+            closed = chosen && path.phase === 'none' && frame > 0;
+
+            const off = playerOffTrack(path);
+            if (off > worst) {
+              worst = off;
+              detail = `${speed} u/s, ramo ${side}, seed ${seed}, fase ${path.phase}`;
+            }
+          }
+
+          // Il bivio si è davvero chiuso, altrimenti il test misurerebbe un
+          // allineamento perfetto su un bivio mai avvenuto.
+          expect(closed).toBe(true);
+        }
+      }
+    }
+
+    expect(realignFrames).toBeGreaterThan(1000);
+    expect(`${worst.toFixed(3)} — ${detail}`).toBe(
+      worst <= MAX_OFF_TRACK ? `${worst.toFixed(3)} — ${detail}` : `<= ${MAX_OFF_TRACK}`,
+    );
+  });
+});
+
+/**
+ * L'invariante FORTE, quella che il controllo a z = 0 non copre: la strada su
+ * cui si corre non deve solo passare sotto la mucca, deve essere DRITTA.
+ *
+ * Si misura il centro del ramo attivo a ogni z campionata fino all'orizzonte,
+ * in ogni frame di un bivio completo, e si chiedono tre cose:
+ *  - continuità: fra un frame e il successivo nessuna z si sposta più di
+ *    quanto la geometria consenta — è il test dello SCATTO, e vale anche
+ *    attraverso i cambi di fase, dove lo scatto è esattamente ciò che ci si
+ *    aspetta di trovare se qualcosa non torna;
+ *  - convergenza monotona: lo scostamento PEGGIORE su tutta la pista non
+ *    risale mai;
+ *  - chiusura pulita: nel primo frame senza bivio la pista vale 0 a ogni z, e
+ *    quindi la differenza con l'ultimo frame di bivio è nulla.
+ */
+describe('la strada su cui si corre è dritta, non solo centrata', () => {
+  const HORIZON = CONFIG.world.chunkLength * CONFIG.world.chunkCount;
+  const Z_SAMPLES: readonly number[] = Array.from({ length: 61 }, (_, i) => (i * HORIZON) / 60);
+
+  /**
+   * Tetto allo spostamento laterale di una z fra due frame. Deriva dalla
+   * formula (branchCenterAt): il centro è branchSeparation per l'apertura per
+   * il raddrizzamento, e in un frame si percorrono al più maxSpeed * STEP
+   * unità. Le due smoothstep hanno pendenza al più 1,5 diviso la loro
+   * lunghezza (forkBlendZ per l'apertura, commitZ per il raddrizzamento) e si
+   * sommano nel caso peggiore.
+   */
+  const MAX_STEP =
+    CONFIG.path.branchSeparation *
+    CONFIG.world.maxSpeed *
+    STEP *
+    1.5 *
+    (1 / CONFIG.path.forkBlendZ + 1 / CONFIG.path.commitZ);
+
+  it('nessuno scatto a nessuna z, nemmeno ai cambi di fase (3 velocità x 2 rami x 5 seed)', () => {
+    let worstStep = 0;
+    let stepDetail = '';
+    let worstClosure = 0;
+    let closures = 0;
+
+    for (const speed of [CONFIG.world.startSpeed, 28, CONFIG.world.maxSpeed]) {
+      for (const side of SIDES) {
+        for (let seed = 1; seed <= 5; seed++) {
+          const bus = createEventBus();
+          const rng = createRng(seed);
+          let path: PathState = createPath();
+          let chosen = false;
+          let previous: number[] | null = null;
+          let previousPhase: ForkPhase = 'none';
+          let previousWorst = Number.POSITIVE_INFINITY;
+
+          for (let frame = 0; frame < 20000; frame++) {
+            path = updatePath(path, speed * STEP, speed, rng, bus);
+            if (!chosen && path.phase === 'approaching') {
+              chooseBranch(path, side);
+              chosen = true;
+            }
+            if (!chosen) continue;
+
+            // Il ramo che la mucca sta percorrendo: dopo la chiusura è il
+            // tronco, e la sua etichetta cambia — il pezzo di strada, no.
+            const branch = path.phase === 'none' ? 'main' : side;
+            const current = Z_SAMPLES.map((z) => branchCenterAt(path, branch, z));
+
+            if (previous !== null) {
+              for (let i = 0; i < current.length; i++) {
+                const before = previous[i];
+                const now = current[i];
+                if (before === undefined || now === undefined) throw new Error('campione mancante');
+                const step = Math.abs(now - before);
+                if (step > worstStep) {
+                  worstStep = step;
+                  stepDetail = `${speed} u/s, ramo ${side}, seed ${seed}, z ${Z_SAMPLES[i]?.toFixed(0)}, ${previousPhase} -> ${path.phase}`;
+                }
+                if (previousPhase === 'realigning' && path.phase === 'none') {
+                  worstClosure = Math.max(worstClosure, step);
+                }
+              }
+            }
+
+            // Lo scostamento peggiore su tutta la pista non risale mai.
+            const worstNow = current.reduce((max, c) => Math.max(max, Math.abs(c)), 0);
+            expect(worstNow).toBeLessThanOrEqual(previousWorst + 1e-9);
+            previousWorst = worstNow;
+
+            if (previousPhase === 'realigning' && path.phase === 'none') {
+              closures += 1;
+              // Chiusura: pista dritta a ogni z, non "quasi".
+              for (const c of current) expect(c).toBe(0);
+              break;
+            }
+            previous = current;
+            previousPhase = path.phase;
+          }
+        }
+      }
+    }
+
+    expect(closures).toBe(30);
+    expect(worstClosure).toBe(0);
+    expect(`${worstStep.toFixed(3)} — ${stepDetail}`).toBe(
+      worstStep <= MAX_STEP
+        ? `${worstStep.toFixed(3)} — ${stepDetail}`
+        : `<= ${MAX_STEP.toFixed(3)}`,
+    );
+  });
+});
+
 describe('realignProgress', () => {
   it('vale 0 fuori dal riallineamento, sale da 0 a 1 durante, e torna 0 alla chiusura', () => {
     const bus = createEventBus();
@@ -519,7 +731,10 @@ describe('realignProgress', () => {
     // ogni riallineamento.
     const first = seen[0];
     if (first === undefined) throw new Error('nessun frame di riallineamento');
-    const nominalStep = STEP / CONFIG.path.realignSeconds;
+    // L'avanzamento è una frazione di DISTANZA (forkBlendZ), non di tempo:
+    // il passo nominale per frame è quindi quanto si percorre in un frame
+    // diviso la lunghezza dell'apertura.
+    const nominalStep = (speed * STEP) / CONFIG.path.forkBlendZ;
     expect(first).toBeGreaterThan(0);
     expect(first).toBeLessThanOrEqual(nominalStep + 1e-9);
     for (let i = 1; i < seen.length; i++) {

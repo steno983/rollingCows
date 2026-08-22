@@ -769,7 +769,13 @@ function collectPickup(game: GameState, entity: Entity, kind: PickupKind): void 
   if (kind !== 'snowflake') applyBuff(game.buffs, kind, game.bus);
 
   if (kind === 'star' || kind === 'magnet' || kind === 'bell') {
-    game.bus.emit('pickup:collected', { kind, charge: 0 });
+    game.bus.emit('pickup:collected', {
+      kind,
+      charge: 0,
+      branch: entity.branch,
+      z: entity.z,
+      y: entity.y,
+    });
     return;
   }
 
@@ -781,13 +787,20 @@ function collectPickup(game: GameState, entity: Entity, kind: PickupKind): void 
   const chargeBefore = game.avalanche.charge + game.avalanche.carryOver;
   addCharge(game.avalanche, base, game.bus);
   const chargeAfter = game.avalanche.charge + game.avalanche.carryOver;
-  game.bus.emit('pickup:collected', { kind, charge: chargeAfter - chargeBefore });
+  game.bus.emit('pickup:collected', {
+    kind,
+    charge: chargeAfter - chargeBefore,
+    branch: entity.branch,
+    z: entity.z,
+    y: entity.y,
+  });
 }
 
 function hitObstacle(game: GameState, entity: Entity, kind: ObstacleKind): void {
   const multiplier = effectiveMultiplier(game);
   const branch = entity.branch;
   const z = entity.z;
+  const y = entity.y;
 
   if (canSmash(game.avalanche, kind)) {
     entity.alive = false;
@@ -796,7 +809,7 @@ function hitObstacle(game: GameState, entity: Entity, kind: ObstacleKind): void 
     // cosa da giocare nei secondi di invulnerabilità, in cui nessun input
     // conta e finora si guardava soltanto.
     addBonus(game.score, registerSmash(game.score), multiplier);
-    game.bus.emit('obstacle:hit', { kind, outcome: 'smashed', branch, z });
+    game.bus.emit('obstacle:hit', { kind, outcome: 'smashed', branch, z, y });
     return;
   }
 
@@ -807,7 +820,7 @@ function hitObstacle(game: GameState, entity: Entity, kind: ObstacleKind): void 
 
   if (consumeShield(game.buffs, game.bus)) {
     entity.alive = false;
-    game.bus.emit('obstacle:hit', { kind, outcome: 'shielded', branch, z });
+    game.bus.emit('obstacle:hit', { kind, outcome: 'shielded', branch, z, y });
     return;
   }
 
@@ -835,12 +848,12 @@ function hitObstacle(game: GameState, entity: Entity, kind: ObstacleKind): void 
     // L'ostacolo perdonato sparisce: altrimenti colpirebbe di nuovo il frame dopo.
     entity.alive = false;
     applyForgivenessPenalty(game.avalanche, game.bus);
-    game.bus.emit('obstacle:hit', { kind, outcome: 'forgiven', branch, z });
+    game.bus.emit('obstacle:hit', { kind, outcome: 'forgiven', branch, z, y });
     return;
   }
 
   game.alive = false;
-  game.bus.emit('obstacle:hit', { kind, outcome: 'death', branch, z });
+  game.bus.emit('obstacle:hit', { kind, outcome: 'death', branch, z, y });
 
   // Il salvataggio del record NON sta più qui: "il giocatore ha sbattuto" e
   // "scrivi su disco" erano la stessa istruzione, e chi abbandonava la corsa

@@ -4,7 +4,7 @@ import { createRng, type Rng } from '../core/rng';
 import { CONFIG } from '../game/config';
 import {
   activeBranchOf,
-  branchOffsetX,
+  branchCenterAt,
   type ForkPhase,
   forkZOf,
   type PathState,
@@ -384,40 +384,26 @@ const trackCenterScratch: [number, number] = [0, 0];
 
 /**
  * Scostamento laterale del CENTRO di ciascuno dei due nastri della pista, a
- * una distanza z data, secondo lo stato del percorso: coincidono (nastro
- * unico) prima della biforcazione o quando non c'è alcun bivio; da path.forkZ
- * in poi si aprono PROGRESSIVAMENTE verso i due rami. Logica pura, testabile
- * senza three.
+ * una distanza z data: coincidono (nastro unico) prima della biforcazione o
+ * quando non c'è alcun bivio, e da path.forkZ in poi si aprono verso i due
+ * rami.
  *
- * L'apertura graduale non è un abbellimento. Con la separazione applicata di
- * colpo, il centro di ciascun nastro saltava di branchSeparation = 6 unità
- * nello spazio di una sola riga di geometria (TRACK_STEP = 4 unità: una
- * pendenza di 56°), lasciando due unità di neve non battuta fra il bordo del
- * tronco e il bordo interno di ogni ramo. Il risultato non si leggeva come un
- * bivio ma come due piste parallele comparse di fianco alla propria — e per
- * tutta la fase impegnata la mucca correva nel corridoio vuoto in mezzo.
- * Con la smoothstep su path.forkBlendZ = 28 unità il rapporto fra separazione
- * e lunghezza dell'apertura è ~1:4,7, quello di uno svincolo reale, e lo
- * scostamento massimo fra due righe adiacenti scende a 6 * 1,5 / 28 * 4 ≈ 1,29
- * unità (la derivata della smoothstep vale al più 1,5 / lunghezza).
+ * Questo modulo non decide più nulla di quella geometria: la chiede a
+ * `branchCenterAt` (game/path.ts), che è la sola risposta alla domanda "dov'è
+ * questo pezzo di strada" e che rispondono anche le entità che ci stanno sopra
+ * (render/entities-view.ts). Finché il calcolo viveva qui in copia privata, la
+ * pista si apriva secondo la geometria e il mondo traslava secondo un'altra
+ * curva: la mucca finiva fino a 4,01 unità fuori dal proprio nastro. Poi, con
+ * la traslazione corretta ma pur sempre unica per tutte le z, restava un
+ * GOMITO a otto unità dal muso e 1,3 unità di scostamento per tutto il resto
+ * della vista — la pista che «si deforma». Ora il ramo scelto è dritto a x = 0
+ * per ogni z già prima della biforcazione, e non c'è più alcun termine da
+ * sommare.
  */
 export function trackCenterOffsets(path: PathState, z: number): readonly [number, number] {
-  if (path.phase === 'none' || z <= path.forkZ) {
-    trackCenterScratch[0] = path.offsetX;
-    trackCenterScratch[1] = path.offsetX;
-    return trackCenterScratch;
-  }
-  const t = smoothstep(path.forkZ, path.forkZ + CONFIG.path.forkBlendZ, z);
-  trackCenterScratch[0] = branchOffsetX(path, 'left') * t + path.offsetX;
-  trackCenterScratch[1] = branchOffsetX(path, 'right') * t + path.offsetX;
+  trackCenterScratch[0] = branchCenterAt(path, 'left', z);
+  trackCenterScratch[1] = branchCenterAt(path, 'right', z);
   return trackCenterScratch;
-}
-
-function smoothstep(edge0: number, edge1: number, x: number): number {
-  const span = edge1 - edge0;
-  if (span <= 0) return x <= edge0 ? 0 : 1;
-  const t = Math.min(1, Math.max(0, (x - edge0) / span));
-  return t * t * (3 - 2 * t);
 }
 
 function createTrackGeometry(): THREE.BufferGeometry {
@@ -525,9 +511,10 @@ export function trackHalfWidths(path: PathState): readonly [number, number] {
 /**
  * Ultimo stato del percorso da cui la geometria della pista è stata scritta.
  * Tutto ciò che entra nel calcolo di una riga sta qui dentro: i due centri
- * dipendono da phase, forkZ e offsetX (e da forkBlendZ, che è una costante di
- * configurazione), le due semilarghezze da phase, activeBranch e
- * realignProgress.
+ * dipendono da phase, forkZ e activeBranch (l'apertura e il raddrizzamento si
+ * ricavano da quelli, vedi game/path.ts, branchCenterAt; forkBlendZ e commitZ
+ * sono costanti di configurazione), le due semilarghezze da phase,
+ * activeBranch e realignProgress.
  */
 interface TrackGeometryKey {
   phase: ForkPhase;
@@ -535,7 +522,6 @@ interface TrackGeometryKey {
    *  un'unione discriminata, vedi game/path.ts) e la cache confronta ciò che
    *  gli accessori restituiscono, non un segnaposto. */
   forkZ: number | null;
-  offsetX: number;
   realignProgress: number;
   activeBranch: Branch;
 }
@@ -544,13 +530,13 @@ interface TrackGeometryKey {
  *  il primo confronto fallisce sempre e la geometria viene scritta almeno una
  *  volta, senza bisogno di un flag "prima volta" a parte. */
 function createTrackGeometryKey(): TrackGeometryKey {
-  return { phase: 'none', forkZ: NaN, offsetX: 0, realignProgress: 0, activeBranch: 'main' };
+  return { phase: 'none', forkZ: NaN, realignProgress: 0, activeBranch: 'main' };
 }
 
 /**
  * Riscrive le 61 righe del nastro. Salta tutto se lo stato del percorso non è
  * cambiato: fuori dai bivi — cioè la maggior parte del tempo — phase è 'none' e
- * offsetX è 0 a ogni frame, quindi il risultato sarebbe identico al precedente
+ * forkZ è null a ogni frame, quindi il risultato sarebbe identico al precedente
  * e si spendevano 244 setXYZ più l'upload del buffer alla GPU per riscrivere
  * gli stessi numeri.
  */
@@ -565,7 +551,6 @@ function updateTrackGeometry(
   if (
     last.phase === path.phase &&
     last.forkZ === forkZ &&
-    last.offsetX === path.offsetX &&
     last.realignProgress === realignProgress &&
     last.activeBranch === activeBranch
   ) {
@@ -573,7 +558,6 @@ function updateTrackGeometry(
   }
   last.phase = path.phase;
   last.forkZ = forkZ;
-  last.offsetX = path.offsetX;
   last.realignProgress = realignProgress;
   last.activeBranch = activeBranch;
 

@@ -96,9 +96,14 @@ describe('createVoxelPool — fisica dei cubetti', () => {
   it('il mondo che scorre trascina indietro i cubetti', () => {
     const pool = createVoxelPool(8, 0.25);
     pool.spawn(0, 0, 0, 0, 0, 0, WHITE, 5);
-    for (let step = 0; step < 60; step += 1) pool.update(1 / 60, 20);
+    // Solo 18 passi (0,3 s): questo cubetto nasce a terra e fermo, quindi si
+    // addormenta al primo frame e la sua vita viene troncata a 0,35 s (vedi
+    // GROUND_REST_LIFE). Prima ne bastavano 60 perché un cubetto immobile
+    // restava a bordo del mondo per tutti e 5 i secondi di vita nominale, ed è
+    // esattamente il comportamento che faceva sembrare i detriti incastrati.
+    for (let step = 0; step < 18; step += 1) pool.update(1 / 60, 20);
     pool.mesh.getMatrixAt(0, scratch);
-    expect(scratch.elements[14] ?? 0).toBeLessThan(-15);
+    expect(scratch.elements[14] ?? 0).toBeLessThan(-5);
   });
 
   it('gli slot morti sono nascosti con scala 0', () => {
@@ -109,6 +114,86 @@ describe('createVoxelPool — fisica dei cubetti', () => {
     expect(scratch.elements[0]).toBe(0);
     expect(scratch.elements[5]).toBe(0);
     expect(scratch.elements[10]).toBe(0);
+  });
+});
+
+describe('createVoxelPool — nessun detrito incastrato', () => {
+  function slotScale(pool: VoxelPool, slot: number): number {
+    pool.mesh.getMatrixAt(slot, scratch);
+    return scratch.elements[0] ?? 0;
+  }
+
+  /** Secondi impiegati dall'unico cubetto vivo per sparire. */
+  function secondsToVanish(pool: VoxelPool, worldSpeed: number): number {
+    for (let step = 1; step <= 600; step += 1) {
+      pool.update(1 / 60, worldSpeed);
+      if (pool.activeCount === 0) return step / 60;
+    }
+    return Number.POSITIVE_INFINITY;
+  }
+
+  it('un cubetto già fermo a terra sparisce entro 0,4 s, non dopo la sua vita nominale', () => {
+    // Il difetto: un cubetto addormentato scorre indietro alla stessa
+    // identica velocità dell'ostacolo che gli sta sopra, quindi resta
+    // conficcato lì dentro finché non scade. Con una vita nominale di 5
+    // secondi lo si vedeva viaggiare per mezzo schermo dentro un masso.
+    const pool = createVoxelPool(8, 0.25);
+    pool.spawn(0, 0, 0, 0.1, 0, 0.1, WHITE, 5);
+    expect(secondsToVanish(pool, 24)).toBeLessThan(0.4);
+  });
+
+  it('anche chi rimbalza prima di fermarsi non sopravvive alla sua sosta', () => {
+    const pool = createVoxelPool(8, 0.25);
+    pool.spawn(0, 0.6, 0, 1.5, 0, 0, WHITE, 5);
+    expect(secondsToVanish(pool, 24)).toBeLessThan(0.9);
+  });
+
+  it('un cubetto ancora in volo NON viene troncato: solo chi si è fermato', () => {
+    const pool = createVoxelPool(8, 0.25);
+    pool.spawn(0, 0.2, 0, 0, 14, 0, WHITE, 1.2);
+    for (let step = 0; step < 36; step += 1) pool.update(1 / 60, 24);
+    // Dopo 0,6 s è ancora in aria (sale per ~0,54 s) e quindi ancora vivo.
+    expect(pool.activeCount).toBe(1);
+  });
+
+  it('negli ultimi istanti il cubetto si rimpicciolisce invece di sparire di scatto', () => {
+    const pool = createVoxelPool(8, 0.25);
+    pool.spawn(0, 4, 0, 0, 6, 0, WHITE, 0.6);
+
+    pool.update(1 / 60, 0);
+    expect(slotScale(pool, 0)).toBeCloseTo(1);
+
+    // A 0,2 s dalla fine la dissolvenza (0,25 s) è già cominciata.
+    for (let step = 0; step < 24; step += 1) pool.update(1 / 60, 0);
+    const shrinking = slotScale(pool, 0);
+    expect(shrinking).toBeGreaterThan(0);
+    expect(shrinking).toBeLessThan(0.9);
+
+    for (let step = 0; step < 12; step += 1) pool.update(1 / 60, 0);
+    expect(slotScale(pool, 0)).toBeLessThan(shrinking);
+  });
+
+  it('un pool pieno di detriti a lunga vita si svuota comunque in meno di due secondi', () => {
+    // Rete di sicurezza sul difetto nel suo insieme: qualunque cosa succeda a
+    // terra, dopo un paio di secondi la scena non ha più un solo coriandolo.
+    const pool = createVoxelPool(256, 0.25);
+    for (let i = 0; i < 256; i += 1) {
+      pool.spawn(
+        i * 0.01,
+        0.5 + (i % 5) * 0.2,
+        0,
+        (i % 7) - 3,
+        (i % 11) * 0.5,
+        (i % 3) - 1,
+        WHITE,
+        6,
+      );
+    }
+    expect(pool.activeCount).toBe(256);
+
+    for (let step = 0; step < 120; step += 1) pool.update(1 / 60, 24);
+    expect(pool.activeCount).toBe(0);
+    expect(pool.mesh.count).toBe(0);
   });
 });
 

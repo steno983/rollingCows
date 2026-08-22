@@ -1,9 +1,11 @@
+import * as THREE from 'three';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { avalancheTrail, burstFromModel, MAX_BURST_VOXELS, resetDebris, starTrail } from './debris';
 import { MODELS, PALETTE, type VoxelModel } from './models';
 import { createVoxelPool } from './voxel-pool';
 
 const BIG_POOL = 500;
+const scratch = new THREE.Matrix4();
 
 function model(voxelCount: number): VoxelModel {
   const voxels: number[][] = [];
@@ -49,6 +51,49 @@ describe('burstFromModel', () => {
     burstFromModel(pool, MODELS.tree, 0, 0.5, 12, 9);
     expect(pool.activeCount).toBeGreaterThan(0);
     expect(pool.activeCount).toBeLessThanOrEqual(MAX_BURST_VOXELS);
+  });
+
+  // Il difetto: un burst nasce dentro il volume di un ostacolo e da lì
+  // cubetto e ostacolo scorrono all'indietro alla STESSA velocità, quindi la
+  // loro posizione relativa non cambia mai e il cubetto resta conficcato a
+  // sporgere dalle facce. `worldSpeed` 0 in questi test è esattamente il
+  // sistema di riferimento dell'ostacolo: quello che si misura qui è di
+  // quanto il cubetto se ne allontana per moto proprio.
+  it.each(['tree', 'rock', 'fence', 'snowflake'] as const)(
+    'in tre decimi di secondo i cubetti di %s escono dal volume in cui sono nati',
+    (kind) => {
+      const pool = createVoxelPool(BIG_POOL, 0.25);
+      burstFromModel(pool, MODELS[kind], 0, 0.8, 0, 4);
+      const born = pool.mesh.count;
+      expect(born).toBeGreaterThan(0);
+
+      for (let step = 0; step < 18; step += 1) pool.update(1 / 60, 0);
+      expect(pool.activeCount).toBe(born);
+
+      let closest = Number.POSITIVE_INFINITY;
+      for (let slot = 0; slot < born; slot += 1) {
+        pool.mesh.getMatrixAt(slot, scratch);
+        const distance = Math.hypot(
+          scratch.elements[12] ?? 0,
+          (scratch.elements[13] ?? 0) - 0.8,
+          scratch.elements[14] ?? 0,
+        );
+        if (distance < closest) closest = distance;
+      }
+      // Mezzo metro è il semi-spessore abbondante di un ostacolo del gioco:
+      // nemmeno il cubetto più lento è ancora dentro la sagoma.
+      expect(closest).toBeGreaterThan(0.8);
+    },
+  );
+
+  it('un secondo e mezzo dopo il burst non è rimasto vivo un solo cubetto', () => {
+    const pool = createVoxelPool(BIG_POOL, 0.25);
+    burstFromModel(pool, MODELS.tree, 0, 0.8, 0, 9);
+    expect(pool.activeCount).toBeGreaterThan(0);
+
+    for (let step = 0; step < 90; step += 1) pool.update(1 / 60, 24);
+    expect(pool.activeCount).toBe(0);
+    expect(pool.mesh.count).toBe(0);
   });
 });
 

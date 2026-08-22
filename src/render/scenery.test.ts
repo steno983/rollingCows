@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { CONFIG } from '../game/config';
 import { cameraDistanceFor } from './camera-rig';
+import { buildGeometry, MODELS } from './models';
 import { isSceneryVisible, type SceneryItem, sceneryForChunk, sceneryHalfSpread } from './scenery';
 
 describe('sceneryForChunk', () => {
@@ -33,6 +34,47 @@ describe('sceneryForChunk', () => {
         expect(Math.abs(item.x)).toBeLessThanOrEqual(CONFIG.render.scenery.maxLateral);
       }
     }
+  });
+
+  it('né dentro il RAMO ESTERNO di un bivio, ingombro e scala compresi', () => {
+    // Il test sopra guarda il corridoio dritto (semi-larghezza 2), che è il
+    // caso in cui c'è più spazio. Durante un bivio la pista arriva a
+    // branchSeparation + trackWidth / 2 = 8 unità di lato, e un elemento è
+    // posizionato per il suo CENTRO: conta l'ingombro, ruotato di uno yaw
+    // casuale (quindi la DIAGONALE) e moltiplicato per la scala, che arriva a
+    // maxScale. Con minLateral a 9 lo spigolo di una baita arrivava a 5,27,
+    // cioè 2,7 unità dentro il ramo esterno — più di metà della sua
+    // larghezza: è il "grande abete addosso alla pista" visto in
+    // registrazione, che di rotazione del mondo aveva solo la parte che si
+    // vede, non quella che c'è.
+    //
+    // L'ingombro si MISURA dai modelli invece di essere ricopiato qui: se un
+    // giorno la baita diventasse più larga, questo test se ne accorgerebbe.
+    const trackHalfSpan = CONFIG.path.branchSeparation + CONFIG.world.trackWidth / 2;
+    let worst = { inner: Number.POSITIVE_INFINITY, detail: '' };
+
+    for (const kind of ['tree', 'cabin', 'hay'] as const) {
+      const geometry = buildGeometry(MODELS[kind], CONFIG.render.voxelSize);
+      geometry.computeBoundingBox();
+      const box = geometry.boundingBox;
+      if (box === null) throw new Error(`nessun bounding box per ${kind}`);
+      // Semi-diagonale sul piano orizzontale: lo yaw è casuale (vedi
+      // sceneryForChunk), quindi qualunque angolo del modello può finire
+      // rivolto verso la pista.
+      const halfDiagonal = Math.hypot(
+        Math.max(Math.abs(box.min.x), Math.abs(box.max.x)),
+        Math.max(Math.abs(box.min.z), Math.abs(box.max.z)),
+      );
+      const inner =
+        CONFIG.render.scenery.minLateral - halfDiagonal * CONFIG.render.scenery.maxScale;
+      if (inner < worst.inner) worst = { inner, detail: kind };
+    }
+
+    expect(`${worst.inner.toFixed(2)} (${worst.detail})`).toBe(
+      worst.inner >= trackHalfSpan
+        ? `${worst.inner.toFixed(2)} (${worst.detail})`
+        : `>= ${trackHalfSpan}`,
+    );
   });
 
   it('distribuisce gli oggetti su entrambi i lati', () => {
@@ -115,13 +157,23 @@ describe('isSceneryVisible', () => {
 
   it('non toglie mai di scena ciò che la piegata del bivio sta portando dentro', () => {
     // Cono stretto (telefono in verticale) per avere un caso netto. Elemento
-    // lontano e molto laterale, fuori campo a mondo dritto: la rotazione
-    // massima del gruppo-mondo se lo porta davanti, e ignorarla lo farebbe
-    // sparire proprio durante il bivio.
+    // lontano e appena fuori campo a mondo dritto: la rotazione del
+    // gruppo-mondo se lo porta davanti, e ignorarla lo farebbe sparire proprio
+    // durante il bivio.
+    //
+    // "Appena fuori" si CALCOLA dal cono invece di essere un numero scelto a
+    // mano: il caso limite dipende da maxWorldTiltDeg, e con un -60 scritto
+    // qui il test misurava soltanto se quell'angolo fosse abbastanza grande da
+    // recuperare sessanta unità — cosa che smette di essere vera appena
+    // l'angolo cala, benché la proprietà ("il culling tiene conto della
+    // rotazione") resti intatta.
     const portrait = sceneryHalfSpread(60, 0.46);
     const yaw = (CONFIG.render.curve.maxWorldTiltDeg * Math.PI) / 180;
-    const x = -60;
     const z = 100;
+    const coneEdge =
+      (z + cameraDistanceFor(CONFIG.avalanche.maxSize)) * portrait +
+      CONFIG.render.scenery.cullMarginX;
+    const x = -(coneEdge + 1);
     expect(isSceneryVisible(x, z, 1, 0, portrait)).toBe(false);
     expect(isSceneryVisible(x, z, Math.cos(yaw), Math.sin(yaw), portrait)).toBe(true);
   });

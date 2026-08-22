@@ -94,9 +94,10 @@ const CAMERA_PULLBACK = cameraDistanceFor(CONFIG.avalanche.maxSize);
  * `yawCos`/`yawSin` sono coseno e seno della rotazione del gruppo-mondo
  * durante un bivio (vedi render/curve.ts), passati già calcolati perché sono
  * gli stessi per tutti gli elementi del frame. Tenerne conto non è un
- * dettaglio: 38° spostano di lato un elemento lontano di più di metà della sua
- * distanza, quindi ignorarli farebbe sparire proprio ciò che la piegata sta
- * portando dentro l'inquadratura.
+ * dettaglio: la rotazione sposta di lato un elemento lontano di z·sin(yaw) —
+ * 11 unità a 40 di distanza con l'attuale render.curve.maxWorldTiltDeg, 24
+ * con i 38° di prima — quindi ignorarla farebbe sparire proprio ciò che la
+ * piegata sta portando dentro l'inquadratura.
  */
 export function isSceneryVisible(
   viewX: number,
@@ -137,7 +138,8 @@ const CONTACT_SHADOW_LIFT = 0.12;
 /**
  * Ombra di contatto finta: un gradiente radiale su canvas, generato a runtime
  * come ogni altra texture del progetto (nessun asset esterno). Le ombre VERE
- * sono escluse apposta: la scenografia vive fra 9 e 46 unità di lato e
+ * sono escluse apposta: la scenografia vive fra minLateral e maxLateral unità
+ * di lato (12 e 46) e
  * allargare fin lì il frustum della shadow map sacrificherebbe i texel dove
  * servono davvero, sugli ostacoli (vedi CONFIG.render.shadow). Il colore non è
  * nero ma il blu di PALETTE[20] (ombra del ghiaccio): su una distesa di neve

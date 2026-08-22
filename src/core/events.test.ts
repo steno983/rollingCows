@@ -101,7 +101,7 @@ describe('createEventBus', () => {
     });
 
     expect(() => {
-      bus.emit('obstacle:hit', { kind: 'rock', outcome: 'death', branch: 'main', z: 12 });
+      bus.emit('obstacle:hit', { kind: 'rock', outcome: 'death', branch: 'main', z: 12, y: 0 });
     }).not.toThrow();
 
     expect(calls).toEqual(['before', 'after']);
@@ -118,7 +118,7 @@ describe('createEventBus', () => {
       calls.push('ended');
     });
 
-    bus.emit('pickup:collected', { kind: 'snowflake', charge: 5 });
+    bus.emit('pickup:collected', { kind: 'snowflake', charge: 5, branch: 'main', z: 0, y: 0 });
 
     expect(calls).toEqual(['pickup']);
   });

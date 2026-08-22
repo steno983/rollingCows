@@ -24,6 +24,26 @@ const RESTITUTION = 0.35;
 const GROUND_FRICTION = 0.82;
 const SLEEP_SPEED = 0.7;
 const SPIN_RATE = 1.2;
+/**
+ * Vita residua massima di un cubetto che si è fermato a terra.
+ *
+ * Perché esiste: `update` applica la deriva del mondo (`- worldSpeed`) ai
+ * detriti ESATTAMENTE come il resto della scena la applica agli ostacoli,
+ * quindi la posizione RELATIVA fra un cubetto e l'ostacolo sopra al quale si è
+ * fermato non cambia mai. Un cubetto addormentato sotto un masso ci resta
+ * infilato, intero e immobile, per tutta la sua vita residua e viaggia via
+ * insieme al masso: è il difetto dei "fiocchi di neve incastrati negli
+ * oggetti". Da fermo non ha più nulla da raccontare, quindi la sua vita viene
+ * troncata qui e la dissolvenza se lo porta via in fretta.
+ */
+const GROUND_REST_LIFE = 0.35;
+/** Velocità orizzontale sotto la quale un cubetto a terra è considerato
+ *  fermo. L'attrito la abbatte in pochi frame (0.82 per frame). */
+const REST_SPEED = 0.35;
+/** Durata della dissolvenza finale. Un cubetto non svanisce più di scatto: si
+ *  rimpicciolisce negli ultimi istanti. La scala finisce già nella matrice di
+ *  istanza scritta a ogni frame, quindi non costa un byte né un ciclo in più. */
+const FADE_SECONDS = 0.25;
 
 export function createVoxelPool(capacity: number, voxelSize: number): VoxelPool {
   // Tutto preallocato una volta sola: durante il gioco non nasce un solo oggetto.
@@ -35,6 +55,11 @@ export function createVoxelPool(capacity: number, voxelSize: number): VoxelPool 
   const vz = new Float32Array(capacity);
   const life = new Float32Array(capacity);
   const spin = new Float32Array(capacity);
+  // Angolo accumulato, non più derivato da `life`: la vita di un cubetto ora
+  // può essere TRONCATA quando si ferma (vedi GROUND_REST_LIFE) e un angolo
+  // legato alla vita farebbe scattare la rotazione di un quarto di giro nel
+  // frame del troncamento. Accumularlo permette anche di congelarlo da fermo.
+  const spinAngle = new Float32Array(capacity);
 
   // Free list a indici: `free[0..freeCount)` sono gli slot disponibili.
   // Inizializzata in ordine decrescente così le prime spawn prendono gli slot
@@ -72,9 +97,11 @@ export function createVoxelPool(capacity: number, voxelSize: number): VoxelPool 
 
   function writeMatrix(slot: number): void {
     dummy.position.set(px[slot] ?? 0, py[slot] ?? 0, pz[slot] ?? 0);
-    const angle = (life[slot] ?? 0) * (spin[slot] ?? 0);
+    const angle = spinAngle[slot] ?? 0;
     dummy.rotation.set(angle, angle * 0.7, angle * 0.4);
-    dummy.scale.setScalar(1);
+    // Dissolvenza per rimpicciolimento: vedi FADE_SECONDS.
+    const remaining = life[slot] ?? 0;
+    dummy.scale.setScalar(remaining < FADE_SECONDS ? remaining / FADE_SECONDS : 1);
     dummy.updateMatrix();
     mesh.setMatrixAt(slot, dummy.matrix);
   }
@@ -110,6 +137,7 @@ export function createVoxelPool(capacity: number, voxelSize: number): VoxelPool 
     life[slot] = lifeSeconds;
     // Rotazione deterministica per slot: varietà senza numeri casuali.
     spin[slot] = ((slot % 7) - 3) * SPIN_RATE;
+    spinAngle[slot] = 0;
     activeCount += 1;
 
     scratchColor.setHex(color, THREE.SRGBColorSpace);
@@ -152,19 +180,33 @@ export function createVoxelPool(capacity: number, voxelSize: number): VoxelPool 
       const nextX = (px[i] ?? 0) + (vx[i] ?? 0) * dt;
       let nextY = (py[i] ?? 0) + nextVy * dt;
       const nextZ = (pz[i] ?? 0) + ((vz[i] ?? 0) - worldSpeed) * dt;
+      let resting = false;
 
       if (nextY < 0) {
         nextY = 0;
         if (nextVy < 0) nextVy = -nextVy * RESTITUTION;
         if (Math.abs(nextVy) < SLEEP_SPEED) nextVy = 0;
-        vx[i] = (vx[i] ?? 0) * GROUND_FRICTION;
-        vz[i] = (vz[i] ?? 0) * GROUND_FRICTION;
+        const dragX = (vx[i] ?? 0) * GROUND_FRICTION;
+        const dragZ = (vz[i] ?? 0) * GROUND_FRICTION;
+        vx[i] = dragX;
+        vz[i] = dragZ;
+        resting = nextVy === 0 && Math.abs(dragX) + Math.abs(dragZ) < REST_SPEED;
       }
 
       px[i] = nextX;
       py[i] = nextY;
       pz[i] = nextZ;
       vy[i] = nextVy;
+
+      if (resting) {
+        // Fermo a terra: non ha più moto proprio, quindi da qui in poi si
+        // limita a viaggiare incastrato in ciò che gli sta sopra. Vita
+        // troncata e rotazione congelata (un dado che gira su se stesso
+        // appoggiato alla neve è l'altra metà del difetto).
+        if (remaining > GROUND_REST_LIFE) life[i] = GROUND_REST_LIFE;
+      } else {
+        spinAngle[i] = (spinAngle[i] ?? 0) + (spin[i] ?? 0) * dt;
+      }
 
       writeMatrix(i);
       live = i + 1;

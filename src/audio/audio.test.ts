@@ -162,7 +162,7 @@ describe('createAudio', () => {
     const bus = createEventBus();
     audio.attach(bus);
 
-    bus.emit('pickup:collected', { kind: 'snowflake', charge: 1 });
+    bus.emit('pickup:collected', { kind: 'snowflake', charge: 1, branch: 'main', z: 0, y: 0 });
 
     expect(fake.oscillators.length).toBe(1);
     expect(fake.oscillators[0]?.type).toBe('triangle');
@@ -230,8 +230,8 @@ describe('createAudio', () => {
     audio.setMuted(true);
     audio.attach(bus);
 
-    bus.emit('pickup:collected', { kind: 'snowflake', charge: 5 });
-    bus.emit('obstacle:hit', { kind: 'rock', outcome: 'death', branch: 'main', z: 0 });
+    bus.emit('pickup:collected', { kind: 'snowflake', charge: 5, branch: 'main', z: 0, y: 0 });
+    bus.emit('obstacle:hit', { kind: 'rock', outcome: 'death', branch: 'main', z: 0, y: 0 });
 
     expect(audio.muted).toBe(true);
     expect(factoryCalls).toBe(0);
@@ -430,11 +430,11 @@ describe('createAudio', () => {
     const bus = createEventBus();
     audio.attach(bus);
 
-    bus.emit('pickup:collected', { kind: 'snowflake', charge: 1 });
+    bus.emit('pickup:collected', { kind: 'snowflake', charge: 1, branch: 'main', z: 0, y: 0 });
     const first = fake.oscillators[0]?.frequency.value;
-    bus.emit('pickup:collected', { kind: 'snowflake', charge: 2 });
+    bus.emit('pickup:collected', { kind: 'snowflake', charge: 2, branch: 'main', z: 0, y: 0 });
     const second = fake.oscillators[1]?.frequency.value;
-    bus.emit('pickup:collected', { kind: 'snowflake', charge: 3 });
+    bus.emit('pickup:collected', { kind: 'snowflake', charge: 3, branch: 'main', z: 0, y: 0 });
     const third = fake.oscillators[2]?.frequency.value;
 
     // L'ultimo valore scritto e' la nota alta della coppia.
@@ -448,10 +448,10 @@ describe('createAudio', () => {
     const bus = createEventBus();
     audio.attach(bus);
 
-    bus.emit('pickup:collected', { kind: 'snowflake', charge: 1 });
-    bus.emit('pickup:collected', { kind: 'snowflake', charge: 2 });
+    bus.emit('pickup:collected', { kind: 'snowflake', charge: 1, branch: 'main', z: 0, y: 0 });
+    bus.emit('pickup:collected', { kind: 'snowflake', charge: 2, branch: 'main', z: 0, y: 0 });
     fake.currentTime += CONFIG.audio.pickup.streakResetSeconds * 2;
-    bus.emit('pickup:collected', { kind: 'snowflake', charge: 3 });
+    bus.emit('pickup:collected', { kind: 'snowflake', charge: 3, branch: 'main', z: 0, y: 0 });
 
     expect(fake.oscillators[2]?.frequency.value).toBeCloseTo(CONFIG.audio.pickup.highHz);
   });
@@ -463,7 +463,7 @@ describe('createAudio', () => {
 
     const steps = CONFIG.audio.pickup.streakMaxSteps;
     for (let i = 0; i <= steps + 1; i += 1) {
-      bus.emit('pickup:collected', { kind: 'snowflake', charge: i });
+      bus.emit('pickup:collected', { kind: 'snowflake', charge: i, branch: 'main', z: 0, y: 0 });
     }
 
     expect(fake.oscillators[steps]?.frequency.value).toBeCloseTo(

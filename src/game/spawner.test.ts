@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { createRng } from '../core/rng';
+import { ENTITY_BOX } from './collisions';
 import { CONFIG } from './config';
 import { branchSpawnStartZ, createSpawner } from './spawner';
 import { resolveDifficultyProfile } from './speed';
@@ -48,6 +49,21 @@ function groupArcTrails(entities: Entity[]): number[][] {
   }
   if (current.length > 0) groups.push(current);
   return groups;
+}
+
+/** Compenetrazione GEOMETRICA fra due entità: lo stesso test AABB che
+ *  collisions.ts applica a mucca/ostacolo, qui applicato a una coppia
+ *  raccoglibile/ostacolo. Senza margine di sicurezza, di proposito: asserisce
+ *  il difetto vero — due sagome che occupano lo stesso spazio — e non la
+ *  tolleranza con cui lo spawner sceglie di stargli lontano, così il test
+ *  resta valido anche se quella tolleranza cambia. */
+function entitiesOverlap(a: Entity, b: Entity): boolean {
+  const boxA = ENTITY_BOX[a.kind];
+  const boxB = ENTITY_BOX[b.kind];
+  if (Math.abs(a.z - b.z) >= (boxA.depth + boxB.depth) / 2) return false;
+  if (a.y + boxA.height <= b.y) return false;
+  if (b.y + boxB.height <= a.y) return false;
+  return true;
 }
 
 function countBuffs(entities: readonly Entity[]): number {
@@ -223,6 +239,97 @@ describe('populateSegment', () => {
       }
     }
     expect(checked).toBeGreaterThan(50);
+  });
+
+  it('nessun raccoglibile nasce DENTRO la sagoma di un ostacolo dello stesso ramo (3 profili x 40 seed x rich/sgombro)', () => {
+    // Il proprietario, giocando, vedeva «fiocchi dentro altri oggetti»: la fila
+    // ad arco terminava per costruzione sull'ostacolo a terra, quindi l'ultimo
+    // fiocco e la sagoma dell'ostacolo occupavano lo stesso punto. Misurato
+    // prima del filtro: 9130 coppie compenetrate per frame su 20 corse da 60 s,
+    // e sul solo spawner una compenetrazione per OGNI fila ad arco, su tutti e
+    // quattro gli ostacoli a terra. I profili sono tutti e tre perché il passo
+    // minimo cambia con la difficoltà, e con "Toro" (26 unità) una fila lunga
+    // 27 arriva a sfiorare l'ostacolo PRECEDENTE: un secondo modo, più raro,
+    // di finire dentro una sagoma.
+    const violations: string[] = [];
+    let pairsChecked = 0;
+    for (const profileName of ['calf', 'normal', 'bull']) {
+      const profile = resolveDifficultyProfile(profileName);
+      for (let seed = 1; seed <= 40; seed++) {
+        for (const rich of [true, false]) {
+          const out: Entity[] = [];
+          createSpawner(createRng(seed), profile).populateSegment(0, 3000, 1, 'main', rich, out);
+          const obstacles = out.filter((entity) => entity.category === 'obstacle');
+          const pickups = out.filter((entity) => entity.category === 'pickup');
+          for (const pickup of pickups) {
+            for (const obstacle of obstacles) {
+              pairsChecked++;
+              if (!entitiesOverlap(pickup, obstacle)) continue;
+              violations.push(
+                `${profileName}/seed ${seed}/${rich ? 'ricco' : 'sgombro'}: ` +
+                  `${pickup.kind}(z ${pickup.z.toFixed(2)}, y ${pickup.y.toFixed(2)}) ` +
+                  `dentro ${obstacle.kind}(z ${obstacle.z.toFixed(2)}, y ${obstacle.y.toFixed(2)})`,
+              );
+            }
+          }
+        }
+      }
+    }
+    expect(violations.slice(0, 5)).toEqual([]);
+    expect(pairsChecked).toBeGreaterThan(100_000);
+  });
+
+  it('DESIGN: i fiocchi che stanno SOPRA un ostacolo a terra sopravvivono al filtro', () => {
+    // «I fiocchi in fila... ad arco si salta»: un fiocco appeso sopra un masso
+    // è il suggerimento di saltare, non un errore, e il filtro
+    // anti-compenetrazione non deve toccarlo. Guarda TUTTI i fiocchi che
+    // cadono dentro l'impronta in z dell'ostacolo, non solo quelli della sua
+    // fila: chi resta lì dentro deve stare per forza sopra la sua cima.
+    let aboveObstacles = 0;
+    for (let seed = 1; seed <= 100; seed++) {
+      const out: Entity[] = [];
+      createSpawner(createRng(seed)).populateSegment(0, 3000, 1, 'main', false, out);
+      const flakes = out.filter((entity) => entity.kind === 'snowflake');
+      const ground = out.filter(
+        (entity) => entity.category === 'obstacle' && !isOverhead(entity.kind),
+      );
+      for (const obstacle of ground) {
+        const box = ENTITY_BOX[obstacle.kind];
+        for (const flake of flakes) {
+          if (Math.abs(flake.z - obstacle.z) >= box.depth / 2) continue;
+          expect(flake.y).toBeGreaterThanOrEqual(box.height);
+          aboveObstacles++;
+        }
+      }
+    }
+    expect(aboveObstacles).toBeGreaterThan(50);
+  });
+
+  it('il filtro non svuota le file: ogni ostacolo conserva un fiocco entro un passo di fila', () => {
+    // La contropartita del filtro è che qualche fiocco sparisce, e un fiocco
+    // che sparisce è un pezzo di lettura del percorso che sparisce. Questo
+    // test fissa il limite: la fila può perdere il punto sepolto dentro
+    // l'ostacolo, mai il punto che le sta accanto — altrimenti l'ostacolo
+    // resterebbe senza il suo indizio.
+    const { trailSpacing, maxObstacleGap } = CONFIG.spawn;
+    let checked = 0;
+    for (let seed = 1; seed <= 100; seed++) {
+      for (const rich of [true, false]) {
+        const out: Entity[] = [];
+        createSpawner(createRng(seed)).populateSegment(0, 3000, 1, 'main', rich, out);
+        const flakes = out.filter((entity) => entity.kind === 'snowflake');
+        for (const obstacle of out.filter((entity) => entity.category === 'obstacle')) {
+          // I primissimi ostacoli hanno la fila tagliata dal bordo del
+          // segmento, che è un limite diverso e già coperto altrove.
+          if (obstacle.z < maxObstacleGap) continue;
+          checked++;
+          let nearest = Number.POSITIVE_INFINITY;
+          for (const flake of flakes) nearest = Math.min(nearest, Math.abs(flake.z - obstacle.z));
+          expect(nearest).toBeLessThanOrEqual(trailSpacing + 1e-9);
+        }
+      }
+    }
+    expect(checked).toBeGreaterThan(100);
   });
 
   it('INVARIANTE DI GIOCABILITÀ: nessuna coppia di ostacoli consecutivi dista meno del minimo superabile alla velocità massima (300 seed x 2 rami x rich/sgombro)', () => {
@@ -608,7 +715,7 @@ describe('zona franca dopo la biforcazione', () => {
 
   it('nessuna entità di un ramo nasce nel tratto in cui il mondo non ha ancora traslato', () => {
     // Il ramo scelto diventa solido al punto di non ritorno, ma la traslazione
-    // laterale parte solo alla biforcazione e dura realignSeconds: un ostacolo
+    // laterale parte solo alla biforcazione e dura forkBlendZ: un ostacolo
     // nato lì uccide mentre è disegnato fino a 6 unità fuori da un corridoio
     // largo 4. Era il 3,43% degli ostacoli letali.
     for (let seed = 1; seed <= 40; seed++) {

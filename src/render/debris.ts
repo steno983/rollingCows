@@ -4,11 +4,29 @@ import type { VoxelPool } from './voxel-pool';
 
 /** Tetto di cubetti per esplosione: oltre, il modello viene campionato. */
 export const MAX_BURST_VOXELS = 96;
-/** Spinta verso la camera e verso l'alto, in frazioni di `power`. */
-const BURST_TOWARD_CAMERA = 0.35;
-const BURST_LIFT = 0.6;
-const BURST_LIFE = 0.9;
-const BURST_LIFE_SPREAD = 0.8;
+/**
+ * Spinta verso la camera e verso l'alto, in frazioni di `power`.
+ *
+ * Perché sono così generose. Un burst nasce quasi sempre DENTRO il volume di
+ * qualcosa di solido: il raccoglibile che lo genera può stare sopra un masso,
+ * la mucca può stare scavalcando un tronco nell'istante in cui salta. Da lì i
+ * cubetti scorrono all'indietro alla stessa identica velocità dell'ostacolo,
+ * perché `pool.update(dt, worldSpeed)` applica a loro la stessa deriva che il
+ * mondo applica a lui: la posizione RELATIVA fra cubetto e ostacolo non cambia
+ * MAI, e il cubetto resta conficcato a sporgere dalle sue facce finché non
+ * scade. L'unica via d'uscita è una velocità PROPRIA che copra in fretta il
+ * mezzo metro scarso di semi-spessore di un ostacolo; la componente verso la
+ * camera è quella che conta di più, perché fa sfilare i cubetti dalla faccia
+ * frontale invece che restare nel mezzo.
+ */
+const BURST_TOWARD_CAMERA = 0.85;
+const BURST_LIFT = 1.1;
+/** Vita di un cubetto di esplosione, accorciata rispetto alle 0.9 + 0.8 di
+ *  quando i burst erano solo quelli di impatto: ora ne parte uno anche a ogni
+ *  salto, atterraggio, crescita di taglia e raccolta, e i cubetti
+ *  contemporaneamente in scena sono molti di più. */
+const BURST_LIFE = 0.75;
+const BURST_LIFE_SPREAD = 0.55;
 /** Tetto per chiamata: impedisce che un frame lungo svuoti il pool. */
 const MAX_TRAIL_PER_CALL = 24;
 const SNOW_COLOR = PALETTE[0] ?? 0xffffff;
@@ -159,17 +177,28 @@ export function burstFromModel(
     const localX = ((voxel[0] ?? 0) + 0.5 + offsetX) * size;
     const localY = ((voxel[1] ?? 0) + 0.5 + offsetY) * size;
     const localZ = ((voxel[2] ?? 0) + 0.5 + offsetZ) * size;
-    const distance = Math.max(0.25, Math.hypot(localX, localY, localZ));
+    const distance = Math.hypot(localX, localY, localZ);
     const speed = power * (0.6 + noise() * 0.8);
     const color = model.palette[voxel[3] ?? 0] ?? SNOW_COLOR;
+    // Versore vero, non più diviso per una distanza con pavimento a 0.25: quel
+    // pavimento tagliava la spinta proprio ai voxel vicini al centro del
+    // modello, cioè a quelli più in profondità nel solido, che erano quindi i
+    // primi a restare incastrati. Il ripiego per il voxel esattamente al
+    // centro dipende dall'indice: deterministico, e soprattutto non consuma
+    // noise() — la sequenza pseudocasuale della scia della valanga è protetta
+    // da un test e passa da questo stesso generatore.
+    const inverse = distance > 1e-3 ? 1 / distance : 0;
+    const dirX = inverse === 0 ? (i % 2 === 0 ? 1 : -1) : localX * inverse;
+    const dirY = inverse === 0 ? 1 : localY * inverse;
+    const dirZ = inverse === 0 ? 0 : localZ * inverse;
 
     const alive = pool.spawn(
       x + localX,
       y + localY,
       z + localZ,
-      (localX / distance) * speed,
-      (localY / distance) * speed + power * BURST_LIFT,
-      (localZ / distance) * speed - power * BURST_TOWARD_CAMERA,
+      dirX * speed,
+      dirY * speed + power * BURST_LIFT,
+      dirZ * speed - power * BURST_TOWARD_CAMERA,
       color,
       BURST_LIFE + noise() * BURST_LIFE_SPREAD,
     );

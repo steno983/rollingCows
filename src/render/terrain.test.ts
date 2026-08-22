@@ -86,27 +86,23 @@ describe('heightAt', () => {
  *  dedicati, che chiedono esattamente i campi che quella fase possiede — non
  *  esiste più un `{ phase: 'none', activeBranch: 'right' }`, cioè uno stato
  *  che il gioco non può produrre e su cui non ha senso testare la vista. */
-function straight(offsetX = 0): PathNone {
-  return { ...createPath(), nextForkIn: 100, offsetX };
+function straight(): PathNone {
+  return { ...createPath(), nextForkIn: 100 };
 }
 
 /** Un bivio in una delle tre fasi, alla distanza data: serve ai test che
  *  spazzano tutte le fasi con lo stesso corpo. */
-function forkAt(
-  phase: 'approaching' | 'committed' | 'realigning',
-  forkZ: number,
-  offsetX = 0,
-): PathState {
-  if (phase === 'approaching') return forkApproaching({ forkZ, offsetX });
-  if (phase === 'committed') return forkCommitted({ forkZ, activeBranch: 'left', offsetX });
-  return forkRealigning({ forkZ, activeBranch: 'left', realignProgress: 0, offsetX });
+function forkAt(phase: 'approaching' | 'committed' | 'realigning', forkZ: number): PathState {
+  if (phase === 'approaching') return forkApproaching({ forkZ });
+  if (phase === 'committed') return forkCommitted({ forkZ, activeBranch: 'left' });
+  return forkRealigning({ forkZ, activeBranch: 'left', realignProgress: 0 });
 }
 
 describe('trackCenterOffsets', () => {
-  it('senza bivio, i due nastri coincidono sempre a offsetX', () => {
-    const path = straight(1.5);
+  it('senza bivio i due nastri coincidono al centro, a qualunque distanza', () => {
+    const path = straight();
     for (const z of [0, 10, 90, 200]) {
-      expect(trackCenterOffsets(path, z)).toEqual([1.5, 1.5]);
+      expect(trackCenterOffsets(path, z)).toEqual([0, 0]);
     }
   });
 
@@ -166,11 +162,32 @@ describe('trackCenterOffsets', () => {
     }
   });
 
-  it('durante il riallineamento, offsetX si somma anche ai nastri divergenti', () => {
-    const path = forkCommitted({ forkZ: 5, activeBranch: 'left', offsetX: -2 });
-    const [left, right] = trackCenterOffsets(path, 90);
-    expect(left).toBeCloseTo(-CONFIG.path.branchSeparation - 2, 6);
-    expect(right).toBeCloseTo(CONFIG.path.branchSeparation - 2, 6);
+  it('nella fase impegnata il ramo scelto scivola al centro e lo SCARTATO resta dov-è', () => {
+    // È il cuore della correzione: alla biforcazione (forkZ 0) la strada
+    // scelta deve essere già dritta sotto la mucca, così il bivio si legge
+    // come "la mia strada prosegue e l'altra se ne va" invece che come una
+    // pista che si deforma. Il ramo scartato non viene portato via — resta
+    // alla propria distanza geometrica — altrimenti finirebbe a 12 unità di
+    // lato, fuori dalla fascia di terreno piatto e sopra i banchi.
+    const start = forkCommitted({ forkZ: CONFIG.path.commitZ, activeBranch: 'left' });
+    const [startLeft, startRight] = trackCenterOffsets(start, 90);
+    expect(startLeft).toBeCloseTo(-CONFIG.path.branchSeparation, 6);
+    expect(startRight).toBeCloseTo(CONFIG.path.branchSeparation, 6);
+
+    const end = forkCommitted({ forkZ: 0, activeBranch: 'left' });
+    const [endLeft, endRight] = trackCenterOffsets(end, 90);
+    expect(endLeft).toBe(0);
+    expect(endRight).toBeCloseTo(CONFIG.path.branchSeparation, 6);
+  });
+
+  it('durante il riallineamento il ramo scelto è dritto a OGNI distanza', () => {
+    for (const progress of [0, 0.25, 0.5, 0.75, 1]) {
+      const forkZ = -progress * CONFIG.path.forkBlendZ;
+      const path = forkRealigning({ forkZ, activeBranch: 'left', realignProgress: progress });
+      for (let z = 0; z <= TRACK_DEPTH; z += ROW_STEP) {
+        expect(trackCenterOffsets(path, z)[0]).toBe(0);
+      }
+    }
   });
 });
 

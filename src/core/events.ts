@@ -9,12 +9,25 @@ export interface GameEvents {
    *  (l'audio, per spegnere il rombo della valanga) per sapere che la run è
    *  finita anche quando non c'è stata una morte. */
   'run:stopped': Record<string, never>;
-  'pickup:collected': { kind: PickupKind; charge: number };
+  /** `branch`, `z` e `y` sono la posizione REALE del raccoglibile nel momento
+   *  in cui sparisce. Servono a chi disegna l'esplosione di cubetti: prima non
+   *  c'erano e la vista era costretta a inventarsi una quota fissa addosso
+   *  alla mucca, così i cubetti nascevano anche a mezzo metro dal fiocco che
+   *  li aveva generati — spesso DENTRO l'ostacolo che la mucca stava
+   *  scavalcando in quell'istante. Da lì i cubetti non uscivano più, perché
+   *  scorrono all'indietro alla stessa velocità dell'ostacolo e la loro
+   *  posizione relativa non cambia mai: restavano conficcati nel legno per
+   *  tutta la loro vita. */
+  'pickup:collected': { kind: PickupKind; charge: number; branch: Branch; z: number; y: number };
   'obstacle:hit': {
     kind: ObstacleKind;
     outcome: 'death' | 'forgiven' | 'smashed' | 'shielded';
     branch: Branch;
     z: number;
+    /** Quota della base dell'ostacolo colpito. Stessa ragione della `y` di
+     *  'pickup:collected': un arco o un cornicione stanno a `spawn.overheadY`,
+     *  e sfondandoli i cubetti comparivano all'altezza delle ginocchia. */
+    y: number;
   };
   'size:changed': { size: number; previous: number };
   'avalanche:triggered': { size: number };

@@ -148,7 +148,6 @@ describe('startRun', () => {
     expect(game.avalanche).toEqual(createAvalanche());
     expect(game.buffs).toEqual(createBuffs());
     expect(game.path.phase).toBe('none');
-    expect(game.path.offsetX).toBe(0);
     expect(payloadsOf(events, 'run:started')).toEqual([{ seed: 99 }, { seed: 7 }]);
   });
 });
@@ -525,7 +524,12 @@ describe('updateGame — raccolta dei buff', () => {
     // ...ma la raccolta è annunciata: è 'buff:gained' a far suonare il timbro
     // del cristallo (CONFIG.audio.chime). Senza, era codice morto.
     expect(payloadsOf(events, 'buff:gained')).toEqual([{ kind: 'crystal' }]);
-    expect(payloadsOf(events, 'pickup:collected')).toEqual([
+    // toMatchObject e non toEqual: il payload porta anche la posizione del
+    // raccoglibile (branch/z/y), che serve a chi disegna l'esplosione di
+    // cubetti ma non è ciò che questo test verifica. Ricalcare la forma esatta
+    // del payload renderebbe rosso questo test a ogni campo aggiunto, che è il
+    // modo migliore per insegnare a ignorare i test.
+    expect(payloadsOf(events, 'pickup:collected')).toMatchObject([
       { kind: 'crystal', charge: CONFIG.pickups.charge.crystal },
     ]);
   });
@@ -546,7 +550,7 @@ describe('updateGame — raccolta dei buff', () => {
     runFrames(game, 60);
 
     expect(countOf(events, 'buff:gained')).toBe(0);
-    expect(payloadsOf(events, 'pickup:collected')).toEqual([
+    expect(payloadsOf(events, 'pickup:collected')).toMatchObject([
       { kind: 'snowflake', charge: CONFIG.pickups.charge.snowflake },
     ]);
   });

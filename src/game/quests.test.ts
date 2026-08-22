@@ -85,13 +85,13 @@ describe('verifica tramite gli eventi già esistenti sul bus', () => {
     const state = questState('flakes', 3);
     attachQuests(state, bus);
 
-    bus.emit('pickup:collected', { kind: 'crystal', charge: 20 });
-    bus.emit('pickup:collected', { kind: 'snowflake', charge: 4 });
-    bus.emit('pickup:collected', { kind: 'snowflake', charge: 4 });
+    bus.emit('pickup:collected', { kind: 'crystal', charge: 20, branch: 'main', z: 0, y: 0 });
+    bus.emit('pickup:collected', { kind: 'snowflake', charge: 4, branch: 'main', z: 0, y: 0 });
+    bus.emit('pickup:collected', { kind: 'snowflake', charge: 4, branch: 'main', z: 0, y: 0 });
     expect(state.quests[0]?.progress).toBe(2);
     expect(done).toHaveLength(0);
 
-    bus.emit('pickup:collected', { kind: 'snowflake', charge: 4 });
+    bus.emit('pickup:collected', { kind: 'snowflake', charge: 4, branch: 'main', z: 0, y: 0 });
     expect(state.quests[0]?.done).toBe(true);
     expect(done).toEqual([{ id: 'flakes-3', label: 'test flakes' }]);
   });
@@ -102,7 +102,8 @@ describe('verifica tramite gli eventi già esistenti sul bus', () => {
     const state = questState('flakes', 2);
     attachQuests(state, bus);
 
-    for (let i = 0; i < 10; i++) bus.emit('pickup:collected', { kind: 'snowflake', charge: 4 });
+    for (let i = 0; i < 10; i++)
+      bus.emit('pickup:collected', { kind: 'snowflake', charge: 4, branch: 'main', z: 0, y: 0 });
     expect(done).toHaveLength(1);
     // Il progresso mostrato non supera il bersaglio: una barra al 500% non è
     // un'informazione.
@@ -170,23 +171,23 @@ describe('verifica tramite gli eventi già esistenti sul bus', () => {
 
     // Staccionata sfondata a taglia 3 FUORI dalla valanga: non conta.
     for (let i = 0; i < 5; i++) {
-      bus.emit('obstacle:hit', { kind: 'fence', outcome: 'smashed', branch: 'main', z: 0 });
+      bus.emit('obstacle:hit', { kind: 'fence', outcome: 'smashed', branch: 'main', z: 0, y: 0 });
     }
     expect(state.quests[0]?.progress).toBe(0);
 
     bus.emit('avalanche:triggered', { size: 5 });
-    bus.emit('obstacle:hit', { kind: 'rock', outcome: 'smashed', branch: 'main', z: 0 });
-    bus.emit('obstacle:hit', { kind: 'rock', outcome: 'smashed', branch: 'main', z: 0 });
+    bus.emit('obstacle:hit', { kind: 'rock', outcome: 'smashed', branch: 'main', z: 0, y: 0 });
+    bus.emit('obstacle:hit', { kind: 'rock', outcome: 'smashed', branch: 'main', z: 0, y: 0 });
     bus.emit('avalanche:ended', {});
     expect(done).toHaveLength(0);
 
     // Due in una valanga e due in un'altra non fanno quattro: la missione
     // chiede tre nella STESSA.
     bus.emit('avalanche:triggered', { size: 5 });
-    bus.emit('obstacle:hit', { kind: 'rock', outcome: 'smashed', branch: 'main', z: 0 });
-    bus.emit('obstacle:hit', { kind: 'rock', outcome: 'smashed', branch: 'main', z: 0 });
+    bus.emit('obstacle:hit', { kind: 'rock', outcome: 'smashed', branch: 'main', z: 0, y: 0 });
+    bus.emit('obstacle:hit', { kind: 'rock', outcome: 'smashed', branch: 'main', z: 0, y: 0 });
     expect(done).toHaveLength(0);
-    bus.emit('obstacle:hit', { kind: 'rock', outcome: 'smashed', branch: 'main', z: 0 });
+    bus.emit('obstacle:hit', { kind: 'rock', outcome: 'smashed', branch: 'main', z: 0, y: 0 });
     expect(done).toHaveLength(1);
   });
 
@@ -199,7 +200,7 @@ describe('verifica tramite gli eventi già esistenti sul bus', () => {
     trackDistance(state, 400, bus);
     expect(state.quests[0]?.progress).toBe(400);
 
-    bus.emit('obstacle:hit', { kind: 'rock', outcome: 'forgiven', branch: 'main', z: 0 });
+    bus.emit('obstacle:hit', { kind: 'rock', outcome: 'forgiven', branch: 'main', z: 0, y: 0 });
     expect(state.quests[0]?.progress).toBe(0);
 
     // Da qui in poi la corsa non può più completarla, per quanto vada lontano.
@@ -218,8 +219,8 @@ describe('verifica tramite gli eventi già esistenti sul bus', () => {
     const state = questState('flakes', 2);
     attachQuests(state, bus);
 
-    bus.emit('pickup:collected', { kind: 'snowflake', charge: 4 });
-    bus.emit('pickup:collected', { kind: 'snowflake', charge: 4 });
+    bus.emit('pickup:collected', { kind: 'snowflake', charge: 4, branch: 'main', z: 0, y: 0 });
+    bus.emit('pickup:collected', { kind: 'snowflake', charge: 4, branch: 'main', z: 0, y: 0 });
     expect(state.quests[0]?.done).toBe(true);
 
     bus.emit('run:started', { seed: 2 });
@@ -233,11 +234,11 @@ describe('verifica tramite gli eventi già esistenti sul bus', () => {
     const state = questState('flakes', 5);
     const detach = attachQuests(state, bus);
 
-    bus.emit('pickup:collected', { kind: 'snowflake', charge: 4 });
+    bus.emit('pickup:collected', { kind: 'snowflake', charge: 4, branch: 'main', z: 0, y: 0 });
     expect(state.quests[0]?.progress).toBe(1);
 
     detach();
-    bus.emit('pickup:collected', { kind: 'snowflake', charge: 4 });
+    bus.emit('pickup:collected', { kind: 'snowflake', charge: 4, branch: 'main', z: 0, y: 0 });
     expect(state.quests[0]?.progress).toBe(1);
   });
 });

@@ -10,8 +10,6 @@ export type ForkPhase = 'none' | 'approaching' | 'committed' | 'realigning';
  * chiedersi a che punto sia il bivio.
  */
 interface PathCommon {
-  /** Offset laterale corrente del mondo, in unità. 0 = tracciato dritto. */
-  offsetX: number;
   /** Scelta data FUORI dalla finestra di avvicinamento (design §4: "uno swipe
    *  dato appena prima che il bivio compaia vale come scelta anticipata").
    *  Vale solo finché `pendingChoiceTimeLeft` è positivo. */
@@ -61,9 +59,12 @@ export interface PathRealigning extends PathCommon {
   choice: 'left' | 'right';
   richBranch: 'left' | 'right';
   activeBranch: 'left' | 'right';
-  /** Avanzamento del riallineamento, 0..1. Serve alla vista per far svanire il
-   *  nastro scartato invece di vederlo saltare al centro nel frame in cui il
-   *  bivio si chiude. */
+  /** Avanzamento del riallineamento, 0..1: frazione di `forkBlendZ` già
+   *  percorsa oltre la biforcazione, quindi una DISTANZA normalizzata e non un
+   *  tempo (vedi applyRealignment). Serve alla vista per far svanire il nastro
+   *  scartato invece di vederlo saltare al centro nel frame in cui il bivio si
+   *  chiude, e per far rientrare la piegata. È l'ingresso lineare
+   *  dell'apertura: `branchSpreadAt(path, 0)` è la sua smoothstep. */
   realignProgress: number;
 }
 
@@ -91,7 +92,6 @@ const SIDES: readonly ('left' | 'right')[] = ['left', 'right'];
 export function createPath(): PathNone {
   return {
     phase: 'none',
-    offsetX: 0,
     // Il primissimo bivio di una corsa usa la sua distanza dedicata
     // (firstForkIn), più vicina di minGap: senza questo, per vedere il primo
     // bivio bisognerebbe superare tre ostacoli, e chi non conosce ancora i
@@ -129,12 +129,118 @@ export function realignProgressOf(path: PathState): number {
   return path.phase === 'realigning' ? path.realignProgress : 0;
 }
 
-/** Offset laterale a cui va disegnato un ramo, in unità di mondo. Pura
- *  geometria del bivio: non dipende dalla fase corrente. */
+/** Offset laterale a cui va disegnato un ramo A BIVIO COMPLETAMENTE APERTO, in
+ *  unità di mondo. Pura geometria del bivio: non dipende dalla fase corrente.
+ *  Va SEMPRE moltiplicato per `branchSpreadAt` alla z di interesse — da solo
+ *  descrive solo il punto di arrivo dell'apertura, non dove il ramo si trova
+ *  davvero a quella distanza. */
 export function branchOffsetX(_path: PathState, branch: Branch): number {
   if (branch === 'left') return -CONFIG.path.branchSeparation;
   if (branch === 'right') return CONFIG.path.branchSeparation;
   return 0;
+}
+
+function smoothstep(edge0: number, edge1: number, x: number): number {
+  const span = edge1 - edge0;
+  if (span <= 0) return x <= edge0 ? 0 : 1;
+  const t = Math.min(1, Math.max(0, (x - edge0) / span));
+  return t * t * (3 - 2 * t);
+}
+
+/**
+ * QUANTO sono aperti i due rami a una distanza z data: 0 = nastro unico
+ * (tronco, o nessun bivio in corso), 1 = rami del tutto separati. È una
+ * smoothstep fra la biforcazione (`forkZ`) e `forkZ + CONFIG.path.forkBlendZ`.
+ *
+ * Descrive la FORMA della Y e nient'altro: dove finisce ciascun nastro lo dice
+ * `branchCenterAt`, che è l'unico punto in cui l'apertura si combina con il
+ * raddrizzamento. Sta qui, in game/, e non nella vista, benché sia geometria
+ * da disegnare: è l'unica definizione di apertura di tutto il progetto, e deve
+ * esserlo — quando ne esistevano due (questa, allora privata di
+ * render/terrain.ts, e una rampa a tempo dentro applyRealignment) la mucca
+ * finiva fino a 4,01 unità fuori dal centro del proprio nastro.
+ *
+ * L'apertura graduale non è un abbellimento: con la separazione applicata di
+ * colpo il centro di ciascun nastro salterebbe di branchSeparation = 6 unità
+ * nello spazio di una riga di geometria, e il bivio si leggerebbe come due
+ * piste parallele comparse di fianco alla propria invece che come una Y. Il
+ * rapporto ~1:4,7 fra separazione e lunghezza è quello di uno svincolo reale.
+ */
+export function branchSpreadAt(path: PathState, z: number): number {
+  if (path.phase === 'none') return 0;
+  return smoothstep(path.forkZ, path.forkZ + CONFIG.path.forkBlendZ, z);
+}
+
+/**
+ * Quanto il ramo scelto è già diventato "la strada principale": 0 = sta ancora
+ * di lato come l'altro, 1 = è dritto davanti alla mucca e sarà l'altro a
+ * scostarsi. Sale durante la fase IMPEGNATA — cioè fra il punto di non ritorno
+ * e la biforcazione — e vale 1 per tutto il riallineamento.
+ *
+ * È il pezzo che mancava, e il difetto che ha corretto si vedeva così: «la
+ * telecamera curva bene ma poi la strada si deforma e viene presa la strada di
+ * sinistra come strada principale». Prima il ramo scelto restava disegnato di
+ * lato (a `branchOffsetX * apertura`) e a riportarlo sotto la mucca ci pensava
+ * una traslazione dell'intero mondo, unica per tutte le z. Ma l'apertura
+ * dipende da z e la traslazione no: il conto tornava solo alla quota della
+ * mucca. Alla quota della mucca la pista era centrata, otto unità più avanti
+ * era già scostata di 1,3, e in mezzo c'era un GOMITO. Una strada con un
+ * gomito davanti al muso, per giunta ruotata dal gruppo-mondo, non si legge
+ * come una curva: si legge come una pista che si deforma.
+ *
+ * Facendo raddrizzare il ramo scelto PRIMA della biforcazione il problema
+ * sparisce alla radice invece di essere ridistribuito: quando la mucca arriva
+ * al bivio la sua strada è già dritta sotto di lei per tutta la lunghezza
+ * visibile, e il bivio si legge per quello che è — la propria strada che
+ * prosegue e l'altra che se ne va. Non serve più alcuna traslazione del mondo
+ * (il campo `offsetX` è stato rimosso), e non c'è più niente che debba
+ * "chiudersi" alla fine del riallineamento: nessuno scatto, a nessuna z.
+ *
+ * La finestra è quella impegnata e non un'altra perché è esattamente il tratto
+ * in cui la scelta è irrevocabile (`chooseBranch` fallisce da lì in poi):
+ * raddrizzare prima significherebbe mostrare come già presa una decisione che
+ * il giocatore può ancora cambiare. Smoothstep e non rampa lineare perché agli
+ * estremi la derivata deve essere nulla, altrimenti lo scorrimento laterale
+ * del ramo parte e si ferma di scatto.
+ */
+export function straightenProgress(path: PathState): number {
+  if (path.phase === 'realigning') return 1;
+  if (path.phase !== 'committed') return 0;
+  // Distanza già percorsa dentro la fase impegnata, non `forkZ` grezza: gli
+  // estremi di una smoothstep vanno in ordine crescente, e passarli al
+  // contrario la fa restituire zero per sempre senza che niente lo segnali —
+  // il raddrizzamento scattava tutto in un frame alla biforcazione, cioè uno
+  // spostamento laterale di branchSeparation in 1/60 di secondo.
+  return smoothstep(0, CONFIG.path.commitZ, CONFIG.path.commitZ - path.forkZ);
+}
+
+/**
+ * Scostamento laterale del CENTRO di un ramo a una distanza z data: l'unica
+ * risposta alla domanda "dov'è questo pezzo di strada", per chiunque —
+ * la pista (render/terrain.ts), le entità che ci stanno sopra
+ * (render/entities-view.ts) e i test.
+ *
+ * Due soli fattori, e nessun termine additivo: l'apertura della Y a quella z,
+ * e il fatto che il ramo scelto si stia raddrizzando. Il ramo scartato non si
+ * raddrizza — resta dov'è la geometria del bivio — quindi durante la fase
+ * impegnata la distanza fra i due nastri si dimezza mentre il proprio scivola
+ * al centro: è la lettura giusta, "la mia strada diventa la strada", e tiene
+ * entrambi i nastri dentro la fascia di terreno piatto (|x| <= 8, vedi
+ * render/terrain.ts, FLAT_HALF_WIDTH). Portare via il ramo scartato invece di
+ * far scivolare il proprio conserverebbe la larghezza della Y ma lo
+ * spingerebbe a 12 unità di lato, cioè fuori dal piatto e sopra i banchi.
+ *
+ * Il ramo 'main' ha scostamento nullo per costruzione, qualunque cosa succeda:
+ * il tronco è il riferimento, non una delle strade che si spostano.
+ */
+export function branchCenterAt(path: PathState, branch: Branch, z: number): number {
+  const straightening = branch === activeBranchOf(path) ? 1 - straightenProgress(path) : 1;
+  // `+ 0` normalizza -0 a 0 (un ramo sinistro moltiplicato per un'apertura
+  // nulla produce -0): stessa cautela di worldToViewX in camera-rig.ts e di
+  // turnAmount in curve.ts, per lo stesso motivo — Object.is, e quindi toBe
+  // nei test, distingue -0 da 0, e "la pista è dritta" deve poter essere
+  // asserito come uguaglianza esatta.
+  return branchOffsetX(path, branch) * straightening * branchSpreadAt(path, z) + 0;
 }
 
 /** true se le entità di quel ramo sono solide (collidono e si raccolgono). */
@@ -233,7 +339,6 @@ function advanceNone(path: PathNone, travelled: number, rng: Rng, bus: EventBus)
     forkZ: CONFIG.path.previewZ - overshoot,
     choice: null,
     richBranch,
-    offsetX: path.offsetX,
     // La scelta anticipata si consuma qui, in un modo o nell'altro: o diventa
     // la scelta del bivio appena nato, o non serve più a niente.
     pendingChoice: null,
@@ -266,7 +371,6 @@ function advanceApproaching(path: PathApproaching, travelled: number, bus: Event
     choice: resolved,
     richBranch: path.richBranch,
     activeBranch: resolved,
-    offsetX: path.offsetX,
     pendingChoice: path.pendingChoice,
     pendingChoiceTimeLeft: path.pendingChoiceTimeLeft,
   };
@@ -274,8 +378,9 @@ function advanceApproaching(path: PathApproaching, travelled: number, bus: Event
   return next;
 }
 
-/** Ultimo tratto prima della biforcazione vera e propria: il ramo è già
- *  solido, ma il mondo non ha ancora iniziato a scorrere lateralmente. */
+/** Ultimo tratto prima della biforcazione vera e propria: il ramo è già solido
+ *  ed è QUI che scivola al centro diventando la strada principale (vedi
+ *  straightenProgress). */
 function advanceCommitted(path: PathCommitted, travelled: number, speed: number): PathState {
   path.forkZ -= travelled;
   if (path.forkZ > 0) return path;
@@ -286,26 +391,39 @@ function advanceCommitted(path: PathCommitted, travelled: number, speed: number)
     choice: path.choice,
     richBranch: path.richBranch,
     activeBranch: path.activeBranch,
-    offsetX: path.offsetX,
     pendingChoice: path.pendingChoice,
     pendingChoiceTimeLeft: path.pendingChoiceTimeLeft,
     realignProgress: 0,
   };
   // Nessuna uscita anticipata: l'eccedenza di questo passo è già distanza
-  // percorsa OLTRE la biforcazione, quindi appartiene al riallineamento.
-  // Uscendo qui, il primo frame di 'realigning' avrebbe applicato in un colpo
-  // solo due passi di traslazione laterale — uno scatto visibile all'inizio di
-  // ogni chiusura di bivio.
+  // percorsa OLTRE la biforcazione, quindi appartiene al riallineamento, e
+  // `realignProgress` deve tenerne conto già dal primo frame.
   return applyRealignment(next, speed);
 }
 
-/** Traslazione laterale del mondo durante il riallineamento, e chiusura del
- *  bivio quando è completa. Legge solo `forkZ`, già aggiornato dal chiamante. */
+/**
+ * Avanzamento del riallineamento, e chiusura del bivio quando è completo.
+ * Legge solo `forkZ`, già aggiornato dal chiamante.
+ *
+ * Non sposta più niente: quando la mucca arriva qui il ramo scelto è già
+ * dritto sotto di lei per tutta la lunghezza visibile (vedi
+ * straightenProgress, che completa alla biforcazione). Questa fase esiste per
+ * ciò che resta da consumare DIETRO di lei — il ramo scartato che si
+ * assottiglia fino a sparire (render/terrain.ts, trackHalfWidths) e la piegata
+ * che rientra (render/curve.ts) — e per non dichiarare chiuso un bivio che si
+ * sta ancora vedendo.
+ *
+ * Dura `forkBlendZ`, cioè la lunghezza dello svincolo: a quel punto la Y è
+ * completamente alle spalle. È una DISTANZA e non un tempo (c'era un
+ * `realignSeconds`, rimosso) perché è un pezzo di strada: 0,70 s a velocità
+ * massima, 1,55 s a velocità di partenza.
+ */
 function applyRealignment(path: PathRealigning, speed: number): PathState {
-  const distancePast = -path.forkZ;
-  const realignDistance = Math.max(1e-6, speed * CONFIG.path.realignSeconds);
-  const t = Math.min(1, Math.max(0, distancePast / realignDistance));
-  path.offsetX = -branchOffsetX(path, path.activeBranch) * t;
+  // Avanzamento LINEARE lungo l'apertura, non la smoothstep: chi lo legge
+  // (render/curve.ts, render/terrain.ts) ci applica già la propria easing, e
+  // un avanzamento già smussato la applicherebbe due volte.
+  const blend = CONFIG.path.forkBlendZ;
+  const t = blend > 0 ? Math.min(1, Math.max(0, -path.forkZ / blend)) : 1;
   path.realignProgress = t;
   if (t < 1) return path;
 
@@ -313,7 +431,6 @@ function applyRealignment(path: PathRealigning, speed: number): PathState {
   // vengono "azzerati", semplicemente non esistono più in questa fase.
   return {
     phase: 'none',
-    offsetX: 0,
     nextForkIn: CONFIG.path.minGap + CONFIG.path.gapPerSpeed * speed,
     pendingChoice: path.pendingChoice,
     pendingChoiceTimeLeft: path.pendingChoiceTimeLeft,
@@ -335,14 +452,12 @@ export function forkApproaching(options: {
   forkZ: number;
   richBranch?: 'left' | 'right';
   choice?: 'left' | 'right' | null;
-  offsetX?: number;
 }): PathApproaching {
   return {
     phase: 'approaching',
     forkZ: options.forkZ,
     choice: options.choice ?? null,
     richBranch: options.richBranch ?? 'left',
-    offsetX: options.offsetX ?? 0,
     pendingChoice: null,
     pendingChoiceTimeLeft: 0,
   };
@@ -352,7 +467,6 @@ export function forkCommitted(options: {
   forkZ: number;
   activeBranch: 'left' | 'right';
   richBranch?: 'left' | 'right';
-  offsetX?: number;
 }): PathCommitted {
   return {
     phase: 'committed',
@@ -360,7 +474,6 @@ export function forkCommitted(options: {
     choice: options.activeBranch,
     richBranch: options.richBranch ?? 'left',
     activeBranch: options.activeBranch,
-    offsetX: options.offsetX ?? 0,
     pendingChoice: null,
     pendingChoiceTimeLeft: 0,
   };
@@ -371,7 +484,6 @@ export function forkRealigning(options: {
   realignProgress: number;
   forkZ?: number;
   richBranch?: 'left' | 'right';
-  offsetX?: number;
 }): PathRealigning {
   return {
     phase: 'realigning',
@@ -381,7 +493,6 @@ export function forkRealigning(options: {
     choice: options.activeBranch,
     richBranch: options.richBranch ?? 'left',
     activeBranch: options.activeBranch,
-    offsetX: options.offsetX ?? 0,
     pendingChoice: null,
     pendingChoiceTimeLeft: 0,
     realignProgress: options.realignProgress,

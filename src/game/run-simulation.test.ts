@@ -8,7 +8,7 @@ import { INSTANCE_CAPACITY } from '../render/instancing';
 import { ENTITY_BOX } from './collisions';
 import { CONFIG } from './config';
 import { createGame, type GameState, handleAction, startRun, updateGame } from './game';
-import { branchIsSolid, branchOffsetX, realignProgressOf } from './path';
+import { activeBranchOf, branchCenterAt, branchIsSolid, realignProgressOf } from './path';
 import type { Entity, EntityKind, ObstacleKind, PickupKind } from './types';
 import { isOverhead } from './types';
 
@@ -233,7 +233,15 @@ describe('BUCO 1 — gap fra ostacoli come li incontra il giocatore', () => {
 
 describe('BUCO 2 — i buff sono raccoglibili in una corsa vera', () => {
   it('in una corsa simulata almeno un buff viene raccolto', () => {
-    const { buffsCollected } = ghostRun(2026, 90);
+    // Il seed è arbitrario, e la sua fortuna si sposta con QUALUNQUE taratura
+    // che cambi la cadenza dei bivi: legando il riallineamento alla distanza
+    // (forkBlendZ) invece che al tempo, a velocità di partenza ogni bivio
+    // dura ~17 unità in più e tutta la generazione scorre di conseguenza. Il
+    // vecchio 2026 è finito così fra i seed "asciutti" a 90 s, che sono circa
+    // 2 su 10 in qualunque taratura (misurato: 2025 e 2026 su 2020-2030) —
+    // non un buco, la coda della distribuzione. La proprietà vera la misura
+    // il test successivo, su 20 seed; questo resta il suo controllo rapido.
+    const { buffsCollected } = ghostRun(1, 90);
     expect(buffsCollected.length).toBeGreaterThan(0);
   });
 
@@ -375,15 +383,17 @@ describe('BUCO 8 — nessun ostacolo uccide mentre è disegnato fuori dal corrid
     // Il test di BUCO 4 guarda il solo frame del commit ed è insufficiente
     // proprio perché il problema si manifesta DOPO: il ramo scelto diventa
     // solido al punto di non ritorno, ma la traslazione laterale del mondo
-    // parte solo quando la biforcazione arriva a z=0 e dura realignSeconds.
-    // Nel mezzo, un ostacolo del ramo è già letale mentre sullo schermo sta
-    // fino a branchSeparation (6) unità di lato, su un corridoio largo
-    // trackWidth (4): una morte che il giocatore non può né prevedere né
-    // imparare, una potenziale per ogni bivio.
+    // parte solo quando la biforcazione arriva a z=0. Nel mezzo, un ostacolo
+    // del ramo era già letale mentre sullo schermo stava fino a
+    // branchSeparation (6) unità di lato, su un corridoio largo trackWidth
+    // (4): una morte che il giocatore non può né prevedere né imparare, una
+    // potenziale per ogni bivio.
     //
-    // Lo scostamento è calcolato con la stessa formula della vista
-    // (render/entities-view.ts, entityWorldOffsetX), tenuta qui in termini
-    // puri: branchOffsetX del ramo più l'offsetX del percorso.
+    // Lo scostamento è calcolato con la stessa funzione della vista
+    // (render/entities-view.ts, entityWorldOffsetX, che chiama branchCenterAt):
+    // dov'è il pezzo di strada su cui l'ostacolo sta, alla sua distanza. Da
+    // quando il ramo scelto si raddrizza prima della biforcazione il numero
+    // peggiore non è "sotto la semi-larghezza" ma zero esatto.
     const HALF_TRACK = CONFIG.world.trackWidth / 2;
     let checked = 0;
     let outside = 0;
@@ -397,7 +407,7 @@ describe('BUCO 8 — nessun ostacolo uccide mentre è disegnato fuori dal corrid
           if (!branchIsSolid(game.path, entity.branch)) continue;
 
           checked += 1;
-          const lateral = Math.abs(branchOffsetX(game.path, entity.branch) + game.path.offsetX);
+          const lateral = Math.abs(branchCenterAt(game.path, entity.branch, entity.z));
           if (lateral > HALF_TRACK) outside += 1;
           if (lateral > worst.lateral) {
             worst = {
@@ -441,13 +451,20 @@ describe('BUCO 5 — sopravvivenza di un giocatore che gioca bene', () => {
 
 describe('BUCO 6 — continuità laterale', () => {
   it('nessuna entità salta di lato fra un frame e il successivo (10 seed x 90 s)', () => {
-    // Lo scostamento laterale di un\'entità è branchOffsetX + offsetX: la
-    // stessa formula di render/entities-view.ts (entityWorldOffsetX), tenuta
-    // qui in termini puri per non far dipendere un test di gioco dalla vista.
-    // L\'unico movimento laterale legittimo è il riallineamento, che copre
-    // branchSeparation in realignSeconds.
+    // Lo scostamento laterale di un\'entità è branchCenterAt alla sua z: la
+    // stessa funzione di render/entities-view.ts (entityWorldOffsetX).
+    //
+    // L\'unico movimento laterale legittimo viene dalle due smoothstep che la
+    // compongono — l\'apertura della Y (lunga forkBlendZ) e il raddrizzamento
+    // del ramo scelto (lungo commitZ) — che hanno pendenza al più 1,5 diviso
+    // la propria lunghezza e nel caso peggiore si sommano. In un frame si
+    // percorrono al massimo maxSpeed * STEP unità.
     const maxLegitimateStep =
-      (CONFIG.path.branchSeparation / CONFIG.path.realignSeconds) * STEP * 1.5;
+      CONFIG.path.branchSeparation *
+      CONFIG.world.maxSpeed *
+      STEP *
+      1.5 *
+      (1 / CONFIG.path.forkBlendZ + 1 / CONFIG.path.commitZ);
     let worstStep = 0;
     let worstDetail = '';
 
@@ -457,7 +474,7 @@ describe('BUCO 6 — continuità laterale', () => {
         const current = new Map<number, number>();
         for (const entity of game.entities) {
           if (!entity.alive) continue;
-          const x = branchOffsetX(game.path, entity.branch) + game.path.offsetX;
+          const x = branchCenterAt(game.path, entity.branch, entity.z);
           const before = previous.get(entity.id);
           if (before !== undefined) {
             const step = Math.abs(x - before);
@@ -500,6 +517,56 @@ describe('BUCO 6 — continuità laterale', () => {
     }
     expect(closures).toBeGreaterThan(30);
     expect(worstProgress).toBeGreaterThan(0.95);
+  });
+});
+
+describe('BUCO 9 — la strada su cui si corre è dritta, non solo centrata', () => {
+  it('in una corsa vera lo scostamento è nullo a ogni distanza (12 seed x 90 s)', () => {
+    // I due difetti visti dal proprietario, misurati insieme su corse vere:
+    // «la mucca sembra finire fuori pista» (lo scostamento alla sua quota) e
+    // «la strada si deforma» (lo scostamento a tutte le altre distanze, che il
+    // primo controllo non vedeva — era verde mentre il secondo difetto era in
+    // produzione). Si riducono a una sola domanda: dov'è il centro del pezzo
+    // di strada su cui la mucca sta correndo? Lei è a x = 0, quindi la
+    // risposta deve essere 0, a ogni z.
+    //
+    // path.test.ts la verifica su bivi pilotati a velocità fisse e su entrambi
+    // i rami; qui la verificano la rampa di velocità vera e i rami che il
+    // gioco sceglie da sé.
+    const MAX_OFF_TRACK = 0.25;
+    const HORIZON = CONFIG.world.chunkLength * CONFIG.world.chunkCount;
+    let worst = 0;
+    let detail = '';
+    let forkFrames = 0;
+
+    for (let seed = 1; seed <= 12; seed++) {
+      ghostRun(seed, 90, (game) => {
+        const path = game.path;
+        // Dalla biforcazione in poi, cioè da quando la mucca è DENTRO il ramo
+        // che ha scelto. Prima la Y è legittimamente aperta — è il bivio da
+        // scegliere — e il ramo sta di lato per costruzione; che si chiuda
+        // senza mai risalire lo verifica il test di convergenza in
+        // path.test.ts.
+        if (path.phase !== 'realigning') return;
+        forkFrames += 1;
+        const branch = activeBranchOf(path);
+        for (let z = 0; z <= HORIZON; z += 4) {
+          const off = Math.abs(branchCenterAt(path, branch, z));
+          if (off > worst) {
+            worst = off;
+            detail = `seed ${seed}, fase ${path.phase}, z ${z}, velocità ${game.world.speed.toFixed(1)}`;
+          }
+        }
+      });
+    }
+
+    // Migliaia di frame di riallineamento davvero misurati: senza questo, un
+    // giorno in cui i bivi smettessero di aprirsi il test resterebbe verde
+    // misurando il nulla.
+    expect(forkFrames).toBeGreaterThan(3000);
+    expect(`${worst.toFixed(3)} — ${detail}`).toBe(
+      worst <= MAX_OFF_TRACK ? `${worst.toFixed(3)} — ${detail}` : `<= ${MAX_OFF_TRACK}`,
+    );
   });
 });
 

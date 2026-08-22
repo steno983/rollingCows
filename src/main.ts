@@ -434,13 +434,18 @@ function main(): void {
 
   bus.on('obstacle:hit', (payload) => {
     const hitX = worldToViewX(entityWorldOffsetX(game.path, { branch: payload.branch }));
+    // Poco sopra la BASE dell'ostacolo colpito, non a una quota fissa: un arco
+    // o un cornicione stanno a spawn.overheadY, e sfondandoli i cubetti
+    // comparivano all'altezza delle ginocchia invece che dove il legno si è
+    // spaccato.
+    const hitY = payload.y + 0.4;
 
     if (payload.outcome === 'smashed') {
       burstFromModel(
         pool,
         MODELS[payload.kind],
         hitX,
-        0.4,
+        hitY,
         payload.z,
         CONFIG.feel.smashBurstPower * particleScale,
       );
@@ -456,7 +461,7 @@ function main(): void {
         pool,
         MODELS[payload.kind],
         hitX,
-        0.4,
+        hitY,
         payload.z,
         CONFIG.feel.deathBurstPower * particleScale,
       );
@@ -475,7 +480,7 @@ function main(): void {
       pool,
       MODELS[payload.kind],
       hitX,
-      0.4,
+      hitY,
       payload.z,
       CONFIG.feel.deathBurstPower * particleScale,
     );
@@ -483,9 +488,21 @@ function main(): void {
   });
 
   bus.on('pickup:collected', (payload) => {
-    // Il giocatore è sempre al centro dello schermo (0): non esiste più una
-    // x propria del player, è il mondo/i rami a scorrere lateralmente.
-    burstFromModel(pool, MODELS[payload.kind], 0, 0.8, 0, 4 * particleScale);
+    // Dove stava DAVVERO il raccoglibile, non addosso alla mucca. La quota
+    // fissa di prima (0.8) era sbagliata per costruzione: i fiocchi nascono
+    // anche su archi alti e i buff sospesi stanno a spawn.overheadY, quindi
+    // l'esplosione compariva lontana dal fiocco che l'aveva prodotta — e
+    // spesso dentro l'ostacolo che la mucca stava scavalcando in quel
+    // momento, dove i cubetti restavano conficcati perché scorrono
+    // all'indietro insieme all'ostacolo.
+    burstFromModel(
+      pool,
+      MODELS[payload.kind],
+      worldToViewX(entityWorldOffsetX(game.path, { branch: payload.branch })),
+      payload.y,
+      payload.z,
+      4 * particleScale,
+    );
     if (payload.kind === 'snowflake') runSnowflakes += 1;
   });
 

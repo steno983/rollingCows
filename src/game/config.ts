@@ -28,8 +28,6 @@ export const CONFIG = {
      *  della biforcazione. La finestra di decisione utile resta ~2,15 s a
      *  velocità massima, nella norma del genere. */
     commitZ: 24,
-    /** Durata del riallineamento del ramo scelto verso il centro. */
-    realignSeconds: 0.6,
     /** Per quanto vale una scelta anticipata: uno swipe laterale dato fuori
      *  dalla finestra di avvicinamento non fa nulla, ma viene ricordato per
      *  questo tempo e, se il bivio compare entro tale finestra, vale come
@@ -58,19 +56,45 @@ export const CONFIG = {
      *  diventa solido al punto di non ritorno, ma la traslazione laterale
      *  parte solo quando la biforcazione arriva a z=0 e dura realignSeconds.
      *  Nel frattempo un ostacolo del ramo — disegnato a branchSeparation di
-     *  lato, cioè fino a 6 unità fuori da un corridoio largo 4 — è già
+     *  lato, cioè fino a 6 unità fuori da un corridoio largo 4 — era già
      *  letale. Misurato prima di questa zona franca: 3,43% degli ostacoli
      *  uccideva mentre era disegnato fuori pista, l'unica classe di morte che
-     *  il giocatore non poteva né prevedere né imparare. Il valore copre il
-     *  caso peggiore (velocità massima per tutta la durata del
-     *  riallineamento) più un margine. */
+     *  il giocatore non poteva né prevedere né imparare.
+     *
+     *  Il valore copriva il caso peggiore della traslazione a tempo (velocità
+     *  massima per tutta la durata del riallineamento: 40 * 0,6 = 24 unità).
+     *  Ora la traslazione segue la geometria del bivio e la mucca resta
+     *  esattamente al centro del proprio nastro in ogni frame (vedi
+     *  game/path.ts, branchSpreadAt), quindi la morte "fuori pista" non
+     *  dipende più da questo numero. Le 24 unità restano perché continuano a
+     *  servire per due motivi indipendenti: nelle prime unità dopo la
+     *  biforcazione i due nastri sono ancora quasi sovrapposti e un ostacolo
+     *  lì dentro non si leggerebbe come appartenente all'uno o all'altro
+     *  ramo; e la vista disegna le entità di ramo a branchOffsetX pieno senza
+     *  applicare l'apertura (vedi render/entities-view.ts), approssimazione
+     *  che regge solo dove l'apertura è quasi completa — a 24 unità su
+     *  forkBlendZ = 28 vale 0,944, cioè 0,34 unità di errore. */
     branchClearanceAfterFork: 24,
     /** Su quante unità dopo la biforcazione i due nastri della pista si
      *  aprono da coincidenti a ±branchSeparation (smoothstep, vedi
-     *  render/terrain.ts). Senza questa transizione il centro salta di 6
-     *  unità in una sola riga di geometria e il bivio si legge come due piste
-     *  parallele comparse di fianco alla propria, non come una Y. Il rapporto
-     *  ~1:4,7 fra separazione e lunghezza è quello di uno svincolo reale. */
+     *  game/path.ts, branchSpreadAt). Senza questa transizione il centro
+     *  salta di 6 unità in una sola riga di geometria e il bivio si legge
+     *  come due piste parallele comparse di fianco alla propria, non come una
+     *  Y. Il rapporto ~1:4,7 fra separazione e lunghezza è quello di uno
+     *  svincolo reale.
+     *
+     *  Governa anche la DURATA del riallineamento, che non è più un tempo a
+     *  sé (c'era un realignSeconds: 0,6, rimosso) ma questa stessa distanza:
+     *  il bivio si chiude quando la mucca ha percorso forkBlendZ unità oltre
+     *  la biforcazione, cioè quando il ramo scelto è davvero arrivato al
+     *  centro. Erano due curve diverse per la stessa cosa e divergevano fino
+     *  a 4,01 unità — la mucca fuori dal proprio nastro, che è il difetto
+     *  visivo per cui questa unificazione esiste. In tempo: 1,55 s a velocità
+     *  di partenza, 0,70 s a velocità massima. Se un giorno la piegata
+     *  sembrasse troppo lunga a bassa velocità, la leva NON è accorciare la
+     *  traslazione (si tornerebbe esattamente al difetto) ma accorciare lo
+     *  svincolo: congelare all'apertura del bivio un blendZ proporzionale
+     *  alla velocità e tenerlo in PathState. */
     forkBlendZ: 28,
   },
   player: {
@@ -580,10 +604,39 @@ export const CONFIG = {
      *  collidono mai e non devono MAI entrare nel corridoio giocabile. */
     scenery: {
       itemsPerChunk: 7,
-      /** Distanza laterale minima dal centro: deve restare ben oltre il bordo
-       *  del corridoio (world.trackWidth / 2) perché non si confonda con un
-       *  ostacolo da schivare. */
-      minLateral: 9,
+      /** Distanza laterale minima dal centro a cui può nascere un elemento
+       *  decorativo. Alzata da 9.
+       *
+       *  La vecchia giustificazione ("ben oltre il bordo del corridoio,
+       *  world.trackWidth / 2 = 2") guardava il tracciato DRITTO, che è il
+       *  caso in cui c'è più spazio. Durante un bivio la pista arriva a
+       *  branchSeparation + trackWidth / 2 = 8 unità di lato (il ramo attivo
+       *  non va mai oltre: il suo centro vale branchOffsetX per uno meno
+       *  l'apertura a z = 0, quindi al più branchSeparation), e i 7 di
+       *  margine dichiarati erano in realtà 1 — anzi, meno di zero, perché
+       *  questo numero posiziona il CENTRO dell'elemento e l'ingombro va
+       *  sottratto:
+       *  - baita: semi-diagonale √(1,88² + 1,38²) = 2,33 a scala 1, per
+       *    maxScale 1,6 fa 3,73 (lo yaw è casuale, quindi la diagonale si
+       *    presenta davvero) → a 9 il suo spigolo arrivava a 5,27, cioè 2,7
+       *    unità DENTRO il ramo esterno, più di metà della sua larghezza;
+       *  - abete e balla di fieno: semi-diagonale 0,88 · √2 · 1,6 = 1,99 → a
+       *    9 arrivavano a 7,01, un'unità dentro il ramo.
+       *  8 + 3,73 = 11,73, arrotondato a 12.
+       *
+       *  Restano volutamente fuori dal conto due cose. Il nastro SCARTATO,
+       *  che durante il riallineamento scivola fino a |x| = 12: quando il suo
+       *  bordo esterno tocca quel valore è largo 0,4 unità e sta svanendo
+       *  (vedi render/terrain.ts, trackHalfWidths), e dimensionare su di lui
+       *  porterebbe la scenografia a 15,7 svuotando i fianchi della pista. E
+       *  la rotazione del gruppo-mondo dei bivi, che non c'entra: pendio,
+       *  pista, entità e scenografia stanno tutti nello STESSO gruppo
+       *  ruotato (main.ts), quindi è una rotazione rigida e non può
+       *  sovrapporre un albero alla pista se non lo era già a rotazione
+       *  zero. Quello che la rotazione fa è far attraversare lo schermo a
+       *  ciò che è lontano, ed è il motivo per cui render.curve.* è stato
+       *  ridimensionato. */
+      minLateral: 12,
       maxLateral: 46,
       /** Peso relativo dei tre modelli decorativi. */
       weights: { tree: 7, cabin: 2, hay: 3 },
@@ -672,7 +725,7 @@ export const CONFIG = {
     /** Moltiplicatori applicati quando il sistema chiede di ridurre il
      *  movimento. La media query CSS disattivava quattro animazioni
      *  dell'interfaccia e non toccava nulla di ciò che causa davvero disagio
-     *  vestibolare: la rotazione del gruppo-mondo di 38° a ogni bivio,
+     *  vestibolare: la rotazione del gruppo-mondo a ogni bivio,
      *  l'inclinazione della mucca, il rollio, la pompa di FOV in valanga e gli
      *  scuotimenti. Con un bivio ogni ~12 s e una valanga ogni ~20, chi è
      *  sensibile al movimento affrontava una giostra in continuazione. Il
@@ -695,21 +748,45 @@ export const CONFIG = {
      *  numeri pensati per essere letti e tarati a occhio. */
     curve: {
       /** Rotazione di picco del gruppo-mondo (pendio+entità+sfondo) al
-       *  culmine della curva. Voluta esagerata ("sopra le righe"): un
-       *  bivio reale sposta il tracciato di soli branchSeparation=6 unità,
-       *  ma la vecchia traslazione pura senza rotazione si leggeva come un
-       *  errore di rendering, non come una svolta. */
-      maxWorldTiltDeg: 38,
+       *  culmine della curva. Abbassata da 38 a 16 e poi a 6, e la seconda
+       *  volta per un motivo che non è di gusto ma di geometria.
+       *
+       *  Questo è l'UNICO dei tre angoli che sposta la strada: il gruppo ruota
+       *  attorno alla mucca, quindi un punto a distanza z si sposta di
+       *  z·sin(yaw) — 5,5 unità a 20 di distanza con 16°, 11 a 40. Il
+       *  corridoio è largo 4. Il risultato, con la pista che nel frattempo
+       *  scivola anch'essa verso il ramo scelto, era che scegliendo DESTRA la
+       *  strada finiva a sinistra dello schermo: le parole del proprietario
+       *  sono state «viene presa la strada di sinistra come strada
+       *  principale». Non è compensabile alzando o abbassando qualcosa
+       *  d'altro: una rotazione sposta in proporzione a z, una strada dritta è
+       *  scostata di una costante, e le due cose coincidono al più a una sola
+       *  distanza. L'unica leva è tenere l'angolo piccolo.
+       *
+       *  A 6° la strada resta entro ~2 unità dal centro dello schermo fino a
+       *  20 unità di distanza, cioè dentro il corridoio per tutto il tratto
+       *  che il giocatore sta effettivamente leggendo. Il senso di curva non
+       *  si perde perché non è più questo angolo a portarlo: la pista ORA
+       *  curva davvero (il ramo scelto scivola al centro prima della
+       *  biforcazione, vedi game/path.ts, straightenProgress), e ci pensano
+       *  soprattutto i due angoli qui sotto, che non spostano niente. */
+      maxWorldTiltDeg: 6,
       /** Inclinazione di picco della mucca sul fianco, sullo stesso verso
-       *  della rotazione del mondo (si piega DENTRO la curva, come una moto
-       *  o uno sciatore). Volutamente vistosa: è il dettaglio che vende
-       *  l'idea "sono io a curvare", non il mondo che scivola. */
-      maxPlayerTiltDeg: 32,
-      /** Rollio di picco della camera: leggero apposta, un tocco che inclina
-       *  l'orizzonte senza disorientare (a differenza dei due angoli sopra,
-       *  che possono permettersi di essere marcati perché non toccano mai
-       *  l'inquadratura in sé). */
-      maxCameraRollDeg: 9,
+       *  della rotazione del mondo (si piega DENTRO la curva, come una moto o
+       *  uno sciatore). È il dettaglio che vende l'idea "sono io a curvare", e
+       *  resta il più marcato dei tre proprio perché è gratis: inclinare la
+       *  mucca non sposta di un millimetro la strada né nulla della scena.
+       *  Abbassata da 32 a 18 e poi a 14 per non staccarsi troppo dalla
+       *  rotazione del mondo, che la geometria costringe a essere piccola: se
+       *  la mucca si piegasse tre volte più del mondo, i due movimenti non si
+       *  leggerebbero più come uno solo. */
+      maxPlayerTiltDeg: 14,
+      /** Rollio di picco della camera: inclina l'orizzonte, e come la piegata
+       *  della mucca non sposta nulla. Resta il più piccolo dei tre perché è
+       *  l'unico che agisce sull'inquadratura in sé, dove anche pochi gradi si
+       *  sentono; abbassato da 9 a 5 e poi a 4 per restare sotto la rotazione
+       *  del mondo, che ora vale 6. */
+      maxCameraRollDeg: 4,
     },
   },
   input: {

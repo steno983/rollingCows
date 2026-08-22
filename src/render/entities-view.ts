@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { CONFIG } from '../game/config';
-import { branchOffsetX, type PathState } from '../game/path';
+import { branchCenterAt, type PathState } from '../game/path';
 import type { Entity, EntityKind } from '../game/types';
 import { worldToViewX } from './camera-rig';
 import { INSTANCE_CAPACITY } from './instancing';
@@ -66,12 +66,28 @@ const CASTS_SHADOW: Record<EntityKind, boolean> = {
 
 /**
  * Scostamento laterale di MONDO (non ancora convertito in coordinate vista)
- * a cui va disegnata un'entità: dipende solo dal suo ramo e dallo stato
- * corrente del percorso. Logica pura, testabile senza three — la
- * conversione in X di schermo resta a worldToViewX, chiamata solo in sync.
+ * a cui va disegnata un'entità: è il centro del pezzo di strada su cui
+ * l'entità sta, alla SUA distanza — la stessa funzione che posiziona il nastro
+ * sotto di lei (game/path.ts, branchCenterAt). La conversione in X di schermo
+ * resta a worldToViewX, chiamata solo in sync.
+ *
+ * Che sia la stessa funzione non è una comodità: un'entità disegnata con una
+ * formula diversa da quella del nastro galleggia di lato rispetto alla strada
+ * su cui è appoggiata, ed è ciò che accadeva quando qui si sommava un offset
+ * unico per tutte le z mentre l'apertura del nastro dipendeva da z. Oggi un
+ * ostacolo del ramo scelto arriva addosso alla mucca disegnato a x = 0 esatto,
+ * il che chiude anche la classe di morti «l'ostacolo mi ha ucciso mentre stava
+ * di lato» (vedi path.branchClearanceAfterFork, nata per arginarla).
+ *
+ * `z` è opzionale e vale 0 — la quota della mucca — perché chi chiede questo
+ * scostamento per un EVENTO (l'esplosione di cubetti su un impatto, in
+ * main.ts) parla per definizione di qualcosa che sta succedendo lì.
  */
-export function entityWorldOffsetX(path: PathState, entity: Pick<Entity, 'branch'>): number {
-  return branchOffsetX(path, entity.branch) + path.offsetX;
+export function entityWorldOffsetX(
+  path: PathState,
+  entity: Pick<Entity, 'branch'> & Partial<Pick<Entity, 'z'>>,
+): number {
+  return branchCenterAt(path, entity.branch, entity.z ?? 0);
 }
 
 export function createEntitiesView(): EntitiesView {

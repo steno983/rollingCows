@@ -1,5 +1,5 @@
 import { CONFIG } from '../game/config';
-import { branchOffsetX, type PathState } from '../game/path';
+import { branchOffsetX, type PathState, straightenProgress } from '../game/path';
 
 const DEG_TO_RAD = Math.PI / 180;
 const MAX_WORLD_YAW = CONFIG.render.curve.maxWorldTiltDeg * DEG_TO_RAD;
@@ -15,13 +15,16 @@ const MAX_CAMERA_ROLL = CONFIG.render.curve.maxCameraRollDeg * DEG_TO_RAD;
  * ordinare i test.
  *
  * Perché serve: la media query CSS disattivava quattro animazioni
- * dell'interfaccia e non toccava NULLA della piegata — 38° di rotazione del
- * mondo, 32° di inclinazione della mucca, 9° di rollio della camera, con un
- * bivio ogni ~12 secondi — cioè esattamente ciò che causa disagio
- * vestibolare. Il bivio resta perfettamente leggibile anche al 25%
+ * dell'interfaccia e non toccava NULLA della piegata — rotazione del mondo,
+ * inclinazione della mucca e rollio della camera insieme (vedi
+ * CONFIG.render.curve), con un bivio ogni ~12 secondi — cioè esattamente ciò
+ * che causa disagio vestibolare. I tre angoli sono stati poi ridimensionati
+ * (38/32/9 → 16/18/5 gradi) perché la piegata era diventata lunga il doppio,
+ * ma sommati restano il movimento più forte del gioco. Il bivio resta perfettamente leggibile anche al 25%
  * (render.reducedMotion.curveScale), perché la rotazione è dichiaratamente
- * estetica e a somma zero: il lavoro geometrico lo fa la traslazione
- * dell'offset (game/path.ts, offsetX), che questo fattore non tocca.
+ * estetica e a somma zero: il lavoro geometrico lo fa la pista stessa, che
+ * durante un bivio porta il ramo scelto sotto la mucca (game/path.ts,
+ * branchCenterAt), e questo fattore non la tocca.
  */
 export function curveMotionScale(reducedMotion: boolean): number {
   return reducedMotion ? CONFIG.render.reducedMotion.curveScale : 1;
@@ -43,22 +46,25 @@ function ease(t: number): number {
  * 'committed' (la biforcazione si avvicina da commitZ a 0: il ramo è già
  * bloccato, chooseBranch non può più cambiarlo) e ridiscende durante
  * 'realigning', riusando `path.realignProgress` già calcolato da
- * game/path.ts — stessa base temporale della traslazione offsetX, quindi le
- * due animazioni restano sincronizzate. Zero in 'none' e 'approaching': è
+ * game/path.ts — una frazione di distanza percorsa e non un tempo a parte
+ * (vedi applyRealignment), quindi la piegata rientra alla stessa cadenza a
+ * qualunque velocità. Zero in 'none' e 'approaching': è
  * cruciale restare a zero durante 'approaching', perché lì la scelta può
- * ancora cambiare idea (chooseBranch funziona solo in quella fase) e offsetX
- * stesso resta a 0 — se l'intensità iniziasse a crescere già lì, cambiare
- * ramo produrrebbe uno scatto di segno a metà salita. Bloccando la crescita
+ * ancora cambiare idea (chooseBranch funziona solo in quella fase) e la pista
+ * stessa resta simmetrica — se l'intensità iniziasse a crescere già lì,
+ * cambiare ramo produrrebbe uno scatto di segno a metà salita. Bloccando la crescita
  * a 'committed' in poi (ramo ormai irrevocabile) l'unico punto in cui il
  * segno può cambiare è quando l'intensità è già a zero: nessuno scatto
  * possibile.
  */
 function turnIntensity(path: PathState): number {
-  if (path.phase === 'committed') {
-    const commitZ = CONFIG.path.commitZ;
-    if (commitZ <= 0) return 1;
-    return ease((commitZ - path.forkZ) / commitZ);
-  }
+  // Durante la fase impegnata è ESATTAMENTE il raddrizzamento del ramo scelto
+  // (game/path.ts): non una curva parallela con la stessa forma, la stessa
+  // funzione. È lì che la strada si muove davvero — scivola sotto la mucca
+  // diventando la principale — e la piegata deve crescere con quel movimento,
+  // non per conto proprio. Le due copie della stessa easing erano già una di
+  // troppo la prima volta che una delle due è stata cambiata.
+  if (path.phase === 'committed') return straightenProgress(path);
   if (path.phase === 'realigning') {
     return ease(1 - path.realignProgress);
   }

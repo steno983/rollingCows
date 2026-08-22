@@ -76,8 +76,9 @@ Parametri (tutti in `config.ts`):
 | Larghezza del tracciato | 4 unità |
 | Separazione dei rami al bivio | 6 unità |
 | Distanza a cui il bivio diventa visibile | 110 unità |
-| Punto di non ritorno | 24 unità prima della biforcazione |
+| Punto di non ritorno | 20 unità prima della biforcazione |
 | Finestra di scelta | 2,0 s prima del punto di non ritorno (a tempo, non a distanza) |
+| Posizione del cartello | ~19,2 unità OLTRE la biforcazione, nel cuneo |
 | Lunghezza del riallineamento | 28 unità (una distanza, non un tempo) |
 | Distanza minima fra due bivi | 120 unità, crescente con la velocità |
 
@@ -125,10 +126,28 @@ Perché sia leale servono tre cose, tutte verificate:
   3,2: non è scavalcabile a nessuna velocità e a nessuna taglia. Altrimenti «scegli o
   muori» diventerebbe «scegli o salta», cioè una terza opzione più facile delle altre
   due.
-- **Non uccide chi ha scelto.** Il cartello sta sul tronco, al centro; nell'istante in
-  cui la scelta viene registrata la mucca appartiene a un ramo e il cartello le passa
-  accanto. Diventa quindi inerte, non sparisce: farlo svanire davanti al muso sarebbe
-  una sparizione a vista.
+- **Sta nel cuneo, non in mezzo alla strada.** Va piantato **oltre** la biforcazione,
+  non su di essa: sulla biforcazione l'apertura della Y vale zero per costruzione, i due
+  nastri sono ancora sovrapposti e il cartello sarebbe un palo largo 3,5 unità in mezzo a
+  una carreggiata larga 4 — cioè un muro sulla strada dritta, prima ancora che il bivio
+  esista visivamente. Lo spazio libero per lato a `d` unità oltre la biforcazione vale
+  `branchSeparation · smoothstep(0, forkBlendZ, d) − trackWidth/2`: −2,00 a d = 0, 0,36 a
+  d = 12, 2,25 a d = 18, 4,00 a d = 28. Chiedendo che ci stia tutto, misurato sul suo
+  bordo vicino e con mezza sagoma di mucca d'aria, viene **d ≈ 19,2 unità**. Il conto è
+  risolto per bisezione nel codice, non scritto a mano, così resta corretto se cambiano
+  `branchSeparation`, `trackWidth`, `forkBlendZ` o la larghezza del cartello.
+- **Sparisce quando si sceglie**, e per una ragione geometrica, non estetica: appena la
+  scelta è registrata il ramo scelto comincia a scivolare al centro e il cuneo si chiude
+  su di lui, da 2,59 unità di semi-spazio a 0,30 contro le 1,75 che occupa. A
+  raddrizzamento completo il ramo scelto è a x = 0 ed è lì che sta il cartello: la mucca
+  ci passerebbe **attraverso**. Nessuna distanza lo salverebbe — al massimo dell'apertura
+  il semi-spazio fra i due nastri vale `branchSeparation/2 − trackWidth/2` = 1,00, meno
+  della sua semi-larghezza. Non è una sparizione a vista: la finestra di scelta si apre a
+  ridosso, quindi quando si sceglie il cartello dista fra 75 e 129 unità, a metà strada o
+  oltre la nebbia (`render.fogNear` = 95).
+- **La regola resta separata dalla rimozione.** «Solido solo se nessuno ha scelto» è una
+  funzione della scelta e vale comunque, anche se un giorno la rimozione venisse
+  dimenticata: chi ha scelto non muore contro il cartello.
 
 **Vedere il bivio e poterlo scegliere sono due momenti diversi.** *Anche questo è
 rivisto: nella prima stesura coincidevano.* La Y del tracciato si vede arrivare da
@@ -143,17 +162,20 @@ La finestra è quindi **a tempo**: si apre quando `forkZ <= commitZ + velocità 
 choiceWindowSeconds`, con `choiceWindowSeconds` = 2,0 s. Dura uguale a ogni velocità,
 che è esattamente ciò che serviva. Il tetto vero è il minimo fra quel tempo e ciò che
 la visibilità concede — non si apre la scelta su un bivio che non si vede — e il
-pareggio cade a (110 − 24) / 2 = **43 u/s**: sotto comanda il tempo, sopra comanda
-`previewZ`.
+pareggio cade a (110 − 20) / 2 = **45 u/s**, appena sopra la velocità di punta più alta del
+gioco: in pratica comanda sempre il tempo. È anche la ragione per cui il punto di non
+ritorno è stato portato da 24 a 20 unità — con 24 il tetto scattava già a 43 u/s e la
+finestra su "Toro" si accorciava a 1,87 s.
 
 | | velocità | finestra misurata |
 |---|---|---|
-| primo bivio, "Vitellino" | 17,2 u/s | 1,95 s *(prima: 5,00 s)* |
-| primo bivio, "Normale" | 21,0 u/s | 1,97 s *(prima: 4,10 s)* |
-| crociera | 30-34 u/s | 2,00 s *(prima: 2,53-2,87 s)* |
-| tetto "Vitellino" | 28 u/s | 2,00 s *(prima: 3,07 s)* |
-| tetto "Normale" | 40 u/s | 2,00 s *(prima: 2,15 s)* |
-| tetto "Toro" | 46 u/s | 1,87 s *(invariata: comanda `previewZ`)* |
+| primo bivio, "Vitellino" | 17,3 u/s | 1,97 s *(prima: 5,03 s)* |
+| primo bivio, "Normale" | 21,1 u/s | 1,97 s *(prima: 4,12 s)* |
+| primo bivio, "Toro" | 24,9 u/s | 1,95 s *(prima: 3,49 s)* |
+| crociera | 39-44 u/s | 2,00 s *(prima: 2,23-1,97 s)* |
+| tetto "Vitellino" | 28 u/s | 2,00 s *(prima: 3,11 s)* |
+| tetto "Normale" | 40 u/s | 2,00 s *(prima: 2,18 s)* |
+| tetto "Toro" | 46 u/s | 1,95 s *(prima: 1,89 s)* |
 
 *(Le finestre a bassa velocità sono un pelo sotto i 2,0 s nominali perché la
 velocità sale mentre la finestra viene percorsa: la soglia di apertura si fissa con
@@ -341,6 +363,9 @@ Test essenziali sul percorso:
 - due bivi non si sovrappongono mai, a nessuna velocità;
 - chi non sceglie non ottiene alcun ramo e si schianta contro il cartello;
 - la finestra di scelta dura lo stesso tempo a ogni velocità e su ogni profilo;
+- il cartello non sporge mai dentro i due nastri, a nessuna z della sua profondità;
+- la piegata non scatta a nessuna distanza, con un tetto ASSOLUTO allo spostamento
+  laterale per frame e non solo con uno derivato da `commitZ`;
 - chi reagisce entro 1,5 s dall'apertura della finestra sopravvive, pur continuando
   a schivare;
 - il cartello diventa inerte nell'istante esatto in cui la scelta viene registrata;

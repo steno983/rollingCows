@@ -29,16 +29,34 @@ export const CONFIG = {
      *
      *  DA QUANDO L'INDECISIONE COSTA LA CORSA (design §4, regola nuova: chi
      *  non sceglie va dritto contro il cartello) questo non è più solo il
-     *  punto in cui la scelta smette di essere reversibile, è la SCADENZA:
-     *  chi arriva qui senza avere scelto non prende alcun ramo e si schianta
-     *  contro il cartello 24 unità più avanti.
+     *  punto in cui la scelta smette di essere reversibile, è la SCADENZA.
      *
      *  Non è più anche l'estremo INFERIORE della finestra di scelta, che ora
-     *  è a tempo: vedi `choiceWindowSeconds`, che è il numero da muovere se
-     *  la finestra si rivelasse stretta. Restano invece 24 unità — da 0,52 a
-     *  0,60 s — fra qui e il cartello: non tempo di decisione, ma il
-     *  preavviso che rende la morte leggibile invece che improvvisa. */
-    commitZ: 24,
+     *  è a tempo: vedi `choiceWindowSeconds`.
+     *
+     *  ABBASSATO DA 24. È la distanza su cui il ramo scelto scivola al centro
+     *  (`straightenProgress`), quindi accorciarla rende più ripido lo
+     *  spostamento laterale della strada: misurato sul punto peggiore del
+     *  nastro visibile, a 46 u/s, lo scatto per frame vale 0,287 unità a 24,
+     *  0,345 a 20, 0,430 a 16, 0,574 a 12 — cresce più che linearmente, e
+     *  oltre un certo punto la piegata torna a essere lo strappo che il
+     *  raddrizzamento è stato introdotto per togliere.
+     *
+     *  20 compra due cose e ne paga una. Compra 4 unità in meno di "non posso
+     *  più scegliere ma non sono ancora arrivato al cartello" (da 42 a 38
+     *  unità, cioè da 1,05 a 0,95 s a 40 u/s), e soprattutto toglie il tetto
+     *  che `previewZ` metteva alla finestra di scelta: (110 − 20) / 46 = 1,96
+     *  s ≥ i 2,0 s nominali meno l'accelerazione, quindi la finestra vale
+     *  ~2 s su TUTTI i profili invece che 1,87 s sul solo "Toro" al tetto.
+     *  Paga il 20% di scatto laterale in più, che resta ampiamente sotto la
+     *  soglia percettiva verificata in path.test.ts.
+     *
+     *  Se un giorno servisse avvicinare ancora la scadenza al cartello, la
+     *  leva NON è continuare ad abbassare questo numero (a 12 lo scatto
+     *  raddoppia) ma slegare il raddrizzamento dalla fase impegnata: farlo
+     *  durare una distanza propria a partire dalla scelta, lasciandolo
+     *  proseguire oltre la biforcazione dentro il riallineamento. */
+    commitZ: 20,
     /**
      * Per quanto TEMPO la scelta resta aperta, prima del punto di non ritorno.
      *
@@ -72,6 +90,24 @@ export const CONFIG = {
      * (game/run-simulation.test.ts): e' il margine vero, non i 2,0 nominali.
      */
     choiceWindowSeconds: 2,
+    /**
+     * Semi-larghezza del CARTELLO in unità di mondo, cioè quanto sporge di
+     * lato dal proprio palo.
+     *
+     * Non è un ingombro di collisione — le collisioni non hanno asse X (vedi
+     * collisions.ts) e il cartello non ne avrebbe comunque bisogno, dato che
+     * chi lo colpisce lo colpisce di muso. Serve a decidere DOVE piazzarlo:
+     * deve stare tutto dentro il cuneo fra i due rami, e per saperlo bisogna
+     * sapere quanto è largo (vedi path.ts, `signpostOffsetZ`).
+     *
+     * DEVE CORRISPONDERE AL MODELLO VOXEL (render/models.ts, buildSignpost):
+     * 14 celle da render.voxelSize = 0,25, quindi ±1,75. Vive qui e non lo si
+     * legge da lì perché game/ non importa render/ — è una regola di progetto
+     * (architecture.test.ts) e non una dimenticanza. Se un giorno le frecce si
+     * accorciano o si allungano, questo numero va con loro, e il cartello si
+     * riposiziona da solo.
+     */
+    signpostHalfWidth: 1.75,
     /** Distanza del PRIMISSIMO bivio di una corsa, diversa da minGap: a
      *  minGap (120 unità, ~6,5 s a velocità di partenza) il giocatore deve
      *  superare tre ostacoli prima di vedere un bivio, e spesso muore prima

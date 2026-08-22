@@ -305,21 +305,86 @@ export function choiceIsOpen(path: PathState): boolean {
 }
 
 /**
+ * DOVE va piantato il cartello, in unita' OLTRE la biforcazione.
+ *
+ * IL DIFETTO CHE QUESTO NUMERO CORREGGE. Il cartello stava a `forkZ` esatta,
+ * cioe' sulla biforcazione. Ma li' l'apertura della Y vale zero — i due nastri
+ * sono ancora perfettamente sovrapposti, `branchSpreadAt(path, forkZ) = 0` per
+ * costruzione — quindi non c'era nessun cuneo in cui stare: il cartello era un
+ * palo largo 3,5 unita' piantato in mezzo a una carreggiata larga 4, prima
+ * ancora che il bivio esistesse visivamente. Parole del proprietario: «il
+ * cartello al bivio e' posizionato prima della curva e non permette quindi di
+ * cambiare direzione».
+ *
+ * IL CONTO. A `d` unita' oltre la biforcazione i due centri stanno a
+ * ±`branchSeparation · spread(d)` e ogni nastro e' largo `trackWidth`, quindi
+ * lo spazio libero fra i due bordi interni vale, per lato:
+ *
+ *     semiCuneo(d) = branchSeparation · smoothstep(0, forkBlendZ, d) − trackWidth/2
+ *
+ * che con i valori attuali fa −2,00 a d = 0 (il cartello INVADE la pista di 2
+ * unita' per lato), 0,36 a d = 12, 2,25 a d = 18, 4,00 a d = 28. Serve
+ * `semiCuneo ≥ signpostHalfWidth + aria`, misurato non al centro del cartello
+ * ma sul suo BORDO VICINO (`d − depth/2`), che e' il punto in cui il cuneo e'
+ * piu' stretto.
+ *
+ * L'aria e' mezza sagoma della mucca e non un numero scelto: `player.depth` e'
+ * la sua misura in z, ma la mucca e' grossomodo quadrata in pianta, quindi
+ * meta' di quel valore e' il margine che impedisce a chi passa di sfiorarla.
+ * Stesso criterio di `PICKUP_CLEARANCE` in spawner.ts, e per lo stesso motivo:
+ * due modelli voxel che si toccano sono indistinguibili da due incastrati.
+ *
+ * Risolto per bisezione e non a mano perche' `smoothstep` non si inverte in
+ * forma chiusa e perche' il risultato deve restare corretto se domani cambiano
+ * `branchSeparation`, `trackWidth`, `forkBlendZ` o la larghezza del cartello.
+ * Una volta sola, all'avvio: il valore non dipende dallo stato.
+ */
+function computeSignpostOffsetZ(): number {
+  const { branchSeparation, forkBlendZ, signpostHalfWidth } = CONFIG.path;
+  const needed = signpostHalfWidth + CONFIG.player.depth / 2;
+  const nearEdge = CONFIG.collisions.entityBox.signpost.depth / 2;
+  const fits = (d: number): boolean =>
+    branchSeparation * smoothstep(0, forkBlendZ, d - nearEdge) - CONFIG.world.trackWidth / 2 >=
+    needed;
+  // Il cuneo cresce in modo monotono con la distanza e a forkBlendZ e' aperto
+  // del tutto: se non basta nemmeno li', nessuna distanza dentro lo svincolo
+  // basterebbe, e si sceglie il punto piu' largo disponibile invece di
+  // cercarne uno che non esiste.
+  let low = 0;
+  let high = forkBlendZ + nearEdge;
+  if (!fits(high)) return high;
+  for (let i = 0; i < 60; i++) {
+    const mid = (low + high) / 2;
+    if (fits(mid)) high = mid;
+    else low = mid;
+  }
+  return high;
+}
+
+/** Distanza del cartello OLTRE la biforcazione. Vedi il conto sopra: con i
+ *  valori attuali vale ~19,2 unita'. */
+export const SIGNPOST_OFFSET_Z = computeSignpostOffsetZ();
+
+/**
  * Il CARTELLO del bivio e' solido?
  *
- * Il cartello sta nel cuneo fra i due rami, cioe' al centro (x = 0 in
- * coordinate del tronco), alla distanza della biforcazione. E' solido solo
- * finche' nessuno ha scelto: nell'istante in cui la scelta viene registrata la
- * mucca appartiene a un ramo, che la geometria del bivio porta a
- * `branchSeparation` unita' di lato, e il cartello le passa ACCANTO. Diventa
- * quindi inerte, non sparisce: farlo svanire davanti al muso sarebbe una
- * sparizione a vista, mentre passargli di fianco e' quello che davvero succede.
+ * Il cartello sta nel cuneo fra i due rami (vedi SIGNPOST_OFFSET_Z), ed e'
+ * solido solo finche' nessuno ha scelto.
  *
  * La condizione e' una sola espressione, e questo e' il punto: la solidita' del
  * cartello NON e' uno stato da mantenere in sincrono con la scelta (un flag da
- * spegnere, un'entita' da rimuovere, un ordine di operazioni da rispettare), e'
- * una funzione della scelta. Non esiste alcun frame in cui i due possano
- * divergere, perche' non c'e' niente da aggiornare.
+ * spegnere, un ordine di operazioni da rispettare), e' una FUNZIONE della
+ * scelta. Non esiste alcun frame in cui i due possano divergere, perche' non
+ * c'e' niente da aggiornare.
+ *
+ * A questa regola si affianca, in game.ts, la rimozione dell'entita' nello
+ * stesso istante, e le due cose non sono ridondanti: la rimozione esiste per
+ * una ragione GEOMETRICA — appena la scelta e' registrata il ramo scelto
+ * comincia a scivolare al centro (`straightenProgress`) e il cuneo si chiude,
+ * fino a lasciare 0,30 unita' di semi-spazio contro le 1,75 che il cartello
+ * occupa: restando li', a raddrizzamento completo, finirebbe esattamente sotto
+ * la mucca. Questa funzione invece e' la REGOLA, e vale anche se un giorno la
+ * rimozione venisse dimenticata: chi ha scelto non muore contro il cartello.
  *
  * Nelle fasi 'committed' e 'realigning' una scelta esiste per costruzione (il
  * tipo lo garantisce: `choice` non e' nullable la'), quindi inerte. In 'none'
@@ -478,7 +543,12 @@ function advanceApproaching(
  * chiusura senza ramo vincente (vedi handleForkTransitions).
  */
 function advanceUnchosen(path: PathApproaching, speed: number): PathState {
-  if (path.forkZ > -CONFIG.path.forkBlendZ) return path;
+  // Non basta `forkBlendZ`: il cartello sta OLTRE la biforcazione, quindi il
+  // bivio non e' davvero alle spalle finche' non e' passato anche lui. Chiudere
+  // prima significherebbe togliere di mezzo il cartello (la chiusura rimuove le
+  // entita' del tronco) proprio mentre sta arrivando addosso a chi non ha
+  // scelto, cioe' annullare la regola con la sua stessa rete di sicurezza.
+  if (path.forkZ > -(CONFIG.path.forkBlendZ + SIGNPOST_OFFSET_Z)) return path;
   return {
     phase: 'none',
     nextForkIn: CONFIG.path.minGap + CONFIG.path.gapPerSpeed * speed,

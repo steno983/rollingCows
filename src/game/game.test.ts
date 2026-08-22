@@ -20,6 +20,7 @@ import {
   forkApproaching,
   forkZOf,
   type PathState,
+  SIGNPOST_OFFSET_Z,
 } from './path';
 import { createScore, registerPassedObstacle, streakMultiplier } from './score';
 import { createSpawner } from './spawner';
@@ -1213,7 +1214,7 @@ describe('CREPACCIO (chasm): ci si precipita dentro, non ci si sbatte contro', (
 });
 
 describe('CARTELLO DEL BIVIO (signpost): scegliere o schiantarsi', () => {
-  it('nasce con il bivio, sul tronco, alla distanza esatta della biforcazione', () => {
+  it('nasce con il bivio, sul tronco, NEL CUNEO e non sulla biforcazione', () => {
     const bus = createEventBus();
     const game = createGame(4, bus);
     startRun(game);
@@ -1233,31 +1234,67 @@ describe('CARTELLO DEL BIVIO (signpost): scegliere o schiantarsi', () => {
     // scostamento nullo qualunque sia l'apertura (vedi path.ts, branchCenterAt).
     expect(sign.branch).toBe('main');
     expect(sign.y).toBe(0);
-    expect(sign.z).toBe(forkZOf(game.path));
+    // OLTRE la biforcazione, non su di essa: sulla biforcazione l-apertura
+    // della Y vale zero e il cartello sarebbe un palo in mezzo alla
+    // carreggiata unica (vedi path.ts, SIGNPOST_OFFSET_Z).
+    const forkZ = forkZOf(game.path);
+    if (forkZ === null) throw new Error('bivio mancante');
+    expect(sign.z).toBeCloseTo(forkZ + SIGNPOST_OFFSET_Z, 9);
+    expect(SIGNPOST_OFFSET_Z).toBeGreaterThan(0);
     // Ha un id suo: lo alloca lo spawner apposta (placeSignpost), perché due
     // entità con lo stesso id sono indistinguibili per chi le consuma.
     expect(game.entities.filter((entity) => entity.id === sign.id)).toHaveLength(1);
   });
 
-  it('resta incollato alla biforcazione mentre il mondo scorre', () => {
+  it('resta incollato al cuneo mentre il mondo scorre', () => {
+    // Chi NON sceglie: il cartello lo accompagna fino allo schianto. Entità e
+    // bivio calano dello stesso `moved` a ogni frame, quindi restano incollati
+    // senza alcuna sincronizzazione da mantenere.
     const bus = createEventBus();
     const game = createGame(4, bus);
     startRun(game);
-    while (game.path.phase === 'none') updateGame(game, STEP);
-    handleAction(game, 'CHOOSE_LEFT');
+    for (let frame = 0; frame < 1200 && game.path.phase === 'none' && game.alive; frame++) {
+      for (const entity of game.entities) {
+        if (entity.category === 'obstacle' && entity.kind !== 'signpost') entity.alive = false;
+      }
+      updateGame(game, STEP);
+    }
+    expect(game.path.phase).toBe('approaching');
 
     let checked = 0;
-    for (let frame = 0; frame < 120; frame++) {
+    for (let frame = 0; frame < 240 && game.alive; frame++) {
+      for (const entity of game.entities) {
+        if (entity.category === 'obstacle' && entity.kind !== 'signpost') entity.alive = false;
+      }
       updateGame(game, STEP);
       const sign = game.entities.find((entity) => entity.kind === 'signpost');
       const forkZ = forkZOf(game.path);
       if (sign === undefined || forkZ === null) break;
-      // Entità e bivio calano dello stesso `moved` a ogni frame: nessuna
-      // sincronizzazione, e quindi niente da poter perdere di vista.
-      expect(sign.z).toBeCloseTo(forkZ, 9);
+      expect(sign.z).toBeCloseTo(forkZ + SIGNPOST_OFFSET_Z, 9);
       checked += 1;
     }
     expect(checked).toBeGreaterThan(60);
+  });
+
+  it('sparisce nell-istante in cui si sceglie, perché il cuneo si chiude su di lui', () => {
+    const bus = createEventBus();
+    const game = createGame(4, bus);
+    startRun(game);
+    // Il ciclo ha una guardia e toglie di mezzo gli ostacoli: senza, una morte
+    // prima del bivio lo farebbe girare all-infinito (updateGame non fa nulla
+    // su una corsa finita, quindi il percorso non avanzerebbe piu').
+    for (let frame = 0; frame < 1200 && !choiceIsOpen(game.path) && game.alive; frame++) {
+      for (const entity of game.entities) {
+        if (entity.category === 'obstacle' && entity.kind !== 'signpost') entity.alive = false;
+      }
+      updateGame(game, STEP);
+    }
+    expect(choiceIsOpen(game.path)).toBe(true);
+
+    expect(game.entities.some((entity) => entity.kind === 'signpost' && entity.alive)).toBe(true);
+    handleAction(game, 'CHOOSE_LEFT');
+    // Nello stesso istante, senza aspettare il frame dopo.
+    expect(game.entities.some((entity) => entity.kind === 'signpost' && entity.alive)).toBe(false);
   });
 
   it('chi NON sceglie ci si schianta e la corsa finisce lì', () => {

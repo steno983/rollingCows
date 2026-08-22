@@ -28,6 +28,7 @@ import {
   createPath,
   type ForkPhase,
   type PathState,
+  SIGNPOST_OFFSET_Z,
   signpostIsSolid,
   updatePath,
 } from './path';
@@ -396,12 +397,45 @@ export function handleAction(game: GameState, action: Action): void {
  * intollerabile: e' l'unico input del gioco che decide dove si va.
  *
  * 'fork:chosen' resta l'unico riscontro che il giocatore riceve prima del
- * punto di non ritorno, ed e' ora anche il segnale che il cartello e' diventato
- * inerte (vedi path.ts, signpostIsSolid).
+ * punto di non ritorno, ed e' anche il momento in cui il cartello se ne va.
  */
 function chooseSide(game: GameState, side: 'left' | 'right'): void {
   if (chooseBranch(game.path, side)) {
+    removeSignposts(game.entities);
     game.bus.emit('fork:chosen', { side });
+  }
+}
+
+/**
+ * Toglie di mezzo il cartello nell'istante in cui una scelta viene registrata.
+ *
+ * NON e' un modo di disattivarlo — a quello pensa gia' la regola, e da sola
+ * (path.ts, signpostIsSolid). E' una necessita' GEOMETRICA. Il cartello sta nel
+ * cuneo fra i due rami, e il cuneo esiste solo finche' i due rami sono
+ * separati: appena la scelta e' registrata il ramo scelto comincia a scivolare
+ * al centro (`straightenProgress`) e lo spazio si chiude, da 2,59 unita' di
+ * semi-spazio a 0,30, contro le 1,75 che il cartello occupa. A raddrizzamento
+ * completo il ramo scelto e' a x = 0 e il cartello anche: la mucca gli passerebbe
+ * ATTRAVERSO. Lasciarlo li' inerte sarebbe un difetto peggiore di quello che il
+ * riposizionamento e' venuto a correggere.
+ *
+ * Sparisce quando e' piu' lontano possibile, non sotto il muso: la finestra di
+ * scelta si apre a `commitZ + speed * choiceWindowSeconds`, quindi nel momento
+ * in cui si puo' scegliere il cartello dista fra 75 unita' (velocita' di
+ * partenza) e 129 (al tetto di "Toro", dove lo limita previewZ) — a meta' strada
+ * o oltre la nebbia (render.fogNear = 95). La vista puo' dissolverlo invece di
+ * spegnerlo di colpo, ma anche cosi' non e' una sparizione a vista.
+ *
+ * Toglie TUTTI i cartelli e non "il" cartello: ce n'e' sempre al massimo uno,
+ * ma cercarlo per identita' vorrebbe dire tenerne il riferimento nello stato di
+ * gioco, cioe' aggiungere una cosa da mantenere in sincrono per risparmiare un
+ * ciclo che gira due volte per bivio.
+ */
+function removeSignposts(entities: Entity[]): void {
+  for (let i = 0; i < entities.length; i++) {
+    const entity = entities[i];
+    if (entity === undefined) continue;
+    if (entity.kind === 'signpost') entity.alive = false;
   }
 }
 
@@ -670,24 +704,25 @@ function handleForkTransitions(
       out,
       lateProgress,
     );
-    // IL CARTELLO, esattamente nel punto in cui la strada si sdoppia e al
-    // centro (ramo 'main', cioe' scostamento nullo a qualunque apertura, vedi
-    // path.ts, branchCenterAt): il cuneo fra i due nastri. Nasce solido e
-    // diventa inerte nell'istante in cui una scelta viene registrata — non c'e'
-    // niente da spegnere, perche' la sua solidita' e' una funzione della scelta
-    // e non un flag (vedi entityIsSolid e path.ts, signpostIsSolid).
+    // IL CARTELLO, nel cuneo fra i due nastri: non SULLA biforcazione ma
+    // SIGNPOST_OFFSET_Z unita' oltre, che e' la prima distanza a cui la Y si e'
+    // aperta abbastanza da contenerlo (il conto sta in path.ts). Sulla
+    // biforcazione l'apertura vale zero e il cartello era semplicemente un palo
+    // in mezzo alla carreggiata unica.
+    //
+    // Ramo 'main' perche' il cuneo e' il prolungamento del tronco: scostamento
+    // nullo a qualunque apertura (vedi path.ts, branchCenterAt), cioe' proprio
+    // la mezzeria fra i due rami finche' nessuno ha scelto.
     //
     // Non ha bisogno di stare lontano dagli ostacoli del tronco che lo
     // precedono, e per questo non passa dai cursori dello spawner: a chi ha
-    // scelto e' inerte, a chi non ha scelto e' la fine della corsa. Non esiste
+    // scelto sparisce, a chi non ha scelto e' la fine della corsa. Non esiste
     // una coppia "ultimo ostacolo -> cartello" di cui garantire la
     // superabilita', perche' il cartello non e' superabile per definizione.
     //
     // Vive quanto il bivio: `entity.z` e `path.forkZ` calano dello stesso
-    // `moved` a ogni frame, quindi restano incollati senza sincronizzazione, e
-    // il despawn dietro le spalle (world.despawnBehindZ = -20) lo toglie di
-    // mezzo molto prima che il bivio si chiuda a forkZ = -forkBlendZ = -28.
-    game.spawner.placeSignpost(path.forkZ, out);
+    // `moved` a ogni frame, quindi restano incollati senza sincronizzazione.
+    game.spawner.placeSignpost(path.forkZ + SIGNPOST_OFFSET_Z, out);
     return;
   }
 

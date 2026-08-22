@@ -13,12 +13,14 @@ import {
   chooseBranch,
   createPath,
   forkApproaching,
+  forkCommitted,
   forkZOf,
   realignProgressOf,
+  SIGNPOST_OFFSET_Z,
   signpostIsSolid,
   updatePath,
 } from './path';
-import { speedAt } from './speed';
+import { resolveDifficultyProfile, speedAt } from './speed';
 
 const STEP = 1 / 60;
 
@@ -274,7 +276,16 @@ describe('senza scelta non si prende NESSUN ramo (design §4, regola nuova)', ()
     const rng = createRng(13);
     const speed = CONFIG.world.startSpeed;
     path = travel(path, CONFIG.path.firstForkIn + 1, speed, rng, bus);
-    path = travel(path, CONFIG.path.previewZ + CONFIG.path.forkBlendZ + 2, speed, rng, bus);
+    // La rete scatta quando e' passato anche il CARTELLO, che sta oltre la
+    // biforcazione: chiudere prima lo toglierebbe di mezzo proprio mentre
+    // arriva addosso a chi non ha scelto.
+    path = travel(
+      path,
+      CONFIG.path.previewZ + CONFIG.path.forkBlendZ + SIGNPOST_OFFSET_Z + 2,
+      speed,
+      rng,
+      bus,
+    );
 
     expect(path.phase).toBe('none');
     expect(activeBranchOf(path)).toBe('main');
@@ -363,9 +374,12 @@ describe('branchIsSolid', () => {
     const rng = createRng(1);
     path = travelToChoice(path, CONFIG.world.startSpeed, rng, bus);
     chooseBranch(path, 'left');
+    // Oltre il punto di non ritorno, ma non oltre la biforcazione: la finestra
+    // di scelta dura `choiceWindowSeconds`, quindi bastano quelle unita' piu'
+    // qualcosa per superare `commitZ` restando dentro la fase impegnata.
     path = travel(
       path,
-      CONFIG.path.previewZ - CONFIG.path.commitZ + 1,
+      CONFIG.world.startSpeed * CONFIG.path.choiceWindowSeconds + 1,
       CONFIG.world.startSpeed,
       rng,
       bus,
@@ -635,12 +649,37 @@ describe('la strada su cui si corre è dritta, non solo centrata', () => {
    * lunghezza (forkBlendZ per l'apertura, commitZ per il raddrizzamento) e si
    * sommano nel caso peggiore.
    */
+  /** La velocità più alta che il gioco raggiunge davvero, che non è
+   *  `CONFIG.world.maxSpeed` (40, il tetto del profilo di riferimento) ma
+   *  quella di "Toro". Misurare fino a 40 lasciava scoperto il 15% di velocità
+   *  in più su cui la piegata è più ripida — cioè proprio il caso peggiore. */
+  const TOP_SPEED = resolveDifficultyProfile('bull').maxSpeed;
+
   const MAX_STEP =
     CONFIG.path.branchSeparation *
-    CONFIG.world.maxSpeed *
+    TOP_SPEED *
     STEP *
     1.5 *
     (1 / CONFIG.path.forkBlendZ + 1 / CONFIG.path.commitZ);
+
+  /**
+   * Tetto ASSOLUTO, e non derivato come quello sopra.
+   *
+   * `MAX_STEP` si muove insieme a `commitZ`: abbassare il punto di non ritorno
+   * rende la piegata più ripida E alza la soglia che dovrebbe accorgersene,
+   * quindi da solo quel controllo non può mai fallire per quella causa —
+   * verifica che la formula descriva il codice, non che il risultato sia
+   * guardabile. Questo numero invece resta fermo: 0,40 unità per frame a 60 Hz
+   * sono 24 unità di scorrimento laterale al secondo su un punto della strada
+   * a metà orizzonte, che è il limite oltre il quale la piegata smette di
+   * leggersi come una curva e torna a leggersi come la deformazione che il
+   * raddrizzamento è stato introdotto per togliere.
+   *
+   * Misurato oggi alla velocità di punta di "Toro" (46 u/s, commitZ = 20):
+   * 0,345, contro 0,287 con il vecchio commitZ = 24. A commitZ 16 salirebbe a
+   * 0,430 e questo test diventerebbe rosso, che è esattamente il suo scopo.
+   */
+  const ABSOLUTE_MAX_STEP = 0.4;
 
   it('nessuno scatto a nessuna z, nemmeno ai cambi di fase (3 velocità x 2 rami x 5 seed)', () => {
     let worstStep = 0;
@@ -648,7 +687,7 @@ describe('la strada su cui si corre è dritta, non solo centrata', () => {
     let worstClosure = 0;
     let closures = 0;
 
-    for (const speed of [CONFIG.world.startSpeed, 28, CONFIG.world.maxSpeed]) {
+    for (const speed of [CONFIG.world.startSpeed, 28, CONFIG.world.maxSpeed, TOP_SPEED]) {
       for (const side of SIDES) {
         for (let seed = 1; seed <= 5; seed++) {
           const bus = createEventBus();
@@ -710,8 +749,13 @@ describe('la strada su cui si corre è dritta, non solo centrata', () => {
       }
     }
 
-    expect(closures).toBe(30);
+    // 4 velocità × 2 rami × 5 seed.
+    expect(closures).toBe(40);
     expect(worstClosure).toBe(0);
+    expect(
+      worstStep,
+      `scatto laterale oltre il tetto assoluto — ${stepDetail}`,
+    ).toBeLessThanOrEqual(ABSOLUTE_MAX_STEP);
     expect(`${worstStep.toFixed(3)} — ${stepDetail}`).toBe(
       worstStep <= MAX_STEP
         ? `${worstStep.toFixed(3)} — ${stepDetail}`
@@ -769,5 +813,92 @@ describe('realignProgress', () => {
     expect(last).toBeGreaterThan(1 - nominalStep - 1e-9);
     expect(path.phase).toBe('none');
     expect(realignProgressOf(path)).toBe(0);
+  });
+});
+
+describe('il cartello sta nel CUNEO, non in mezzo alla strada', () => {
+  const HALF_TRACK = CONFIG.world.trackWidth / 2;
+  const HALF_SIGN = CONFIG.path.signpostHalfWidth;
+  const SIGN_DEPTH = CONFIG.collisions.entityBox.signpost.depth;
+
+  /** Spazio libero fra il bordo del cartello e il bordo interno del nastro
+   *  più vicino, alla z data. Negativo = il cartello invade la pista. */
+  function clearanceAt(path: PathState, z: number): number {
+    let worst = Number.POSITIVE_INFINITY;
+    for (const side of SIDES) {
+      // Il cartello sta sul tronco, cioè a x = 0 (branchCenterAt('main') è
+      // nullo per costruzione), e occupa ±HALF_SIGN.
+      const inner = Math.abs(branchCenterAt(path, side, z)) - HALF_TRACK;
+      worst = Math.min(worst, inner - HALF_SIGN);
+    }
+    return worst;
+  }
+
+  it('sulla biforcazione non ci starebbe: è il difetto che SIGNPOST_OFFSET_Z corregge', () => {
+    // A forkZ esatta l'apertura vale 0 per costruzione, quindi i due nastri
+    // sono ancora sovrapposti e non esiste alcun cuneo: il cartello sarebbe un
+    // palo largo 3,5 in mezzo a una carreggiata larga 4.
+    const path = forkApproaching({ forkZ: 60 });
+    expect(branchCenterAt(path, 'left', 60)).toBe(0);
+    expect(clearanceAt(path, 60)).toBeLessThan(0);
+  });
+
+  it('non sporge MAI dentro i due nastri, a nessuna z della sua profondità', () => {
+    // Su tutta la vita di un bivio non scelto — che è l'unico caso in cui il
+    // cartello esiste ancora, perché la scelta lo rimuove — e su tutta la sua
+    // profondità, non solo al centro: il cuneo è più stretto sul bordo vicino.
+    let worst = Number.POSITIVE_INFINITY;
+    let detail = '';
+    let checked = 0;
+
+    for (const speed of [CONFIG.world.startSpeed, 28, CONFIG.world.maxSpeed]) {
+      const bus = createEventBus();
+      const rng = createRng(4);
+      let path: PathState = createPath();
+      for (let frame = 0; frame < 20000; frame++) {
+        path = updatePath(path, speed * STEP, speed, rng, bus);
+        const forkZ = forkZOf(path);
+        if (forkZ === null) continue;
+        const signZ = forkZ + SIGNPOST_OFFSET_Z;
+        // Solo finché il cartello è davanti: dietro le spalle non lo si vede.
+        if (signZ < 0) continue;
+        for (const edge of [-SIGN_DEPTH / 2, 0, SIGN_DEPTH / 2]) {
+          const clearance = clearanceAt(path, signZ + edge);
+          checked += 1;
+          if (clearance < worst) {
+            worst = clearance;
+            detail = `${speed} u/s, forkZ ${forkZ.toFixed(1)}, bordo ${edge}`;
+          }
+        }
+      }
+    }
+
+    expect(checked).toBeGreaterThan(1000);
+    // Aria residua fra cartello e pista: deve restare positiva, e con un
+    // margine che si legga come "accanto" invece che "attaccato".
+    // L'epsilon non è generosità: `SIGNPOST_OFFSET_Z` è la bisezione della
+    // stessa disuguaglianza, quindi il caso peggiore ci cade sopra ESATTAMENTE
+    // e il confronto in virgola mobile lo manca per un ulp.
+    const required = CONFIG.player.depth / 2 - 1e-9;
+    expect(`${worst.toFixed(3)} — ${detail}`).toBe(
+      worst >= required ? `${worst.toFixed(3)} — ${detail}` : '>= mezza mucca',
+    );
+  });
+
+  it('appena si sceglie il cuneo si chiude su di lui: per questo va rimosso', () => {
+    // È la ragione geometrica della rimozione (vedi game.ts, removeSignposts).
+    // Il ramo scelto scivola al centro, la distanza fra i due nastri si
+    // dimezza, e a raddrizzamento completo il cartello sarebbe esattamente
+    // sotto la mucca. Nessuna distanza lo salverebbe: al massimo dell'apertura
+    // il semi-spazio fra i nastri vale branchSeparation/2 − trackWidth/2 = 1,
+    // meno delle 1,75 che il cartello occupa.
+    const maxHalfSpaceAfterStraightening = CONFIG.path.branchSeparation / 2 - HALF_TRACK;
+    expect(maxHalfSpaceAfterStraightening).toBeLessThan(HALF_SIGN);
+
+    const committed = forkCommitted({ forkZ: 0, activeBranch: 'right' });
+    const signZ = SIGNPOST_OFFSET_Z;
+    // A raddrizzamento completo il ramo scelto è a x = 0, dove sta il cartello.
+    expect(branchCenterAt(committed, 'right', signZ)).toBeCloseTo(0, 9);
+    expect(clearanceAt(committed, signZ)).toBeLessThan(0);
   });
 });

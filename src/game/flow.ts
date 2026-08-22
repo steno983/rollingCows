@@ -51,7 +51,11 @@ export function isDying(flow: FlowState): boolean {
 }
 
 /** Arma il rallentatore quando arriva run:ended dal gioco. */
-export function armDeath(flow: FlowState, payload: GameOverPayload, deathSlowSeconds: number): void {
+export function armDeath(
+  flow: FlowState,
+  payload: GameOverPayload,
+  deathSlowSeconds: number,
+): void {
   flow.pendingGameOver = payload;
   flow.dyingSeconds = deathSlowSeconds;
 }

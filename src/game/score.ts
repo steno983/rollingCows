@@ -1,3 +1,4 @@
+import type { EventBus } from '../core/events';
 import { CONFIG } from './config';
 
 export interface ScoreState {
@@ -9,10 +10,29 @@ export interface ScoreState {
   points: number;
   /** Metri percorsi nella run corrente. */
   distance: number;
+  /** Ostacoli superati di fila senza subire colpi. Si azzera a qualunque
+   *  impatto che non sia uno sfondamento. */
+  streak: number;
+  /** Gradino corrente della serie: indice in CONFIG.score.streakMultipliers.
+   *  Tenuto a parte dal conteggio perché è ciò che cambia il moltiplicatore
+   *  (e quindi ciò che vale la pena annunciare con 'streak:changed'): la
+   *  serie sale di uno a ogni ostacolo, il gradino ogni streakStep. */
+  streakTier: number;
+  /** Sfondamenti concatenati durante la valanga, 0..smashChainMax. */
+  smashChain: number;
+  /** Secondi che restano per sfondare il prossimo e tenere viva la catena. */
+  smashChainTimeLeft: number;
 }
 
 export function createScore(): ScoreState {
-  return { points: 0, distance: 0 };
+  return {
+    points: 0,
+    distance: 0,
+    streak: 0,
+    streakTier: 0,
+    smashChain: 0,
+    smashChainTimeLeft: 0,
+  };
 }
 
 export function addDistance(score: ScoreState, meters: number, multiplier: number): void {
@@ -24,40 +44,67 @@ export function addBonus(score: ScoreState, amount: number, multiplier: number):
   score.points += amount * multiplier;
 }
 
-function resolveStorage(storage?: Storage): Storage | null {
-  if (storage !== undefined) return storage;
-  const ambient = (globalThis as { localStorage?: Storage }).localStorage;
-  return ambient ?? null;
+/** Gradino corrispondente a una serie, saturato all'ultimo moltiplicatore. */
+function tierFor(streak: number): number {
+  const last = CONFIG.score.streakMultipliers.length - 1;
+  return Math.min(last, Math.floor(streak / CONFIG.score.streakStep));
 }
 
-export function loadRecord(storage?: Storage): number {
-  const target = resolveStorage(storage);
-  if (target === null) return 0;
-
-  let raw: string | null = null;
-  try {
-    raw = target.getItem(CONFIG.score.recordKey);
-  } catch {
-    return 0;
-  }
-  if (raw === null) return 0;
-
-  const parsed = Number.parseFloat(raw);
-  if (!Number.isFinite(parsed) || parsed < 0) return 0;
-  return parsed;
+/**
+ * Moltiplicatore della serie. Si combina (moltiplicandosi) con quello della
+ * stella e con quello della valanga: schivare trenta ostacoli di fila valeva
+ * esattamente quanto schivarne trenta con tre perdoni in mezzo, e l'unica cosa
+ * che moltiplicava era la valanga — che da sola faceva fino all'80% dei punti
+ * di una corsa.
+ */
+export function streakMultiplier(score: ScoreState): number {
+  const value = CONFIG.score.streakMultipliers[score.streakTier];
+  // Il ?? non è difensivismo: con noUncheckedIndexedAccess l'accesso a un
+  // array è `number | undefined` e tierFor garantisce già l'indice valido.
+  return value ?? 1;
 }
 
-/** Salva se maggiore del record; restituisce true se è un nuovo record. */
-export function saveRecord(points: number, storage?: Storage): boolean {
-  const target = resolveStorage(storage);
-  if (target === null) return false;
-  if (!Number.isFinite(points)) return false;
-  if (points <= loadRecord(target)) return false;
+/** Un ostacolo solido ha oltrepassato il giocatore senza toccarlo. */
+export function registerPassedObstacle(score: ScoreState, bus: EventBus): void {
+  score.streak += 1;
+  const tier = tierFor(score.streak);
+  if (tier === score.streakTier) return;
+  score.streakTier = tier;
+  bus.emit('streak:changed', { streak: score.streak, multiplier: streakMultiplier(score) });
+}
 
-  try {
-    target.setItem(CONFIG.score.recordKey, String(points));
-  } catch {
-    return false;
-  }
-  return true;
+/**
+ * Il giocatore ha subito un colpo: la serie riparte da zero. Lo sfondamento NON
+ * passa di qui — sfondare è il premio della valanga, non un errore.
+ */
+export function breakStreak(score: ScoreState, bus: EventBus): void {
+  if (score.streak === 0) return;
+  const hadTier = score.streakTier;
+  score.streak = 0;
+  score.streakTier = 0;
+  if (hadTier === 0) return;
+  bus.emit('streak:changed', { streak: 0, multiplier: streakMultiplier(score) });
+}
+
+/**
+ * Registra uno sfondamento e restituisce il bonus in punti, catena compresa.
+ * Durante l'invulnerabilità nessun input conta: sono secondi passivi in cui si
+ * guarda soltanto. La catena è la cosa da GIOCARE in quei secondi — restare
+ * addosso agli ostacoli invece di lasciarli arrivare.
+ */
+export function registerSmash(score: ScoreState): number {
+  // La catena cresce solo se il precedente sfondamento è ancora "caldo":
+  // altrimenti questo è il primo di una catena nuova, non il secondo della
+  // vecchia.
+  score.smashChain =
+    score.smashChainTimeLeft > 0 ? Math.min(CONFIG.score.smashChainMax, score.smashChain + 1) : 0;
+  score.smashChainTimeLeft = CONFIG.score.smashChainSeconds;
+  return CONFIG.score.smashBonus + score.smashChain * CONFIG.score.smashChainStep;
+}
+
+/** Fa scadere la catena dopo smashChainSeconds senza sfondare nulla. */
+export function updateSmashChain(score: ScoreState, dt: number): void {
+  if (score.smashChainTimeLeft <= 0) return;
+  score.smashChainTimeLeft = Math.max(0, score.smashChainTimeLeft - dt);
+  if (score.smashChainTimeLeft === 0) score.smashChain = 0;
 }

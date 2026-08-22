@@ -1,60 +1,61 @@
 import { describe, expect, it } from 'vitest';
-import type { Branch, Entity, EntityKind } from '../game/types';
-import { MAX_INSTANCES_PER_KIND, instanceCountFor } from './instancing';
+import type { EntityKind } from '../game/types';
+import {
+  INSTANCE_CAPACITY,
+  MAX_BUFF_INSTANCES,
+  MAX_OBSTACLE_INSTANCES,
+  MAX_SNOWFLAKE_INSTANCES,
+} from './instancing';
 
-let nextId = 1;
+const ALL_KINDS: readonly EntityKind[] = [
+  'rock',
+  'log',
+  'fence',
+  'crevasse',
+  'branch',
+  'arch',
+  'cornice',
+  'snowflake',
+  'crystal',
+  'star',
+  'magnet',
+  'bell',
+];
 
-function entity(kind: EntityKind, alive = true, branch: Branch = 'main'): Entity {
-  return {
-    id: nextId++,
-    kind,
-    category: kind === 'snowflake' || kind === 'crystal' || kind === 'star' || kind === 'magnet' || kind === 'bell' ? 'pickup' : 'obstacle',
-    branch,
-    z: 10,
-    y: 0,
-    alive,
-  };
-}
-
-describe('instanceCountFor', () => {
-  it('conta solo le entità vive del tipo richiesto', () => {
-    const entities = [
-      entity('rock'),
-      entity('log'),
-      entity('rock'),
-      entity('rock', false),
-      entity('snowflake'),
-    ];
-    expect(instanceCountFor(entities, 'rock', 32)).toBe(2);
-    expect(instanceCountFor(entities, 'log', 32)).toBe(1);
-    expect(instanceCountFor(entities, 'snowflake', 32)).toBe(1);
-    expect(instanceCountFor(entities, 'fence', 32)).toBe(0);
-  });
-
-  it('su un elenco vuoto restituisce 0', () => {
-    expect(instanceCountFor([], 'rock', 32)).toBe(0);
-  });
-
-  it('non supera mai il tetto, anche con molte più entità', () => {
-    const entities: Entity[] = [];
-    for (let i = 0; i < 500; i += 1) entities.push(entity('log'));
-    expect(instanceCountFor(entities, 'log', 32)).toBe(32);
-    expect(instanceCountFor(entities, 'log', 1)).toBe(1);
-    expect(instanceCountFor(entities, 'log', 0)).toBe(0);
-  });
-
-  it('conta esattamente il tetto quando le entità vive sono altrettante', () => {
-    const entities: Entity[] = [];
-    for (let i = 0; i < 32; i += 1) entities.push(entity('rock'));
-    expect(instanceCountFor(entities, 'rock', 32)).toBe(32);
-  });
-
-  it('il tetto di default copre la fila di fiocchi più lunga possibile su due rami', () => {
+describe('capienza delle InstancedMesh', () => {
+  it('il tetto del fiocco copre la fila più lunga possibile su due rami', () => {
     // Il numero esatto non conta (è derivato da CONFIG): conta che stia sopra
     // al massimo che il gioco può davvero produrre — misurato in una corsa
     // simulata da src/game/run-simulation.test.ts — e sotto a un tetto che
     // sprecherebbe memoria di istanze per nulla.
-    expect(MAX_INSTANCES_PER_KIND).toBeGreaterThanOrEqual(128);
-    expect(MAX_INSTANCES_PER_KIND).toBeLessThanOrEqual(512);
+    expect(MAX_SNOWFLAKE_INSTANCES).toBeGreaterThanOrEqual(96);
+    expect(MAX_SNOWFLAKE_INSTANCES).toBeLessThanOrEqual(512);
+  });
+
+  it('ostacoli e buff sono dimensionati per famiglia, non come il fiocco', () => {
+    // Il difetto corretto: la capienza del fiocco applicata anche a massi e
+    // campanacci, che non superano mai una decina di unità vive.
+    expect(MAX_OBSTACLE_INSTANCES).toBeLessThan(MAX_SNOWFLAKE_INSTANCES / 4);
+    expect(MAX_BUFF_INSTANCES).toBeLessThan(MAX_SNOWFLAKE_INSTANCES / 4);
+  });
+
+  it('nessun tipo scende sotto il massimo che il gioco può produrne su due rami', () => {
+    // Un ramo non può contenere più di un ostacolo ogni minObstacleGap, e un
+    // buff nasce al più assieme a un ostacolo: il doppio del massimo per ramo
+    // è quindi un tetto vero, non una stima.
+    expect(MAX_OBSTACLE_INSTANCES).toBeGreaterThanOrEqual(16);
+    expect(MAX_BUFF_INSTANCES).toBeGreaterThanOrEqual(16);
+  });
+
+  it('ogni tipo di entità ha una capienza positiva', () => {
+    for (const kind of ALL_KINDS) {
+      expect(INSTANCE_CAPACITY[kind]).toBeGreaterThan(0);
+    }
+  });
+
+  it('dimensionare per famiglia costa molto meno del tetto unico', () => {
+    let total = 0;
+    for (const kind of ALL_KINDS) total += INSTANCE_CAPACITY[kind];
+    expect(total).toBeLessThan(ALL_KINDS.length * MAX_SNOWFLAKE_INSTANCES * 0.3);
   });
 });

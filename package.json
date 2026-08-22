@@ -3,18 +3,27 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "test": "vitest",
     "test:run": "vitest run",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "lint": "biome lint src",
+    "lint:fix": "biome lint --write src",
+    "format": "biome format --write src",
+    "check": "biome check src"
   },
   "dependencies": {
     "three": "^0.169.0"
   },
   "devDependencies": {
+    "@biomejs/biome": "2.5.10",
+    "@types/node": "^26.2.0",
     "@types/three": "^0.169.0",
     "jsdom": "^25.0.1",
     "typescript": "^5.6.3",

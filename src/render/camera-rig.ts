@@ -17,9 +17,7 @@ export const CAMERA_HEIGHT_RATIO = 0.68;
 /** Distanza della camera dietro la mucca per la taglia data (1..maxSize). */
 export function cameraDistanceFor(size: number): number {
   const clamped = Math.min(CONFIG.avalanche.maxSize, Math.max(1, size));
-  return (
-    CONFIG.render.cameraBaseDistance + (clamped - 1) * CONFIG.render.cameraDistancePerSize
-  );
+  return CONFIG.render.cameraBaseDistance + (clamped - 1) * CONFIG.render.cameraDistancePerSize;
 }
 
 /** Altezza della camera sopra il pendio per la taglia data. */
@@ -28,17 +26,44 @@ export function cameraHeightFor(size: number): number {
 }
 
 /**
- * FOV durante la transizione verso lo stato corrente.
- * `t` è l'avanzamento della transizione in [0,1]: 0 = stato appena cambiato,
- * 1 = transizione conclusa. Entrando in valanga si va da cameraBaseFov a
- * cameraAvalancheFov, uscendo si torna indietro.
+ * Velocità del mondo normalizzata in [0,1] fra world.startSpeed e
+ * world.maxSpeed. È il parametro con cui la vista reagisce a "quanto si sta
+ * andando forte": FOV e micro-vibrazione escono entrambi da qui, così non
+ * possono scollarsi l'uno dall'altra.
+ *
+ * Il riferimento è sempre il profilo normale (world.*) e non il profilo di
+ * difficoltà in corso: su "Vitellino" (14 → 28 u/s) il rapporto si ferma a
+ * ~0.45, ed è voluto — la vista deve dire quanto si va forte in assoluto, non
+ * quanto ci si è avvicinati al proprio tetto personale.
  */
-export function cameraFovFor(avalanche: boolean, t: number): number {
-  const clamped = t < 0 ? 0 : t > 1 ? 1 : t;
-  const eased = clamped * clamped * (3 - 2 * clamped);
-  const from = avalanche ? CONFIG.render.cameraBaseFov : CONFIG.render.cameraAvalancheFov;
-  const to = avalanche ? CONFIG.render.cameraAvalancheFov : CONFIG.render.cameraBaseFov;
-  return from + (to - from) * eased;
+export function speedRatio(speed: number): number {
+  const span = CONFIG.world.maxSpeed - CONFIG.world.startSpeed;
+  if (span <= 0) return 0;
+  const t = (speed - CONFIG.world.startSpeed) / span;
+  return t < 0 ? 0 : t > 1 ? 1 : t;
+}
+
+/**
+ * FOV OBIETTIVO dell'inquadratura: la transizione verso questo valore la fa
+ * il rig (render/scene.ts) con la stessa costante di tempo di distanza e
+ * altezza, quindi qui non c'è nessun avanzamento `t` da gestire.
+ *
+ * Due contributi che si SOMMANO, invece di sovrascriversi come faceva la
+ * coppia cameraBaseFov/cameraAvalancheFov: la velocità apre l'obiettivo fra
+ * cameraMinFov e cameraMaxFov, e la valanga ci aggiunge sopra
+ * cameraAvalancheFovDelta. Prima la valanga imponeva un FOV assoluto, cioè
+ * cancellava l'apertura da velocità proprio nel momento in cui si va più
+ * forte di tutti.
+ *
+ * `avalancheScale` è il moltiplicatore della riduzione del movimento
+ * (render.reducedMotion.fovDeltaScale): scala SOLO il contributo della
+ * valanga, perché è la pompa di FOV a dare disagio vestibolare, non il
+ * respiro lento legato alla velocità.
+ */
+export function cameraFovFor(speed: number, avalanche: boolean, avalancheScale = 1): number {
+  const { cameraMinFov, cameraMaxFov, cameraAvalancheFovDelta } = CONFIG.render;
+  const base = cameraMinFov + (cameraMaxFov - cameraMinFov) * speedRatio(speed);
+  return avalanche ? base + cameraAvalancheFovDelta * avalancheScale : base;
 }
 
 /**

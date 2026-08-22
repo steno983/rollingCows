@@ -29,7 +29,9 @@ function pressKey(key: string): void {
  * scattano lo stesso e clientX/clientY sono supportati.
  */
 function pointer(type: 'pointerdown' | 'pointerup', x: number, y: number): void {
-  target.dispatchEvent(new MouseEvent(type, { clientX: x, clientY: y, bubbles: true, cancelable: true }));
+  target.dispatchEvent(
+    new MouseEvent(type, { clientX: x, clientY: y, bubbles: true, cancelable: true }),
+  );
 }
 
 describe('createInput', () => {
@@ -105,6 +107,30 @@ describe('createInput', () => {
     input.dispose();
   });
 
+  it('un tocco secco sul target produce JUMP (il tap è il gesto primario su telefono)', () => {
+    const input = createInput(target, nowMs);
+
+    pointer('pointerdown', 200, 300);
+    now = CONFIG.input.tapMaxMs - 1;
+    pointer('pointerup', 202, 301);
+
+    expect(input.consume()).toBe('JUMP');
+
+    input.dispose();
+  });
+
+  it('un dito appoggiato a lungo e sollevato sul posto non produce nulla', () => {
+    const input = createInput(target, nowMs);
+
+    pointer('pointerdown', 200, 300);
+    now = CONFIG.input.tapMaxMs + 1;
+    pointer('pointerup', 200, 300);
+
+    expect(input.consume()).toBeNull();
+
+    input.dispose();
+  });
+
   it('lascia Spazio al bottone a fuoco (resta attivabile da tastiera) senza generare JUMP', () => {
     const input = createInput(target, nowMs);
     const button = document.createElement('button');
@@ -167,7 +193,11 @@ describe('createInput', () => {
     textInput.type = 'text';
     document.body.appendChild(textInput);
 
-    const event = new KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true, cancelable: true });
+    const event = new KeyboardEvent('keydown', {
+      key: 'ArrowLeft',
+      bubbles: true,
+      cancelable: true,
+    });
     Object.defineProperty(event, 'target', { value: textInput });
     window.dispatchEvent(event);
 

@@ -27,6 +27,17 @@ export interface Entity {
   /** Quota della base dell'entità (0 = a terra). Gli ostacoli sospesi stanno in alto. */
   y: number;
   alive: boolean;
+  /** Vero mentre la calamita sta TRASCINANDO questo fiocco verso la mucca
+   *  (vedi game.ts, applyMagnet): la sua z scende più in fretta dello
+   *  scorrimento del mondo. Serve alla vista, che può disegnarlo diverso
+   *  (scia, rotazione) senza dover indovinare perché quel fiocco corre.
+   *
+   *  È opzionale, non obbligatorio, per una ragione precisa: le entità
+   *  nascono tutte dal letterale in spawner.ts, che è di un altro modulo;
+   *  un campo obbligatorio in più lo avrebbe costretto a dichiararlo su ogni
+   *  entità del gioco per descrivere una condizione che riguarda solo i
+   *  fiocchi, e solo mentre una calamita è accesa. */
+  attracted?: boolean;
 }
 
 const OVERHEAD_KINDS: ReadonlySet<EntityKind> = new Set<EntityKind>(['branch', 'arch', 'cornice']);

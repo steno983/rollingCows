@@ -61,7 +61,10 @@ function isActivationKey(key: string): boolean {
  *
  * `nowMs` è iniettabile: i test controllano il tempo senza timer reali.
  */
-export function createInput(target: HTMLElement, nowMs: () => number = () => performance.now()): InputSource {
+export function createInput(
+  target: HTMLElement,
+  nowMs: () => number = () => performance.now(),
+): InputSource {
   const view: Window = target.ownerDocument.defaultView ?? window;
 
   let buffered: Action | null = null;

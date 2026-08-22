@@ -6,6 +6,27 @@ const MAX_WORLD_YAW = CONFIG.render.curve.maxWorldTiltDeg * DEG_TO_RAD;
 const MAX_PLAYER_TILT = CONFIG.render.curve.maxPlayerTiltDeg * DEG_TO_RAD;
 const MAX_CAMERA_ROLL = CONFIG.render.curve.maxCameraRollDeg * DEG_TO_RAD;
 
+/**
+ * Moltiplicatore da passare alle tre funzioni di questo modulo quando il
+ * sistema chiede di ridurre il movimento (`prefers-reduced-motion`, letto in
+ * render/scene.ts). Non è uno stato globale nascosto qui dentro apposta: la
+ * preferenza la conosce chi costruisce la vista, e una funzione che cambia
+ * risposta a seconda di un flag di modulo è impossibile da testare senza
+ * ordinare i test.
+ *
+ * Perché serve: la media query CSS disattivava quattro animazioni
+ * dell'interfaccia e non toccava NULLA della piegata — 38° di rotazione del
+ * mondo, 32° di inclinazione della mucca, 9° di rollio della camera, con un
+ * bivio ogni ~12 secondi — cioè esattamente ciò che causa disagio
+ * vestibolare. Il bivio resta perfettamente leggibile anche al 25%
+ * (render.reducedMotion.curveScale), perché la rotazione è dichiaratamente
+ * estetica e a somma zero: il lavoro geometrico lo fa la traslazione
+ * dell'offset (game/path.ts, offsetX), che questo fattore non tocca.
+ */
+export function curveMotionScale(reducedMotion: boolean): number {
+  return reducedMotion ? CONFIG.render.reducedMotion.curveScale : 1;
+}
+
 function clamp01(t: number): number {
   return t < 0 ? 0 : t > 1 ? 1 : t;
 }
@@ -84,9 +105,12 @@ function turnAmount(path: PathState): number {
  * quando non c'è un bivio in corso (fasi 'none' e 'approaching'), positiva
  * per il ramo destro, negativa per il sinistro (vedi turnSign), torna
  * esattamente a 0 quando il riallineamento è completo.
+ *
+ * `motionScale` scala l'ampiezza senza toccare la cadenza temporale: vedi
+ * curveMotionScale. Il default 1 è il comportamento pieno.
  */
-export function worldYawFor(path: PathState): number {
-  return turnAmount(path) * MAX_WORLD_YAW;
+export function worldYawFor(path: PathState, motionScale = 1): number {
+  return turnAmount(path) * MAX_WORLD_YAW * motionScale;
 }
 
 /**
@@ -95,10 +119,13 @@ export function worldYawFor(path: PathState): number {
  * verso e stessa cadenza temporale di worldYawFor: la mucca si piega DENTRO
  * la curva nello stesso momento in cui il mondo comincia a ruotarle intorno,
  * così le due animazioni si leggono come un solo movimento coordinato invece
- * di due effetti scollegati.
+ * di due effetti scollegati. Stesso `motionScale` di worldYawFor: deve essere
+ * lo STESSO valore nella stessa chiamata, altrimenti mondo e mucca si
+ * piegherebbero di quantità diverse e il movimento tornerebbe a leggersi
+ * come due effetti scollegati.
  */
-export function playerTiltFor(path: PathState): number {
-  return turnAmount(path) * MAX_PLAYER_TILT;
+export function playerTiltFor(path: PathState, motionScale = 1): number {
+  return turnAmount(path) * MAX_PLAYER_TILT * motionScale;
 }
 
 /**
@@ -106,8 +133,10 @@ export function playerTiltFor(path: PathState): number {
  * che inclina l'orizzonte. Stesso verso e stessa cadenza di worldYawFor, ma
  * ampiezza molto più piccola (CONFIG.render.curve.maxCameraRollDeg): è un
  * accento, non deve disorientare come farebbe un rollio marcato applicato
- * proprio all'inquadratura.
+ * proprio all'inquadratura. Stesso `motionScale` degli altri due (vedi
+ * curveMotionScale): è il più importante dei tre da ridurre, perché è
+ * l'unico che inclina davvero l'orizzonte.
  */
-export function cameraRollFor(path: PathState): number {
-  return turnAmount(path) * MAX_CAMERA_ROLL;
+export function cameraRollFor(path: PathState, motionScale = 1): number {
+  return turnAmount(path) * MAX_CAMERA_ROLL * motionScale;
 }

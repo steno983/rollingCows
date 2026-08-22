@@ -55,14 +55,37 @@ describe('createLoop', () => {
   });
 
   it('un salto enorme viene clampato a maxAccumulated', () => {
+    // Il numero atteso di passi si deriva dai parametri passati, invece di
+    // ricalcare il valore di default: così il test protegge l'invariante
+    // ("dopo uno stallo si eseguono al più maxAccumulated/step update, non
+    // uno per ogni frame perso") e non si rompe quando il tetto viene tarato.
     const spies = makeSpies();
-    const loop = createLoop(spies);
+    const step = 1 / 60;
+    const maxAccumulated = 0.1;
+    const loop = createLoop(spies, { step, maxAccumulated });
 
     loop.advance(0);
     loop.advance(5000);
 
-    expect(spies.update.mock.calls.length).toBeGreaterThanOrEqual(14);
-    expect(spies.update.mock.calls.length).toBeLessThanOrEqual(15);
+    const maxSteps = Math.floor(maxAccumulated / step);
+    expect(spies.update.mock.calls.length).toBeLessThanOrEqual(maxSteps);
+    expect(spies.update.mock.calls.length).toBeGreaterThanOrEqual(maxSteps - 1);
+  });
+
+  it('non disegna due volte lo stesso stato su un pannello ad alta frequenza', () => {
+    // A 120 Hz il browser chiama il loop ogni 8,3 ms ma la simulazione avanza
+    // a 60 passi al secondo: metà dei frame sarebbero identici al precedente.
+    const spies = makeSpies();
+    const loop = createLoop(spies, { minRenderInterval: 1 / 72 });
+
+    loop.advance(0);
+    for (let i = 1; i <= 12; i += 1) {
+      loop.advance(i * (1000 / 120));
+    }
+
+    // Dodici chiamate a 120 Hz coprono 100 ms: a 72 fps sono al più 8 render.
+    expect(spies.render.mock.calls.length).toBeLessThanOrEqual(8);
+    expect(spies.render.mock.calls.length).toBeGreaterThan(0);
   });
 
   it('render viene chiamato una volta per advance con alpha in [0, 1)', () => {

@@ -6,7 +6,7 @@ afterEach(() => {
 });
 
 describe('createEventBus', () => {
-  it('consegna il payload all\'handler registrato', () => {
+  it("consegna il payload all'handler registrato", () => {
     const bus = createEventBus();
     const received: number[] = [];
     bus.on('run:started', (payload) => {
@@ -18,7 +18,7 @@ describe('createEventBus', () => {
     expect(received).toEqual([4242]);
   });
 
-  it('consegna lo stesso evento a più handler, nell\'ordine di registrazione', () => {
+  it("consegna lo stesso evento a più handler, nell'ordine di registrazione", () => {
     const bus = createEventBus();
     const calls: string[] = [];
     bus.on('size:changed', () => {
@@ -33,7 +33,7 @@ describe('createEventBus', () => {
     expect(calls).toEqual(['first', 'second']);
   });
 
-  it('la funzione restituita da on() disiscrive solo quell\'handler', () => {
+  it("la funzione restituita da on() disiscrive solo quell'handler", () => {
     const bus = createEventBus();
     const calls: string[] = [];
     const off = bus.on('avalanche:triggered', () => {
@@ -85,7 +85,7 @@ describe('createEventBus', () => {
     }).not.toThrow();
   });
 
-  it('un handler che lancia non impedisce agli altri di ricevere l\'evento', () => {
+  it("un handler che lancia non impedisce agli altri di ricevere l'evento", () => {
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     const bus = createEventBus();
     const calls: string[] = [];

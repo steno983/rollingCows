@@ -5,6 +5,7 @@ import {
   cameraFovFor,
   cameraHeightFor,
   decayShake,
+  speedRatio,
   worldToViewX,
 } from './camera-rig';
 
@@ -39,32 +40,64 @@ describe('cameraHeightFor', () => {
   });
 });
 
+describe('speedRatio', () => {
+  it('vale 0 a velocità di partenza e 1 a velocità massima', () => {
+    expect(speedRatio(CONFIG.world.startSpeed)).toBeCloseTo(0, 10);
+    expect(speedRatio(CONFIG.world.maxSpeed)).toBeCloseTo(1, 10);
+  });
+
+  it('clampa fuori dall intervallo, così i profili più lenti o più veloci non lo sfondano', () => {
+    expect(speedRatio(CONFIG.world.startSpeed - 10)).toBe(0);
+    expect(speedRatio(CONFIG.world.maxSpeed + 10)).toBe(1);
+  });
+
+  it('cresce con la velocità', () => {
+    const mid = (CONFIG.world.startSpeed + CONFIG.world.maxSpeed) / 2;
+    expect(speedRatio(mid)).toBeGreaterThan(speedRatio(CONFIG.world.startSpeed));
+    expect(speedRatio(mid)).toBeLessThan(speedRatio(CONFIG.world.maxSpeed));
+  });
+});
+
 describe('cameraFovFor', () => {
-  it('parte dal FOV di partenza e arriva a quello di destinazione', () => {
-    expect(cameraFovFor(true, 0)).toBeCloseTo(CONFIG.render.cameraBaseFov, 10);
-    expect(cameraFovFor(true, 1)).toBeCloseTo(CONFIG.render.cameraAvalancheFov, 10);
-    expect(cameraFovFor(false, 0)).toBeCloseTo(CONFIG.render.cameraAvalancheFov, 10);
-    expect(cameraFovFor(false, 1)).toBeCloseTo(CONFIG.render.cameraBaseFov, 10);
+  it('apre l obiettivo con la velocità, fra i due estremi', () => {
+    expect(cameraFovFor(CONFIG.world.startSpeed, false)).toBeCloseTo(
+      CONFIG.render.cameraMinFov,
+      10,
+    );
+    expect(cameraFovFor(CONFIG.world.maxSpeed, false)).toBeCloseTo(CONFIG.render.cameraMaxFov, 10);
   });
 
-  it('a metà transizione sta strettamente in mezzo', () => {
-    const mid = cameraFovFor(true, 0.5);
-    expect(mid).toBeGreaterThan(CONFIG.render.cameraBaseFov);
-    expect(mid).toBeLessThan(CONFIG.render.cameraAvalancheFov);
-  });
-
-  it('è monotona crescente entrando in valanga', () => {
-    let previous = cameraFovFor(true, 0);
+  it('è monotono crescente nella velocità', () => {
+    const span = CONFIG.world.maxSpeed - CONFIG.world.startSpeed;
+    let previous = cameraFovFor(CONFIG.world.startSpeed, false);
     for (let i = 1; i <= 10; i += 1) {
-      const current = cameraFovFor(true, i / 10);
+      const current = cameraFovFor(CONFIG.world.startSpeed + (span * i) / 10, false);
       expect(current).toBeGreaterThanOrEqual(previous);
       previous = current;
     }
   });
 
-  it('clampa t fuori da [0,1]', () => {
-    expect(cameraFovFor(true, -5)).toBeCloseTo(CONFIG.render.cameraBaseFov, 10);
-    expect(cameraFovFor(true, 5)).toBeCloseTo(CONFIG.render.cameraAvalancheFov, 10);
+  it('la valanga AGGIUNGE gradi invece di sostituire il FOV', () => {
+    // Il difetto che questo test blocca: con un FOV assoluto per la valanga,
+    // l'apertura da velocità spariva proprio quando si andava più forte.
+    const slow = cameraFovFor(CONFIG.world.startSpeed, true);
+    const fast = cameraFovFor(CONFIG.world.maxSpeed, true);
+    expect(fast).toBeGreaterThan(slow);
+    expect(slow - cameraFovFor(CONFIG.world.startSpeed, false)).toBeCloseTo(
+      CONFIG.render.cameraAvalancheFovDelta,
+      10,
+    );
+    expect(fast - cameraFovFor(CONFIG.world.maxSpeed, false)).toBeCloseTo(
+      CONFIG.render.cameraAvalancheFovDelta,
+      10,
+    );
+  });
+
+  it('la riduzione del movimento scala solo il contributo della valanga', () => {
+    const base = cameraFovFor(CONFIG.world.maxSpeed, false);
+    expect(cameraFovFor(CONFIG.world.maxSpeed, true, 0)).toBeCloseTo(base, 10);
+    const halved = cameraFovFor(CONFIG.world.maxSpeed, true, 0.5);
+    expect(halved - base).toBeCloseTo(CONFIG.render.cameraAvalancheFovDelta / 2, 10);
   });
 });
 

@@ -1,16 +1,16 @@
 import { describe, expect, it } from 'vitest';
 import { createEventBus } from '../core/events';
-import { CONFIG } from './config';
-import { ENTITY_BOX } from './collisions';
-import { createGame, handleAction, startRun, updateGame, type GameState } from './game';
-import { branchIsSolid, branchOffsetX } from './path';
-import { isOverhead } from './types';
-import type { Entity, ObstacleKind, PickupKind } from './types';
 // Unico riferimento alla vista in questo file, e per una ragione precisa: il
 // tetto delle istanze è una promessa che la vista fa al gioco ("so disegnare
 // fino a N entità dello stesso tipo"), e l'unico modo di verificarla è
 // misurare quante il gioco ne produce davvero. instancing.ts non importa three.
-import { MAX_INSTANCES_PER_KIND } from '../render/instancing';
+import { INSTANCE_CAPACITY } from '../render/instancing';
+import { ENTITY_BOX } from './collisions';
+import { CONFIG } from './config';
+import { createGame, type GameState, handleAction, startRun, updateGame } from './game';
+import { branchIsSolid, branchOffsetX, realignProgressOf } from './path';
+import type { Entity, EntityKind, ObstacleKind, PickupKind } from './types';
+import { isOverhead } from './types';
 
 /**
  * Test di CONTINUITÀ DELL'ESPERIENZA, non di modulo.
@@ -91,11 +91,7 @@ function harvest(game: GameState, run: GhostRun, seen: Set<number>): void {
   }
 }
 
-function ghostRun(
-  seed: number,
-  seconds: number,
-  onFrame?: (game: GameState) => void,
-): GhostRun {
+function ghostRun(seed: number, seconds: number, onFrame?: (game: GameState) => void): GhostRun {
   const bus = createEventBus();
   const game = createGame(seed, bus);
   startRun(game);
@@ -212,8 +208,10 @@ describe('BUCO 1 — gap fra ostacoli come li incontra il giocatore', () => {
     expect(
       `${impossible}/${pairsChecked} coppie impossibili; peggiore: seed ${worst.seed}, ` +
         `${worst.from} -> ${worst.to}, gap ${worst.gap.toFixed(2)} contro ${worst.needed.toFixed(2)} necessari`,
-    ).toBe(`0/${pairsChecked} coppie impossibili; peggiore: seed ${worst.seed}, ` +
-        `${worst.from} -> ${worst.to}, gap ${worst.gap.toFixed(2)} contro ${worst.needed.toFixed(2)} necessari`);
+    ).toBe(
+      `0/${pairsChecked} coppie impossibili; peggiore: seed ${worst.seed}, ` +
+        `${worst.from} -> ${worst.to}, gap ${worst.gap.toFixed(2)} contro ${worst.needed.toFixed(2)} necessari`,
+    );
   });
 
   it('nessun ostacolo attraversa il giocatore restando inerte (10 seed x 90 s)', () => {
@@ -241,10 +239,17 @@ describe('BUCO 2 — i buff sono raccoglibili in una corsa vera', () => {
 
   it('su 20 seed la stragrande maggioranza delle corse raccoglie almeno un buff', () => {
     const SEEDS = 20;
+    // 120 s e non più 90: la zona franca dopo ogni biforcazione
+    // (path.branchClearanceAfterFork) toglie 24 unità di ramo a ogni bivio, e
+    // con esse una fetta dei buff comuni che vi sarebbero nati. È il prezzo
+    // dichiarato di quella correzione; la soglia di 19 su 20 resta quella di
+    // prima, perché è la proprietà ("i buff sono raggiungibili davvero") a non
+    // dover cedere. A 90 s la stessa misura dà 18 su 20.
+    const SECONDS = 120;
     let withBuff = 0;
     const kinds = new Set<PickupKind>();
     for (let seed = 1; seed <= SEEDS; seed++) {
-      const { buffsCollected } = ghostRun(seed, 90);
+      const { buffsCollected } = ghostRun(seed, SECONDS);
       if (buffsCollected.length > 0) withBuff += 1;
       for (const kind of buffsCollected) kinds.add(kind);
     }
@@ -258,10 +263,12 @@ describe('BUCO 2 — i buff sono raccoglibili in una corsa vera', () => {
     // test fragile a ogni bilanciamento invece che al buco reale che vuole
     // scoprire.
     expect(withBuff).toBeGreaterThanOrEqual(SEEDS - 1);
-    // Il campanaccio NON è fra questi: vive solo sul ramo ricco di un bivio
-    // (design §7) e chi non sceglie riceve sempre quello sgombro. Vedi il
-    // test successivo.
-    expect(kinds.has('bell')).toBe(false);
+    // Il campanaccio non è più escluso: aveva peso zero fra i buff comuni,
+    // il che significava che chi non sceglie mai ai bivi non vedeva MAI uno
+    // scudo — l'unico buff che cambia davvero una corsa. Ora
+    // spawn.commonBuffWeights.bell vale 1 (raro, non impossibile), quindi qui
+    // può comparire; resta molto più probabile sul ramo ricco, ed è quello che
+    // verifica il test successivo.
     // Non un solo tipo fortunato: il contenuto della v2 deve essere davvero
     // raggiungibile in tutte le sue forme.
     expect(kinds.size).toBeGreaterThanOrEqual(3);
@@ -363,6 +370,54 @@ describe('BUCO 4 — finestra di solidità al commit', () => {
   });
 });
 
+describe('BUCO 8 — nessun ostacolo uccide mentre è disegnato fuori dal corridoio', () => {
+  it('ogni ostacolo SOLIDO che entra nella finestra di collisione sta dentro trackWidth/2 (30 seed x 90 s)', () => {
+    // Il test di BUCO 4 guarda il solo frame del commit ed è insufficiente
+    // proprio perché il problema si manifesta DOPO: il ramo scelto diventa
+    // solido al punto di non ritorno, ma la traslazione laterale del mondo
+    // parte solo quando la biforcazione arriva a z=0 e dura realignSeconds.
+    // Nel mezzo, un ostacolo del ramo è già letale mentre sullo schermo sta
+    // fino a branchSeparation (6) unità di lato, su un corridoio largo
+    // trackWidth (4): una morte che il giocatore non può né prevedere né
+    // imparare, una potenziale per ogni bivio.
+    //
+    // Lo scostamento è calcolato con la stessa formula della vista
+    // (render/entities-view.ts, entityWorldOffsetX), tenuta qui in termini
+    // puri: branchOffsetX del ramo più l'offsetX del percorso.
+    const HALF_TRACK = CONFIG.world.trackWidth / 2;
+    let checked = 0;
+    let outside = 0;
+    let worst = { lateral: 0, detail: '' };
+
+    for (let seed = 1; seed <= 30; seed++) {
+      ghostRun(seed, 90, (game) => {
+        for (const entity of game.entities) {
+          if (!entity.alive || entity.category !== 'obstacle') continue;
+          if (Math.abs(entity.z) > COLLISION_Z_WINDOW) continue;
+          if (!branchIsSolid(game.path, entity.branch)) continue;
+
+          checked += 1;
+          const lateral = Math.abs(branchOffsetX(game.path, entity.branch) + game.path.offsetX);
+          if (lateral > HALF_TRACK) outside += 1;
+          if (lateral > worst.lateral) {
+            worst = {
+              lateral,
+              detail: `seed ${seed}, ${entity.kind} sul ramo ${entity.branch}, fase ${game.path.phase}, z ${entity.z.toFixed(2)}`,
+            };
+          }
+        }
+      });
+    }
+
+    expect(checked).toBeGreaterThan(500);
+    expect(
+      `${outside}/${checked} ostacoli letali fuori pista; peggiore ${worst.lateral.toFixed(2)} su ${HALF_TRACK} — ${worst.detail}`,
+    ).toBe(
+      `0/${checked} ostacoli letali fuori pista; peggiore ${worst.lateral.toFixed(2)} su ${HALF_TRACK} — ${worst.detail}`,
+    );
+  });
+});
+
 describe('BUCO 5 — sopravvivenza di un giocatore che gioca bene', () => {
   it('un pilota automatico che salta e scivola al momento giusto arriva vivo a 60 secondi (20 seed)', () => {
     const SEEDS = 20;
@@ -373,7 +428,10 @@ describe('BUCO 5 — sopravvivenza di un giocatore che gioca bene', () => {
     for (let seed = 1; seed <= SEEDS; seed++) {
       const outcome = autopilotRun(seed, SECONDS);
       if (outcome.aliveSeconds >= SECONDS) survived.push(seed);
-      else deaths.push(`seed ${seed}: morto a ${outcome.aliveSeconds.toFixed(1)} s su ${outcome.deathKind}`);
+      else
+        deaths.push(
+          `seed ${seed}: morto a ${outcome.aliveSeconds.toFixed(1)} s su ${outcome.deathKind}`,
+        );
     }
 
     expect(deaths).toEqual([]);
@@ -421,7 +479,7 @@ describe('BUCO 6 — continuità laterale', () => {
     );
   });
 
-  it('il riallineamento è praticamente completo nell\'ultimo frame in cui esiste', () => {
+  it("il riallineamento è praticamente completo nell'ultimo frame in cui esiste", () => {
     // È ciò che permette alla vista (render/terrain.ts, trackHalfWidths) di
     // far svanire il nastro scartato PRIMA che il bivio si chiuda: se il
     // riallineamento si interrompesse a metà, nel frame della chiusura quel
@@ -437,7 +495,7 @@ describe('BUCO 6 — continuità laterale', () => {
           worstProgress = Math.min(worstProgress, progressBefore);
         }
         phaseBefore = game.path.phase;
-        progressBefore = game.path.realignProgress;
+        progressBefore = realignProgressOf(game.path);
       });
     }
     expect(closures).toBeGreaterThan(30);
@@ -498,14 +556,15 @@ describe('BUCO 7 — onboarding: il primo bivio e il primo ostacolo sono raggiun
 });
 
 describe('tetto delle istanze della vista', () => {
-  it('il numero di entità vive di uno stesso tipo resta sotto MAX_INSTANCES_PER_KIND', () => {
-    // I fiocchi oltre il tetto sarebbero raccoglibili ma INVISIBILI. Il tetto
-    // vive in render/instancing.ts ed è derivato da CONFIG; qui si verifica
-    // che il gioco non produca mai più di quanto la vista sa disegnare.
-    const peak = new Map<string, number>();
+  it('il numero di entità vive di uno stesso tipo resta sotto la capienza dichiarata per quel tipo', () => {
+    // I fiocchi oltre il tetto sarebbero raccoglibili ma INVISIBILI. I tetti
+    // vivono in render/instancing.ts e sono DERIVATI da CONFIG, uno per tipo
+    // (il fiocco ne ha uno tutto suo, molto più alto); qui si verifica che il
+    // gioco non produca mai più di quanto la vista sa disegnare.
+    const peak = new Map<EntityKind, number>();
     for (let seed = 1; seed <= 10; seed++) {
       ghostRun(seed, 90, (game) => {
-        const counts = new Map<string, number>();
+        const counts = new Map<EntityKind, number>();
         for (const entity of game.entities) {
           if (!entity.alive) continue;
           counts.set(entity.kind, (counts.get(entity.kind) ?? 0) + 1);
@@ -515,12 +574,10 @@ describe('tetto delle istanze della vista', () => {
         }
       });
     }
-    const worst = Math.max(...peak.values());
-    expect(worst).toBeGreaterThan(0);
-    expect(`picco ${worst} su tetto ${MAX_INSTANCES_PER_KIND}`).toBe(
-      worst <= MAX_INSTANCES_PER_KIND
-        ? `picco ${worst} su tetto ${MAX_INSTANCES_PER_KIND}`
-        : `picco oltre il tetto ${MAX_INSTANCES_PER_KIND}`,
-    );
+    expect(peak.size).toBeGreaterThan(0);
+    const over = [...peak]
+      .filter(([kind, count]) => count > INSTANCE_CAPACITY[kind])
+      .map(([kind, count]) => `${kind}: picco ${count} su capienza ${INSTANCE_CAPACITY[kind]}`);
+    expect(over).toEqual([]);
   });
 });

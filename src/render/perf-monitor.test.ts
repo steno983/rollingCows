@@ -81,20 +81,45 @@ describe('createPerfMonitor', () => {
     expect(monitor.degraded).toBe(false);
   });
 
-  it('reset riporta il monitor allo stato iniziale', () => {
+  it('resetSampling azzera la misura ma non la decisione già presa', () => {
+    // Il degrado è permanente per la sessione: dopo che è scattato, riprendere
+    // a campionare da una tab tornata visibile non deve far credere al monitor
+    // di essere tornato in uno stato pulito, perché il mondo è ancora in
+    // qualità ridotta.
     const monitor = createPerfMonitor();
     for (let i = 0; i < 300; i += 1) {
       monitor.sample(FRAME_30);
     }
     expect(monitor.degraded).toBe(true);
 
-    monitor.reset();
-    expect(monitor.degraded).toBe(false);
+    monitor.resetSampling();
+    expect(monitor.degraded).toBe(true);
 
+    // E non può scattare una seconda volta.
     let triggered = false;
     for (let i = 0; i < 600; i += 1) {
+      triggered = monitor.sample(FRAME_30) || triggered;
+    }
+    expect(triggered).toBe(false);
+  });
+
+  it('resetSampling scarta i campioni accumulati prima della pausa', () => {
+    const monitor = createPerfMonitor();
+    // Quasi abbastanza campioni lenti da far scattare il degrado (60 frame a
+    // 30 fps sono 2 secondi, contro i 3 consecutivi che servono)...
+    for (let i = 0; i < 60; i += 1) {
+      monitor.sample(FRAME_30);
+    }
+    expect(monitor.degraded).toBe(false);
+
+    // ...ma la pausa li scarta, quindi il conto riparte da zero.
+    monitor.resetSampling();
+
+    let triggered = false;
+    for (let i = 0; i < 100; i += 1) {
       triggered = monitor.sample(FRAME_60) || triggered;
     }
     expect(triggered).toBe(false);
+    expect(monitor.degraded).toBe(false);
   });
 });

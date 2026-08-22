@@ -68,7 +68,7 @@ describe('createRng', () => {
     expect(ratio).toBeLessThan(0.32);
   });
 
-  it('pick() restituisce sempre un elemento dell\'array', () => {
+  it("pick() restituisce sempre un elemento dell'array", () => {
     const rng = createRng(5);
     const items = ['rock', 'tree', 'fence'] as const;
     for (let i = 0; i < 500; i += 1) {
@@ -76,7 +76,7 @@ describe('createRng', () => {
     }
   });
 
-  it('pick() su un array di un solo elemento restituisce quell\'elemento', () => {
+  it("pick() su un array di un solo elemento restituisce quell'elemento", () => {
     const rng = createRng(6);
     expect(rng.pick(['cabin'])).toBe('cabin');
   });

@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest';
+import { avalancheTrail, burstFromModel, MAX_BURST_VOXELS, resetDebris, starTrail } from './debris';
 import { MODELS, PALETTE, type VoxelModel } from './models';
-import { MAX_BURST_VOXELS, avalancheTrail, burstFromModel, resetDebris } from './debris';
 import { createVoxelPool } from './voxel-pool';
 
 const BIG_POOL = 500;
@@ -92,6 +92,87 @@ describe('avalancheTrail', () => {
   it('con il pool pieno si ferma senza accumulare debito infinito', () => {
     const pool = createVoxelPool(8, 0.25);
     for (let i = 0; i < 600; i += 1) avalancheTrail(pool, 1 / 60, 0, 0.2, -1.5, 1);
+    expect(pool.activeCount).toBe(8);
+  });
+});
+
+describe('starTrail', () => {
+  beforeEach(() => {
+    resetDebris();
+  });
+
+  it('non emette nulla a stella spenta (intensità 0)', () => {
+    const pool = createVoxelPool(200, 0.25);
+    for (let i = 0; i < 60; i += 1) starTrail(pool, 1 / 60, 0, 0.35, -0.5, 0);
+    expect(pool.activeCount).toBe(0);
+  });
+
+  it('emette la stessa quantità a 60 e a 120 fps', () => {
+    const poolA = createVoxelPool(200, 0.25);
+    for (let i = 0; i < 60; i += 1) starTrail(poolA, 1 / 60, 0, 0.35, -0.5, 1);
+    const atSixty = poolA.activeCount;
+
+    resetDebris();
+    const poolB = createVoxelPool(200, 0.25);
+    for (let i = 0; i < 120; i += 1) starTrail(poolB, 1 / 120, 0, 0.35, -0.5, 1);
+
+    expect(atSixty).toBeGreaterThan(0);
+    expect(Math.abs(atSixty - poolB.activeCount)).toBeLessThanOrEqual(1);
+  });
+
+  it('è molto più rada della scia della valanga: è un aura di 8 secondi, non un esplosione', () => {
+    const star = createVoxelPool(400, 0.25);
+    for (let i = 0; i < 60; i += 1) starTrail(star, 1 / 60, 0, 0.35, -0.5, 1);
+
+    resetDebris();
+    const avalanche = createVoxelPool(400, 0.25);
+    for (let i = 0; i < 60; i += 1) avalancheTrail(avalanche, 1 / 60, 0, 0.2, -1.5, 1);
+
+    expect(star.activeCount).toBeGreaterThan(0);
+    expect(star.activeCount * 3).toBeLessThan(avalanche.activeCount);
+  });
+
+  it('i cubetti sono dorati, non di neve (rosso ben sopra il blu)', () => {
+    const pool = createVoxelPool(16, 0.25);
+    // Un solo secondo basta a emetterne parecchi; il primo occupa lo slot 0
+    // (la free list parte in ordine decrescente, vedi voxel-pool.ts).
+    for (let i = 0; i < 60; i += 1) starTrail(pool, 1 / 60, 0, 0.35, -0.5, 1);
+    const colors = pool.mesh.instanceColor;
+    expect(colors).not.toBeNull();
+    if (colors === null) return;
+    expect(colors.getX(0)).toBeGreaterThan(colors.getZ(0) + 0.3);
+  });
+
+  it('ha un accumulatore proprio: accendere la stella in valanga non le fa emettere il debito altrui', () => {
+    const pool = createVoxelPool(400, 0.25);
+    // Mezzo secondo di sola valanga accumula frazioni sul SUO accumulatore...
+    for (let i = 0; i < 30; i += 1) avalancheTrail(pool, 1 / 60, 0, 0.2, -1.5, 1);
+    const afterAvalanche = pool.activeCount;
+    // ...e il primo frame di stella non deve emetterle tutte in un colpo.
+    starTrail(pool, 1 / 60, 0, 0.35, -0.5, 1);
+    expect(pool.activeCount - afterAvalanche).toBeLessThanOrEqual(1);
+  });
+
+  it('resetDebris azzera anche il suo accumulatore', () => {
+    // Due passi da 0,09 s bastano a superare il cubetto intero (il rateo è
+    // ~11/s): il secondo emette solo se il debito del primo è sopravvissuto.
+    const kept = createVoxelPool(400, 0.25);
+    starTrail(kept, 0.09, 0, 0.35, -0.5, 1);
+    expect(kept.activeCount).toBe(0);
+    starTrail(kept, 0.09, 0, 0.35, -0.5, 1);
+    expect(kept.activeCount).toBe(1);
+
+    resetDebris();
+    const cleared = createVoxelPool(400, 0.25);
+    starTrail(cleared, 0.09, 0, 0.35, -0.5, 1);
+    resetDebris();
+    starTrail(cleared, 0.09, 0, 0.35, -0.5, 1);
+    expect(cleared.activeCount).toBe(0);
+  });
+
+  it('con il pool pieno si ferma senza accumulare debito infinito', () => {
+    const pool = createVoxelPool(8, 0.25);
+    for (let i = 0; i < 600; i += 1) starTrail(pool, 1 / 60, 0, 0.35, -0.5, 1);
     expect(pool.activeCount).toBe(8);
   });
 });

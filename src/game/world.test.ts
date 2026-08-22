@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { CONFIG } from './config';
 import { speedAt } from './speed';
-import { createWorld, updateWorld } from './world';
 import type { Chunk } from './world';
+import { createWorld, updateWorld } from './world';
 
 const { chunkCount, chunkLength, despawnBehindZ } = CONFIG.world;
 

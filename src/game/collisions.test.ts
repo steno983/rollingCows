@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { CONFIG } from './config';
-import { ENTITY_BOX, boxesOverlap, entityBox, playerBox } from './collisions';
-import { isOverhead } from './types';
 import type { Box } from './collisions';
+import { boxesOverlap, ENTITY_BOX, entityBox, playerBox } from './collisions';
+import { CONFIG } from './config';
 import type { Entity, EntityKind } from './types';
+import { isOverhead } from './types';
 
 const GROUND_KINDS: readonly EntityKind[] = ['rock', 'log', 'fence', 'crevasse'];
 const OVERHEAD_KINDS: readonly EntityKind[] = ['branch', 'arch', 'cornice'];
@@ -52,20 +52,41 @@ describe('boxesOverlap', () => {
 });
 
 describe('playerBox', () => {
+  // ATTENZIONE: playerBox restituisce sempre lo STESSO oggetto, riempito in
+  // place (zero allocazioni nel loop di collisione). Due chiamate non danno
+  // due box da confrontare fra loro: qui si leggono subito i numeri.
   it('cresce in altezza con la taglia', () => {
-    const small = playerBox(0, 1, false);
-    const big = playerBox(0, 5, false);
-    expect(big.height).toBeGreaterThan(small.height);
-    expect(small.height).toBeCloseTo(CONFIG.player.baseHeight + CONFIG.player.heightPerSize, 10);
-    expect(small.depth).toBe(CONFIG.player.depth);
+    const smallHeight = playerBox(0, 1, false).height;
+    const smallDepth = playerBox(0, 1, false).depth;
+    const bigHeight = playerBox(0, 5, false).height;
+    expect(bigHeight).toBeGreaterThan(smallHeight);
+    expect(smallHeight).toBeCloseTo(CONFIG.player.baseHeight + CONFIG.player.heightPerSize, 10);
+    expect(smallDepth).toBe(CONFIG.player.depth);
   });
 
   it('in scivolata riduce l-altezza esattamente di slideHeightRatio', () => {
     for (const size of ALL_SIZES) {
-      const upright = playerBox(0, size, false);
-      const sliding = playerBox(0, size, true);
-      expect(sliding.height).toBeCloseTo(upright.height * CONFIG.player.slideHeightRatio, 10);
+      const uprightHeight = playerBox(0, size, false).height;
+      const slidingHeight = playerBox(0, size, true).height;
+      expect(slidingHeight).toBeCloseTo(uprightHeight * CONFIG.player.slideHeightRatio, 10);
     }
+  });
+});
+
+describe('zero allocazioni nel loop caldo', () => {
+  it('playerBox ed entityBox riempiono due scratch distinti, senza allocare', () => {
+    // La regola di progetto «nel loop non si alloca» vale anche per una manciata
+    // di oggetti letterali per frame. I due scratch sono distinti perché il
+    // ciclo di collisione di game.ts tiene il box del giocatore mentre scorre
+    // quelli delle entità: un solo scratch condiviso li farebbe collassare.
+    const first = playerBox(0, 1, false);
+    const second = playerBox(2, 5, true);
+    expect(second).toBe(first);
+
+    const rock = entityBox(makeEntity('rock', 10));
+    const log = entityBox(makeEntity('log', 20));
+    expect(log).toBe(rock);
+    expect(rock).not.toBe(first);
   });
 });
 

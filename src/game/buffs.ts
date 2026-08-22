@@ -8,16 +8,29 @@ export interface BuffState {
   starTimeLeft: number;
   /** Secondi residui della calamita (attira i fiocchi). */
   magnetTimeLeft: number;
+  /** Avviso di scadenza già emesso per la stella / per la calamita. Serve a
+   *  emettere 'buff:expiring' UNA SOLA VOLTA per buff invece che a ogni frame
+   *  dell'ultimo tratto, e a riarmarlo quando il buff viene ricaricato. */
+  starWarned: boolean;
+  magnetWarned: boolean;
 }
 
 export function createBuffs(): BuffState {
-  return { shield: false, starTimeLeft: 0, magnetTimeLeft: 0 };
+  return {
+    shield: false,
+    starTimeLeft: 0,
+    magnetTimeLeft: 0,
+    starWarned: false,
+    magnetWarned: false,
+  };
 }
 
 export function resetBuffs(state: BuffState): void {
   state.shield = false;
   state.starTimeLeft = 0;
   state.magnetTimeLeft = 0;
+  state.starWarned = false;
+  state.magnetWarned = false;
 }
 
 /**
@@ -37,9 +50,14 @@ export function applyBuff(state: BuffState, kind: BuffKind, bus: EventBus): void
   switch (kind) {
     case 'star':
       state.starTimeLeft = CONFIG.buffs.starSeconds;
+      // Ricaricare il buff riarma anche il suo avviso: chi raccoglie una
+      // seconda stella deve ricevere un secondo preavviso, non restare senza
+      // perché il primo era già stato speso.
+      state.starWarned = false;
       break;
     case 'magnet':
       state.magnetTimeLeft = CONFIG.buffs.magnetSeconds;
+      state.magnetWarned = false;
       break;
     case 'bell':
       state.shield = true;
@@ -58,15 +76,31 @@ export function applyBuff(state: BuffState, kind: BuffKind, bus: EventBus): void
  * zero: la guardia `> 0` all'ingresso di ciascun blocco impedisce che i
  * frame successivi (dopo la scadenza) rientrino nel ramo e remittano
  * l'evento, stesso pattern di avalanche:ended in avalanche.ts.
+ *
+ * 'buff:expiring' segue la stessa regola dell'una-volta-sola, ma con un flag
+ * esplicito perché la condizione ("mancano meno di expiryWarnSeconds") resta
+ * vera per molti frame. Serve perché il tempo residuo nell'HUD è arrotondato
+ * per eccesso: si legge "1s" per un secondo intero e poi il badge sparisce,
+ * senza alcun preavviso. Il frame della scadenza vera emette solo
+ * 'buff:expired': un avviso e una fine nello stesso istante sarebbero due
+ * segnali per un evento solo.
  */
 export function updateBuffs(state: BuffState, dt: number, bus: EventBus): void {
   if (state.starTimeLeft > 0) {
     state.starTimeLeft = Math.max(0, state.starTimeLeft - dt);
     if (state.starTimeLeft === 0) bus.emit('buff:expired', { kind: 'star' });
+    else if (!state.starWarned && state.starTimeLeft <= CONFIG.buffs.expiryWarnSeconds) {
+      state.starWarned = true;
+      bus.emit('buff:expiring', { kind: 'star' });
+    }
   }
   if (state.magnetTimeLeft > 0) {
     state.magnetTimeLeft = Math.max(0, state.magnetTimeLeft - dt);
     if (state.magnetTimeLeft === 0) bus.emit('buff:expired', { kind: 'magnet' });
+    else if (!state.magnetWarned && state.magnetTimeLeft <= CONFIG.buffs.expiryWarnSeconds) {
+      state.magnetWarned = true;
+      bus.emit('buff:expiring', { kind: 'magnet' });
+    }
   }
 }
 

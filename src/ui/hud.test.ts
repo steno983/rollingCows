@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { GameStateName } from '../core/state-machine';
+import { CONFIG } from '../game/config';
 import { createHud } from './hud';
 import { createScreens } from './screens';
 
@@ -135,21 +136,231 @@ describe('createHud', () => {
     expect(need('[data-buff="magnet"]').textContent).toBe('4s CALAMITA');
   });
 
-  it('setFork evidenzia il ramo ricco e mostra il pannello solo quando c è un bivio', () => {
+  it('setFork mostra e nasconde il pannello del bivio', () => {
     const hud = createHud(root);
     const fork = need('.hud__fork');
 
-    hud.setFork('left');
+    hud.setFork(true);
     expect(fork.classList.contains('hud__fork--visible')).toBe(true);
-    expect(need('[data-side="left"]').classList.contains('hud__fork-side--rich')).toBe(true);
-    expect(need('[data-side="right"]').classList.contains('hud__fork-side--rich')).toBe(false);
 
-    hud.setFork('right');
-    expect(need('[data-side="left"]').classList.contains('hud__fork-side--rich')).toBe(false);
-    expect(need('[data-side="right"]').classList.contains('hud__fork-side--rich')).toBe(true);
-
-    hud.setFork(null);
+    hud.setFork(false);
     expect(fork.classList.contains('hud__fork--visible')).toBe(false);
+  });
+
+  it('il pannello del bivio non evidenzia più il ramo ricco (quello lo dice già il pendio)', () => {
+    const hud = createHud(root);
+
+    hud.setFork(true);
+
+    // Nessuna delle due frecce nasce accesa: l'informazione che il mondo sa
+    // già dare non va ripetuta, quella che non sa dare arriva da
+    // setForkDefault/setForkChoice.
+    for (const side of ['left', 'right']) {
+      const el = need(`[data-side="${side}"]`);
+      expect(el.classList.contains('hud__fork-side--chosen')).toBe(false);
+      expect(el.classList.contains('hud__fork-side--default')).toBe(false);
+    }
+  });
+
+  it('setForkChoice illumina solo il lato scelto', () => {
+    const hud = createHud(root);
+
+    hud.setFork(true);
+    hud.setForkChoice('left');
+    expect(need('[data-side="left"]').classList.contains('hud__fork-side--chosen')).toBe(true);
+    expect(need('[data-side="right"]').classList.contains('hud__fork-side--chosen')).toBe(false);
+
+    hud.setForkChoice('right');
+    expect(need('[data-side="left"]').classList.contains('hud__fork-side--chosen')).toBe(false);
+    expect(need('[data-side="right"]').classList.contains('hud__fork-side--chosen')).toBe(true);
+
+    hud.setForkChoice(null);
+    expect(need('[data-side="right"]').classList.contains('hud__fork-side--chosen')).toBe(false);
+  });
+
+  it('setForkDefault lampeggia sul ramo che si ottiene restando fermi, e si spegne da solo', () => {
+    vi.useFakeTimers();
+    const hud = createHud(root);
+
+    hud.setFork(true);
+    hud.setForkDefault('right');
+    expect(need('[data-side="right"]').classList.contains('hud__fork-side--default')).toBe(true);
+
+    vi.advanceTimersByTime(1000);
+    expect(need('[data-side="right"]').classList.contains('hud__fork-side--default')).toBe(false);
+
+    vi.useRealTimers();
+  });
+
+  it('nascondere il bivio azzera scelta e lato di default', () => {
+    vi.useFakeTimers();
+    const hud = createHud(root);
+
+    hud.setFork(true);
+    hud.setForkChoice('left');
+    hud.setForkDefault('left');
+    hud.setFork(false);
+
+    const left = need('[data-side="left"]');
+    expect(left.classList.contains('hud__fork-side--chosen')).toBe(false);
+    expect(left.classList.contains('hud__fork-side--default')).toBe(false);
+
+    // Il timer pendente non deve riaccendere nulla dopo la chiusura.
+    vi.advanceTimersByTime(1000);
+    expect(left.classList.contains('hud__fork-side--default')).toBe(false);
+
+    vi.useRealTimers();
+  });
+
+  it('setMultiplier mostra il moltiplicatore TOTALE e lo accende solo sopra ×1', () => {
+    const hud = createHud(root);
+    const el = need('.hud__multiplier');
+
+    hud.setMultiplier(1);
+    expect(el.textContent).toBe('×1');
+    expect(el.classList.contains('hud__multiplier--boosted')).toBe(false);
+
+    hud.setMultiplier(8);
+    expect(el.textContent).toBe('×8');
+    expect(el.classList.contains('hud__multiplier--boosted')).toBe(true);
+  });
+
+  it('setMultiplier tiene i gradini frazionari della serie leggibili', () => {
+    const hud = createHud(root);
+    const el = need('.hud__multiplier');
+
+    hud.setMultiplier(1.25);
+    expect(el.textContent).toBe('×1.25');
+
+    hud.setMultiplier(1.5);
+    expect(el.textContent).toBe('×1.5');
+
+    // Prodotto di numeri in virgola mobile: mai "×2.5000000000000004".
+    hud.setMultiplier(1.25 * 2);
+    expect(el.textContent).toBe('×2.5');
+  });
+
+  it('setDistance mostra i metri troncati e non scende mai sotto zero', () => {
+    const hud = createHud(root);
+
+    hud.setDistance(340.9);
+    expect(need('.hud__distance-value').textContent).toBe('340');
+
+    hud.setDistance(-5);
+    expect(need('.hud__distance-value').textContent).toBe('0');
+  });
+
+  it('setStreak mostra la serie solo da 1 in su', () => {
+    const hud = createHud(root);
+    const streak = need('.hud__streak');
+
+    hud.setStreak(0);
+    expect(streak.classList.contains('hud__streak--visible')).toBe(false);
+
+    hud.setStreak(2);
+    expect(streak.classList.contains('hud__streak--visible')).toBe(true);
+    expect(need('.hud__streak-value').textContent).toBe('SERIE 2');
+  });
+
+  it('il record superato in corsa si annuncia e lascia il punteggio marcato', () => {
+    vi.useFakeTimers();
+    const hud = createHud(root);
+    const banner = need('[data-record-beaten]');
+    const points = need('.hud__points');
+
+    hud.showRecordBeaten();
+    expect(banner.classList.contains('hud__record--visible')).toBe(true);
+    expect(points.classList.contains('hud__points--record')).toBe(true);
+
+    // L'avviso passa, il marcatore sul numero resta per tutta la corsa.
+    vi.advanceTimersByTime(5000);
+    expect(banner.classList.contains('hud__record--visible')).toBe(false);
+    expect(points.classList.contains('hud__points--record')).toBe(true);
+
+    hud.clearRecordBeaten();
+    expect(points.classList.contains('hud__points--record')).toBe(false);
+
+    vi.useRealTimers();
+  });
+
+  it('setBuffExpiring fa lampeggiare il badge e il lampeggio muore col buff', () => {
+    const hud = createHud(root);
+    const star = need('[data-buff="star"]');
+
+    hud.setBuffs(false, 1.5, 0);
+    hud.setBuffExpiring('star');
+    expect(star.classList.contains('hud__buff--expiring')).toBe(true);
+
+    // Scaduto il buff, il badge si spegne e con lui l'avviso: chi chiama non
+    // deve ricordarsi di annullarlo.
+    hud.setBuffs(false, 0, 0);
+    expect(star.classList.contains('hud__buff--expiring')).toBe(false);
+  });
+
+  it('setAvalancheFx accende e spegne la vignetta', () => {
+    const hud = createHud(root);
+    const vignette = need('.hud__vignette');
+
+    hud.setAvalancheFx(true);
+    expect(vignette.classList.contains('hud__vignette--on')).toBe(true);
+
+    hud.setAvalancheFx(false);
+    expect(vignette.classList.contains('hud__vignette--on')).toBe(false);
+  });
+
+  it('la vignetta prende opacità e periodo dalla configurazione della valanga', () => {
+    createHud(root);
+    const vignette = need('.hud__vignette');
+
+    expect(vignette.style.getPropertyValue('--vignette-opacity')).toBe(
+      String(CONFIG.render.avalancheFx.vignetteOpacity),
+    );
+    expect(vignette.style.getPropertyValue('--vignette-period')).toBe(
+      `${1 / CONFIG.render.avalancheFx.vignettePulseHz}s`,
+    );
+  });
+
+  describe('bottone di pausa', () => {
+    /**
+     * Su telefono la pausa non esisteva: PAUSE stava solo su Esc/P e nessun
+     * gesto la produceva, quindi dalla schermata di pausa si poteva soltanto
+     * USCIRE da una pausa in cui non si poteva entrare.
+     */
+    it('esiste nell HUD e invoca onPause al tap', () => {
+      const hud = createHud(root);
+      const onPause = vi.fn();
+      hud.onPause(onPause);
+
+      need('.hud__pause').click();
+
+      expect(onPause).toHaveBeenCalledTimes(1);
+    });
+
+    it('è l unico elemento interattivo dell HUD, per non rubare gli swipe al canvas', () => {
+      createHud(root);
+
+      // Tutto il resto dell'HUD resta inerte: #ui-root è pointer-events:none
+      // e solo .hud__pause lo riattiva su di sé (vedi style.css). Se qui
+      // comparisse un secondo bersaglio cliccabile, sopra al canvas ci sarebbe
+      // di nuovo qualcosa capace di intercettare uno swipe.
+      const interactive = need('.hud').querySelectorAll('button, a, input, select, textarea');
+      expect(interactive.length).toBe(1);
+
+      const pause = need('.hud__pause');
+      expect(interactive[0]).toBe(pause);
+      expect(pause.getAttribute('aria-label')).toBe('Pausa');
+    });
+
+    it('non trattiene il focus dopo il click (altrimenti la tastiera smette di arrivare al gioco)', () => {
+      const hud = createHud(root);
+      hud.onPause(() => {});
+
+      const pause = need('.hud__pause');
+      pause.focus();
+      expect(document.activeElement).toBe(pause);
+      pause.click();
+      expect(document.activeElement).not.toBe(pause);
+    });
   });
 });
 

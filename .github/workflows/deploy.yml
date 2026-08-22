@@ -1,7 +1,11 @@
-name: Deploy to GitHub Pages
+name: CI e deploy su GitHub Pages
 
 on:
   push:
+    branches: [main]
+  # Senza questo una pull request non riceveva alcun controllo: la verifica
+  # arrivava dopo il merge, quando il fallimento bloccava anche il deploy.
+  pull_request:
     branches: [main]
   workflow_dispatch:
 
@@ -10,12 +14,22 @@ permissions:
   pages: write
   id-token: write
 
+# Il gruppo include il ref: senza, ora che le PR fanno partire il workflow,
+# ogni PR annullerebbe i controlli di tutte le altre e il deploy di main.
 concurrency:
-  group: pages
+  group: pages-${{ github.ref }}
   cancel-in-progress: true
 
+# Tetto sul peso di ciò che il browser scarica davvero (JS + CSS, gzip).
+# Misurato oggi: 140 kB. La soglia lascia margine per le funzionalità in
+# arrivo ma intercetta l'aggiunta accidentale di una dipendenza pesante.
+env:
+  BUNDLE_GZIP_MAX_KB: '190'
+
 jobs:
-  build:
+  # Lavoro veloce e senza segreti: gira su ogni PR e su ogni push.
+  check:
+    name: Controlli
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -30,11 +44,49 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Run tests
+      # Prima i tipi: fino a ieri il typecheck era annegato dentro `npm run
+      # build`, quindi un errore di tipi e uno di bundling davano lo stesso
+      # fallimento, e per giunta dopo i test.
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Test
         run: npm run test:run
+
+  # Build e deploy restano legati a main: una PR non pubblica nulla.
+  build:
+    name: Build
+    needs: check
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
 
       - name: Build
         run: npm run build
+
+      - name: Budget del bundle
+        run: |
+          bytes=$(cat dist/assets/*.js dist/assets/*.css | gzip -9 -c | wc -c | tr -d ' ')
+          kb=$(( bytes / 1024 ))
+          echo "bundle gzip: ${kb} kB (tetto ${BUNDLE_GZIP_MAX_KB} kB)"
+          if [ "$kb" -gt "$BUNDLE_GZIP_MAX_KB" ]; then
+            echo "::error::il bundle gzip è di ${kb} kB, oltre il tetto di ${BUNDLE_GZIP_MAX_KB} kB"
+            exit 1
+          fi
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
@@ -42,7 +94,9 @@ jobs:
           path: dist
 
   deploy:
+    name: Deploy
     needs: build
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     environment:
       name: github-pages

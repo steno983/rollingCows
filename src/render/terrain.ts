@@ -1,17 +1,43 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
+import { createRng, type Rng } from '../core/rng';
 import { CONFIG } from '../game/config';
-import { branchOffsetX, type PathState } from '../game/path';
+import {
+  activeBranchOf,
+  branchOffsetX,
+  type ForkPhase,
+  forkZOf,
+  type PathState,
+  realignProgressOf,
+} from '../game/path';
+import type { Branch } from '../game/types';
 import type { WorldState } from '../game/world';
 
 export interface TerrainView {
   sync(world: WorldState, path: PathState): void;
+  /** L'anisotropia massima è una capacità del RENDERER
+   *  (renderer.capabilities.getMaxAnisotropy()), che questo modulo non ha e
+   *  non vuole avere. La texture nasce con un valore prudente e chi possiede
+   *  il renderer lo alza al massimo consentito: senza anisotropia il pendio,
+   *  visto di sbieco e quasi di taglio verso l'orizzonte, sfarina in un grigio
+   *  brulicante proprio dove servirebbe leggere il movimento. */
+  setMaxAnisotropy(max: number): void;
   group: THREE.Group;
 }
 
 /** Neve non battuta: la base sempre-piatta che deve poter ospitare qualunque
- *  ramo, anche quando non è la pista "ufficiale" del momento. */
-const VERGE_COLOR = 0xdce9f2;
+ *  ramo, anche quando non è la pista "ufficiale" del momento.
+ *
+ *  Scurita da 0xdce9f2: contro SNOW_COLOR erano 24 livelli su 255 PRIMA
+ *  dell'illuminazione, che dopo il Lambert scendevano sotto i 15 — cioè il
+ *  bordo della pista battuta, l'unica cosa che dice al giocatore dove finisce
+ *  il ramo che sta percorrendo durante un bivio, era di fatto invisibile. Il
+ *  delta di luminanza passa da ~19 a ~39 livelli (fino a 49 sul solo rosso),
+ *  e la texture della neve toglie alla sola neve non battuta altri ~7 livelli
+ *  in media. Conta il RAPPORTO, non la differenza assoluta: il Lambert
+ *  moltiplica, quindi il contrasto relativo resta questo qualunque intensità
+ *  abbiano le luci. */
+const VERGE_COLOR = 0xc3d6e6;
 /** Neve battuta: il colore della pista vera e propria, invariato da v1. */
 const SNOW_COLOR = 0xf4fbff;
 const BANK_WIDTH = 3;
@@ -75,6 +101,189 @@ function displaceGround(geometry: THREE.BufferGeometry): void {
   geometry.computeVertexNormals();
 }
 
+/**
+ * Rumore a valori su un reticolo PERIODICO: i vertici del reticolo sono
+ * campionati con indici presi modulo `cells`, quindi il bordo destro combacia
+ * con quello sinistro e quello inferiore con quello superiore. Non è un
+ * dettaglio: la stessa texture si ripete dieci volte per chunk, e una qualsiasi
+ * discontinuità al bordo diventerebbe una griglia di cuciture larga quattro
+ * unità stampata su tutto il pendio.
+ */
+function createLattice(rng: Rng, cells: number): Float32Array {
+  const values = new Float32Array(cells * cells);
+  for (let i = 0; i < values.length; i += 1) {
+    values[i] = rng.next();
+  }
+  return values;
+}
+
+function sampleLattice(values: Float32Array, cells: number, u: number, v: number): number {
+  const x = u * cells;
+  const y = v * cells;
+  const x0 = Math.floor(x);
+  const y0 = Math.floor(y);
+  const fx = x - x0;
+  const fy = y - y0;
+  // Interpolazione con smoothstep e non lineare: con la lineare si vedono i
+  // bordi delle celle del reticolo, perché la derivata salta a ogni vertice.
+  const sx = fx * fx * (3 - 2 * fx);
+  const sy = fy * fy * (3 - 2 * fy);
+  const ix0 = x0 % cells;
+  const iy0 = y0 % cells;
+  const ix1 = (ix0 + 1) % cells;
+  const iy1 = (iy0 + 1) % cells;
+  const v00 = values[iy0 * cells + ix0] ?? 0;
+  const v10 = values[iy0 * cells + ix1] ?? 0;
+  const v01 = values[iy1 * cells + ix0] ?? 0;
+  const v11 = values[iy1 * cells + ix1] ?? 0;
+  const top = v00 + (v10 - v00) * sx;
+  const bottom = v01 + (v11 - v01) * sx;
+  return top + (bottom - top) * sy;
+}
+
+/** Celle del reticolo per le due ottave del rumore. Devono DIVIDERE la
+ *  dimensione della texture, altrimenti il campionamento non ricade sui
+ *  vertici del reticolo al bordo e la tileabilità si perde. */
+const NOISE_CELLS_COARSE = 8;
+const NOISE_CELLS_FINE = 16;
+/** Peso dell'ottava grossa: la fine dà la grana, la grossa le chiazze larghe
+ *  che rendono leggibile lo scorrimento a distanza. */
+const NOISE_COARSE_WEIGHT = 0.65;
+/** Valore prudente finché main.ts non passa il massimo del renderer (vedi
+ *  TerrainView.setMaxAnisotropy): 4 è supportato ovunque, incluse le GPU
+ *  mobili più modeste, e già toglie il grosso dello sfarinamento. */
+const DEFAULT_ANISOTROPY = 4;
+
+/**
+ * Texture della neve, generata a runtime come tutto il resto (nessun asset
+ * esterno). Il pavimento era un solo quad a tinta unita con normale costante:
+ * quando i chunk scorrevano, del pendio non si muoveva NIENTE sullo schermo, e
+ * in un endless runner la percezione della velocità viene per la maggior parte
+ * da lì — a 18 u/s il gioco sembrava fermo e la rampa fino a 40 non si leggeva.
+ *
+ * La texture è quasi bianca e SOTTRAE luce (parte da 255 e scurisce): il
+ * materiale la moltiplica per il proprio colore, quindi la stessa mappa serve
+ * sia la neve non battuta sia qualunque altra tinta senza spostarne la
+ * cromia — solo la luminanza.
+ *
+ * `grainScale` e `grooveCount` esistono perché servono DUE nevi diverse, non
+ * due copie della stessa: il fuoripista è mosso e solcato, la pista battuta è
+ * per definizione liscia. Vedi TRACK_GRAIN_SCALE.
+ */
+function createSnowTexture(grainScale: number, grooveCount: number): THREE.CanvasTexture {
+  const { size, noiseAmplitude: fullNoise, grooveDarkness, seed } = CONFIG.render.snowTexture;
+  const noiseAmplitude = fullNoise * grainScale;
+  const canvas = document.createElement('canvas');
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext('2d');
+  if (ctx === null) {
+    throw new Error('Contesto 2D non disponibile per la texture della neve');
+  }
+
+  // Mai Math.random: la generazione procedurale del progetto passa tutta da
+  // createRng con un seed esplicito, così il pendio è identico a ogni avvio.
+  const rng = createRng(seed);
+  const coarse = createLattice(rng, NOISE_CELLS_COARSE);
+  const fine = createLattice(rng, NOISE_CELLS_FINE);
+
+  // Sastrugi: solchi scavati dal vento, orientati lungo la discesa (u costante,
+  // v che percorre tutto il tile), così restano tileabili in verticale per
+  // costruzione. L'ondeggiamento è una sinusoide di periodo esattamente 1 sul
+  // tile, quindi anche quello si richiude su sé stesso.
+  const grooves: { center: number; halfWidth: number; depth: number; phase: number }[] = [];
+  for (let i = 0; i < grooveCount; i += 1) {
+    grooves.push({
+      center: rng.next(),
+      halfWidth: 0.02 + rng.next() * 0.03,
+      depth: grooveDarkness * (0.6 + rng.next() * 0.4),
+      phase: rng.next() * Math.PI * 2,
+    });
+  }
+  const GROOVE_WOBBLE = 0.03;
+
+  const image = ctx.createImageData(size, size);
+  const data = image.data;
+  for (let py = 0; py < size; py += 1) {
+    const v = py / size;
+    for (let px = 0; px < size; px += 1) {
+      const u = px / size;
+      const noise =
+        sampleLattice(coarse, NOISE_CELLS_COARSE, u, v) * NOISE_COARSE_WEIGHT +
+        sampleLattice(fine, NOISE_CELLS_FINE, u, v) * (1 - NOISE_COARSE_WEIGHT);
+      let darken = noise * noiseAmplitude;
+      for (const groove of grooves) {
+        const center = groove.center + Math.sin(v * Math.PI * 2 + groove.phase) * GROOVE_WOBBLE;
+        // Distanza toroidale: un solco vicino al bordo deve continuare
+        // dall'altra parte, altrimenti si tronca di netto a ogni ripetizione.
+        // Il resto per 1 non è ridondante: l'ondeggiamento può spingere il
+        // centro fuori da [0, 1) (un solco a 0,99 arriva a 1,02), e senza
+        // ripiegarlo `1 - raw` diventa negativo — misurato, produceva una
+        // cucitura verticale di 28 livelli a ogni ripetizione della texture.
+        const raw = Math.abs(u - center) % 1;
+        const distance = Math.min(raw, 1 - raw);
+        if (distance >= groove.halfWidth) continue;
+        const t = 1 - distance / groove.halfWidth;
+        darken += groove.depth * t * t;
+      }
+      const level = Math.max(0, Math.min(255, Math.round(255 - darken)));
+      const offset = (py * size + px) * 4;
+      data[offset] = level;
+      data[offset + 1] = level;
+      data[offset + 2] = level;
+      data[offset + 3] = 255;
+    }
+  }
+  ctx.putImageData(image, 0, 0);
+
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.wrapS = THREE.RepeatWrapping;
+  texture.wrapT = THREE.RepeatWrapping;
+  texture.colorSpace = THREE.SRGBColorSpace;
+  texture.anisotropy = DEFAULT_ANISOTROPY;
+  return texture;
+}
+
+/**
+ * Riscrive le UV del chunk UNA VOLTA SOLA, dopo il merge, a partire dalla
+ * posizione di mondo. Necessario perché mergeGeometries conserva sì
+ * l'attributo uv, ma ogni sotto-geometria ha le proprie uv su 0..1 stese su
+ * dimensioni di mondo diversissime (il pavimento è largo 16 unità, il pendio
+ * esterno 110, i banchi 3): la stessa texture risulterebbe grande dieci volte
+ * tanto su un pezzo rispetto all'altro.
+ *
+ * Il conto della tileabilità in z: chunkLength / tileWorldUnits = 40 / 4 = 10
+ * ripetizioni esatte per chunk, e il riciclo di un chunk lo sposta di
+ * chunkCount * chunkLength = 240 unità, cioè altre 60 ripetizioni esatte.
+ * Entrambi interi, quindi né la giunzione fra due chunk né il riciclo
+ * producono una cucitura. In x non serve alcun vincolo: i chunk non sono mai
+ * sfalsati lateralmente.
+ *
+ * Le facce quasi verticali (i fianchi dei banchi) userebbero una proiezione
+ * dall'alto degenere — x quasi costante lungo tutta l'altezza, cioè la texture
+ * spalmata in striscioni — quindi lì si proietta di lato usando y al posto di
+ * x. La scelta è per vertice ma si fa in costruzione: a runtime costa zero. Un
+ * BoxGeometry non condivide i vertici fra facce, perciò nessuna faccia si
+ * ritrova metà vertici proiettati in un modo e metà nell'altro.
+ */
+function writeWorldUvs(geometry: THREE.BufferGeometry): void {
+  const tile = CONFIG.render.snowTexture.tileWorldUnits;
+  const position = geometry.getAttribute('position');
+  const normal = geometry.getAttribute('normal');
+  const uv = geometry.getAttribute('uv');
+  for (let i = 0; i < position.count; i += 1) {
+    const x = position.getX(i);
+    const y = position.getY(i);
+    const z = position.getZ(i);
+    if (Math.abs(normal.getY(i)) >= 0.5) {
+      uv.setXY(i, x / tile, z / tile);
+    } else {
+      uv.setXY(i, z / tile, y / tile);
+    }
+  }
+  uv.needsUpdate = true;
+}
+
 function createChunkGeometry(): THREE.BufferGeometry {
   const length = CONFIG.world.chunkLength;
   const outerWidth = GROUND_WIDTH / 2 - FLAT_HALF_WIDTH;
@@ -87,7 +296,12 @@ function createChunkGeometry(): THREE.BufferGeometry {
   // atteso). Qui il pavimento (verge, larghezza FLAT_HALF_WIDTH * 2) NON
   // chiama mai displaceGround/heightAt: resta piatto per costruzione, non
   // perché la formula valuti a 0 lì.
-  const corridorFloor = new THREE.PlaneGeometry(FLAT_HALF_WIDTH * 2, length, CORRIDOR_SEGMENTS_X, 1);
+  const corridorFloor = new THREE.PlaneGeometry(
+    FLAT_HALF_WIDTH * 2,
+    length,
+    CORRIDOR_SEGMENTS_X,
+    1,
+  );
   corridorFloor.rotateX(-Math.PI / 2);
   corridorFloor.translate(0, 0, length / 2);
 
@@ -109,7 +323,10 @@ function createChunkGeometry(): THREE.BufferGeometry {
   rightBank.rotateZ(-BANK_TILT);
   rightBank.translate(BANK_OFFSET, BANK_BOTTOM_Y + BANK_HEIGHT / 2, length / 2);
 
-  const merged = mergeGeometries([corridorFloor, leftOuter, rightOuter, leftBank, rightBank], false);
+  const merged = mergeGeometries(
+    [corridorFloor, leftOuter, rightOuter, leftBank, rightBank],
+    false,
+  );
   if (merged === null) {
     throw new Error('Impossibile unire le geometrie del chunk di terreno');
   }
@@ -118,6 +335,7 @@ function createChunkGeometry(): THREE.BufferGeometry {
   rightOuter.dispose();
   leftBank.dispose();
   rightBank.dispose();
+  writeWorldUvs(merged);
   merged.computeBoundingSphere();
   return merged;
 }
@@ -135,6 +353,26 @@ const TRACK_STEP = TRACK_DEPTH / TRACK_SEGMENTS;
 const TRACK_Y_BIAS = 0.02;
 const TRACK_ROWS = TRACK_SEGMENTS + 1;
 const TRACK_VERTS_PER_RIBBON = TRACK_ROWS * 2;
+/** Massima distanza laterale che un bordo del nastro può raggiungere: un ramo
+ *  a branchSeparation, più mezza larghezza di pista, più la traslazione del
+ *  mondo durante il riallineamento (che vale al più branchSeparation).
+ *  Serve solo a dimensionare la sfera di delimitazione, quindi è deliberatamente
+ *  il caso peggiore e non il valore istantaneo. */
+const TRACK_MAX_LATERAL = CONFIG.path.branchSeparation * 2 + CONFIG.world.trackWidth / 2;
+/**
+ * Quanto la grana della neve è attenuata sulla PISTA BATTUTA rispetto al
+ * fuoripista (e i solchi spariscono del tutto: una pista battuta è liscia per
+ * definizione, i sastrugi li scava il vento sulla neve che nessuno tocca).
+ *
+ * Non è un vezzo estetico ma la tutela di un'informazione di gioco. Il bordo
+ * della pista dice al giocatore dove finisce il ramo che sta percorrendo, e
+ * quel bordo si legge per differenza: se le due nevi avessero la stessa grana,
+ * il contrasto appena alzato in VERGE_COLOR verrebbe annacquato da una
+ * texture uguale su entrambi i lati. Così invece la differenza è doppia — di
+ * tinta e di materia — e la pista resta anche più CHIARA, perché la mappa
+ * sottrae luce e sulla pista ne sottrae meno (~3 livelli medi contro ~8).
+ */
+const TRACK_GRAIN_SCALE = 0.45;
 
 /** Buffer riusato dal valore di ritorno di trackCenterOffsets: la funzione è
  *  chiamata TRACK_ROWS volte per frame (vedi updateTrackGeometry sotto), e un
@@ -147,8 +385,21 @@ const trackCenterScratch: [number, number] = [0, 0];
 /**
  * Scostamento laterale del CENTRO di ciascuno dei due nastri della pista, a
  * una distanza z data, secondo lo stato del percorso: coincidono (nastro
- * unico) prima della biforcazione o quando non c'è alcun bivio; si separano
- * ai due rami da path.forkZ in poi. Logica pura, testabile senza three.
+ * unico) prima della biforcazione o quando non c'è alcun bivio; da path.forkZ
+ * in poi si aprono PROGRESSIVAMENTE verso i due rami. Logica pura, testabile
+ * senza three.
+ *
+ * L'apertura graduale non è un abbellimento. Con la separazione applicata di
+ * colpo, il centro di ciascun nastro saltava di branchSeparation = 6 unità
+ * nello spazio di una sola riga di geometria (TRACK_STEP = 4 unità: una
+ * pendenza di 56°), lasciando due unità di neve non battuta fra il bordo del
+ * tronco e il bordo interno di ogni ramo. Il risultato non si leggeva come un
+ * bivio ma come due piste parallele comparse di fianco alla propria — e per
+ * tutta la fase impegnata la mucca correva nel corridoio vuoto in mezzo.
+ * Con la smoothstep su path.forkBlendZ = 28 unità il rapporto fra separazione
+ * e lunghezza dell'apertura è ~1:4,7, quello di uno svincolo reale, e lo
+ * scostamento massimo fra due righe adiacenti scende a 6 * 1,5 / 28 * 4 ≈ 1,29
+ * unità (la derivata della smoothstep vale al più 1,5 / lunghezza).
  */
 export function trackCenterOffsets(path: PathState, z: number): readonly [number, number] {
   if (path.phase === 'none' || z <= path.forkZ) {
@@ -156,9 +407,17 @@ export function trackCenterOffsets(path: PathState, z: number): readonly [number
     trackCenterScratch[1] = path.offsetX;
     return trackCenterScratch;
   }
-  trackCenterScratch[0] = branchOffsetX(path, 'left') + path.offsetX;
-  trackCenterScratch[1] = branchOffsetX(path, 'right') + path.offsetX;
+  const t = smoothstep(path.forkZ, path.forkZ + CONFIG.path.forkBlendZ, z);
+  trackCenterScratch[0] = branchOffsetX(path, 'left') * t + path.offsetX;
+  trackCenterScratch[1] = branchOffsetX(path, 'right') * t + path.offsetX;
   return trackCenterScratch;
+}
+
+function smoothstep(edge0: number, edge1: number, x: number): number {
+  const span = edge1 - edge0;
+  if (span <= 0) return x <= edge0 ? 0 : 1;
+  const t = Math.min(1, Math.max(0, (x - edge0) / span));
+  return t * t * (3 - 2 * t);
 }
 
 function createTrackGeometry(): THREE.BufferGeometry {
@@ -169,9 +428,31 @@ function createTrackGeometry(): THREE.BufferGeometry {
     normals[v * 3 + 1] = 1;
   }
 
+  // UV STATICHE, scritte una volta sola: seguono il NASTRO, non il mondo.
+  // Il bordo sinistro sta sempre a u = 0 e il destro a u = trackWidth / tile,
+  // qualunque sia lo scostamento laterale del nastro in quel momento — così la
+  // grana trasla insieme alla pista durante un bivio, che è il comportamento
+  // giusto (la pista è un nastro, la sua materia gli appartiene) ed evita di
+  // dover riscrivere e ricaricare un secondo attributo a ogni frame. Lo
+  // scorrimento in profondità NON sta qui: lo fa texture.offset.y in sync, un
+  // solo numero per frame. Con trackWidth 4 e tileWorldUnits 4 la densità è
+  // esattamente la stessa del terreno attorno, altrimenti il salto di scala
+  // fra i due si vedrebbe più del salto di tinta.
+  const tile = CONFIG.render.snowTexture.tileWorldUnits;
+  const edgeU = CONFIG.world.trackWidth / tile;
+  const uvs = new Float32Array(totalVerts * 2);
+
   const indices: number[] = [];
   for (let ribbon = 0; ribbon < 2; ribbon += 1) {
     const base = ribbon * TRACK_VERTS_PER_RIBBON;
+    for (let i = 0; i < TRACK_ROWS; i += 1) {
+      const v = (i * TRACK_STEP) / tile;
+      const uvBase = (base + i * 2) * 2;
+      uvs[uvBase] = 0;
+      uvs[uvBase + 1] = v;
+      uvs[uvBase + 2] = edgeU;
+      uvs[uvBase + 3] = v;
+    }
     for (let i = 0; i < TRACK_ROWS - 1; i += 1) {
       const a = base + i * 2;
       const b = a + 1;
@@ -186,7 +467,25 @@ function createTrackGeometry(): THREE.BufferGeometry {
   positionAttribute.setUsage(THREE.DynamicDrawUsage);
   geometry.setAttribute('position', positionAttribute);
   geometry.setAttribute('normal', new THREE.BufferAttribute(normals, 3));
+  geometry.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
   geometry.setIndex(indices);
+
+  // Sfera di delimitazione ASSEGNATA a mano, non calcolata. Le posizioni
+  // nascono tutte a zero e il primo giro del loop chiama solo render() senza
+  // update(), quindi three calcolava la sfera su una geometria vuota (centro
+  // nell'origine, raggio 0) e non la ricalcolava mai più: la visibilità di un
+  // nastro lungo 240 unità dipendeva per sempre da quella di un singolo punto
+  // ai piedi della mucca. Non spariva per un pelo (quel punto cade a ~19,5°
+  // dall'asse di vista contro una semi-apertura di 30°), ma qualunque ritocco
+  // all'altezza della camera, al FOV o al rollio avrebbe fatto sparire di
+  // colpo tutta la pista battuta. Assegnarla invece di disattivare il culling
+  // costa nulla e lascia il nastro cullabile davvero: three non ricalcola una
+  // sfera già presente, e position.needsUpdate non la invalida.
+  const halfDepth = TRACK_DEPTH / 2;
+  geometry.boundingSphere = new THREE.Sphere(
+    new THREE.Vector3(0, TRACK_Y_BIAS, halfDepth),
+    Math.hypot(halfDepth, TRACK_MAX_LATERAL),
+  );
   return geometry;
 }
 
@@ -223,7 +522,61 @@ export function trackHalfWidths(path: PathState): readonly [number, number] {
   return trackHalfScratch;
 }
 
-function updateTrackGeometry(geometry: THREE.BufferGeometry, path: PathState): void {
+/**
+ * Ultimo stato del percorso da cui la geometria della pista è stata scritta.
+ * Tutto ciò che entra nel calcolo di una riga sta qui dentro: i due centri
+ * dipendono da phase, forkZ e offsetX (e da forkBlendZ, che è una costante di
+ * configurazione), le due semilarghezze da phase, activeBranch e
+ * realignProgress.
+ */
+interface TrackGeometryKey {
+  phase: ForkPhase;
+  /** null fuori da un bivio: `forkZ` non esiste in quella fase (PathState è
+   *  un'unione discriminata, vedi game/path.ts) e la cache confronta ciò che
+   *  gli accessori restituiscono, non un segnaposto. */
+  forkZ: number | null;
+  offsetX: number;
+  realignProgress: number;
+  activeBranch: Branch;
+}
+
+/** forkZ a NaN come sentinella: NaN non è uguale nemmeno a sé stesso, quindi
+ *  il primo confronto fallisce sempre e la geometria viene scritta almeno una
+ *  volta, senza bisogno di un flag "prima volta" a parte. */
+function createTrackGeometryKey(): TrackGeometryKey {
+  return { phase: 'none', forkZ: NaN, offsetX: 0, realignProgress: 0, activeBranch: 'main' };
+}
+
+/**
+ * Riscrive le 61 righe del nastro. Salta tutto se lo stato del percorso non è
+ * cambiato: fuori dai bivi — cioè la maggior parte del tempo — phase è 'none' e
+ * offsetX è 0 a ogni frame, quindi il risultato sarebbe identico al precedente
+ * e si spendevano 244 setXYZ più l'upload del buffer alla GPU per riscrivere
+ * gli stessi numeri.
+ */
+function updateTrackGeometry(
+  geometry: THREE.BufferGeometry,
+  path: PathState,
+  last: TrackGeometryKey,
+): void {
+  const forkZ = forkZOf(path);
+  const realignProgress = realignProgressOf(path);
+  const activeBranch = activeBranchOf(path);
+  if (
+    last.phase === path.phase &&
+    last.forkZ === forkZ &&
+    last.offsetX === path.offsetX &&
+    last.realignProgress === realignProgress &&
+    last.activeBranch === activeBranch
+  ) {
+    return;
+  }
+  last.phase = path.phase;
+  last.forkZ = forkZ;
+  last.offsetX = path.offsetX;
+  last.realignProgress = realignProgress;
+  last.activeBranch = activeBranch;
+
   const position = geometry.getAttribute('position');
   const [leftHalf, rightHalf] = trackHalfWidths(path);
   for (let i = 0; i < TRACK_ROWS; i += 1) {
@@ -241,7 +594,8 @@ function updateTrackGeometry(geometry: THREE.BufferGeometry, path: PathState): v
 
 export function createTerrain(): TerrainView {
   const geometry = createChunkGeometry();
-  const material = new THREE.MeshLambertMaterial({ color: VERGE_COLOR });
+  const vergeTexture = createSnowTexture(1, CONFIG.render.snowTexture.grooveCount);
+  const material = new THREE.MeshLambertMaterial({ color: VERGE_COLOR, map: vergeTexture });
   const group = new THREE.Group();
   const meshes: THREE.Mesh[] = [];
 
@@ -255,11 +609,23 @@ export function createTerrain(): TerrainView {
   }
 
   const trackGeometry = createTrackGeometry();
-  const trackMaterial = new THREE.MeshLambertMaterial({ color: SNOW_COLOR });
+  // La pista ha una texture PROPRIA, non una copia di quella del fuoripista.
+  // Due ragioni distinte. La prima è tecnica: le righe del nastro stanno a z
+  // fisse (è il pendio a scorrere sotto), quindi la pista non può ereditare lo
+  // scorrimento gratuito dei chunk e le serve un offset indipendente, che una
+  // THREE.Texture a sé garantisce. La seconda è di lettura: la neve battuta
+  // deve restare più liscia e più chiara del fuoripista, perché il bordo fra le
+  // due è informazione di gioco (vedi TRACK_GRAIN_SCALE) — e la grana di una
+  // texture non si attenua per materiale, si genera attenuata.
+  const trackTexture = createSnowTexture(TRACK_GRAIN_SCALE, 0);
+  const trackMaterial = new THREE.MeshLambertMaterial({ color: SNOW_COLOR, map: trackTexture });
   const trackMesh = new THREE.Mesh(trackGeometry, trackMaterial);
   trackMesh.receiveShadow = true;
   trackMesh.castShadow = false;
   group.add(trackMesh);
+
+  const lastTrackKey = createTrackGeometryKey();
+  const tile = CONFIG.render.snowTexture.tileWorldUnits;
 
   function sync(world: WorldState, path: PathState): void {
     for (let i = 0; i < meshes.length; i += 1) {
@@ -268,8 +634,25 @@ export function createTerrain(): TerrainView {
       if (mesh === undefined || chunk === undefined) continue;
       mesh.position.z = chunk.z;
     }
-    updateTrackGeometry(trackGeometry, path);
+    // Scorrimento della pista: un solo numero per frame, nessun buffer da
+    // ricaricare. Il resto per 1 non è un'ottimizzazione ma una necessità —
+    // la ripetizione è periodica, quindi togliere la parte intera non cambia
+    // NIENTE di ciò che si vede, mentre lasciarla crescere sì: dopo qualche
+    // minuto a 40 u/s l'offset arriva a migliaia di ripetizioni, la parte
+    // frazionaria perde bit nel float a 32 bit dello shader e la grana inizia
+    // a scattare invece di scorrere.
+    trackTexture.offset.y = (world.distance / tile) % 1;
+    updateTrackGeometry(trackGeometry, path, lastTrackKey);
   }
 
-  return { sync, group };
+  function setMaxAnisotropy(max: number): void {
+    const value = Math.max(1, Math.floor(max));
+    for (const texture of [vergeTexture, trackTexture]) {
+      if (value === texture.anisotropy) continue;
+      texture.anisotropy = value;
+      texture.needsUpdate = true;
+    }
+  }
+
+  return { sync, setMaxAnisotropy, group };
 }

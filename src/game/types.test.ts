@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { isOverhead } from './types';
 import type { EntityKind } from './types';
+import { isOverhead } from './types';
 
 const GROUND_KINDS: readonly EntityKind[] = ['rock', 'log', 'fence', 'crevasse'];
 const OVERHEAD_KINDS: readonly EntityKind[] = ['branch', 'arch', 'cornice'];

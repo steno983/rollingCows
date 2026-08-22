@@ -171,8 +171,12 @@ function buildRidgeMesh(
  * lontano, verso le creste). Senza questa sfumatura il fondovalle sarebbe un
  * blocco di colore piatto che stacca di netto dal pendio: il "bordo netto
  * orizzontale" segnalato.
+ *
+ * Esportata solo per il test di regressione sull'avvolgimento dei vertici
+ * (vedi backdrop.test.ts): il difetto qui sotto era invisibile a occhio nudo
+ * perché il quadrilatero semplicemente non veniva disegnato.
  */
-function buildValleyFloor(): THREE.Mesh {
+export function buildValleyFloor(): THREE.Mesh {
   const cfg = CONFIG.render.backdrop;
   const halfWidth = cfg.valleyWidth / 2;
   const zNear = cfg.valleyDistance;
@@ -181,17 +185,35 @@ function buildValleyFloor(): THREE.Mesh {
   const far = new THREE.Color(cfg.valleyColor);
 
   const positions = [
-    -halfWidth, cfg.valleyY, zNear,
-    halfWidth, cfg.valleyY, zNear,
-    halfWidth, cfg.valleyY, zFar,
-    -halfWidth, cfg.valleyY, zFar,
+    -halfWidth,
+    cfg.valleyY,
+    zNear,
+    halfWidth,
+    cfg.valleyY,
+    zNear,
+    halfWidth,
+    cfg.valleyY,
+    zFar,
+    -halfWidth,
+    cfg.valleyY,
+    zFar,
   ];
   const colors: number[] = [];
   pushColor(colors, near);
   pushColor(colors, near);
   pushColor(colors, far);
   pushColor(colors, far);
-  const indices = [0, 1, 2, 0, 2, 3];
+  // Avvolgimento invertito rispetto a [0,1,2, 0,2,3]: con quell'ordine
+  // entrambi i triangoli avevano normale (0,-1,0), cioè faccia frontale
+  // rivolta verso il BASSO, mentre la camera sta sempre sopra il fondovalle
+  // (y fra 6,1 e 8,6 contro valleyY = 5). Con un MeshBasicMaterial a
+  // side: FrontSide il quadrilatero veniva quindi scartato integralmente dal
+  // rasterizzatore: il fondovalle non è mai stato disegnato, il villaggio era
+  // appoggiato sul nulla e valleyColor non finiva su un solo pixel del gioco.
+  // Si corregge l'ordine e non si passa a side: DoubleSide, per non pagare il
+  // culling delle facce posteriori disattivato su un quad grande quanto tutto
+  // lo schermo.
+  const indices = [0, 2, 1, 0, 3, 2];
 
   const geometry = new THREE.BufferGeometry();
   geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
@@ -285,8 +307,12 @@ function buildVillage(rng: Rng): THREE.Group {
     // buildHouse/buildCampanile aggiungono sempre corpo e tetto/guglia in
     // quest'ordine (group.add(body, roof/spire)): vedi le due funzioni sopra.
     const [body, roof] = piece.children as [THREE.Mesh, THREE.Mesh];
-    bodyGeometries.push((body.geometry as THREE.BufferGeometry).clone().applyMatrix4(body.matrixWorld));
-    roofGeometries.push((roof.geometry as THREE.BufferGeometry).clone().applyMatrix4(roof.matrixWorld));
+    bodyGeometries.push(
+      (body.geometry as THREE.BufferGeometry).clone().applyMatrix4(body.matrixWorld),
+    );
+    roofGeometries.push(
+      (roof.geometry as THREE.BufferGeometry).clone().applyMatrix4(roof.matrixWorld),
+    );
     body.geometry.dispose();
     roof.geometry.dispose();
     (body.material as THREE.Material).dispose();
@@ -340,7 +366,9 @@ export function createBackdrop(): BackdropView {
       cfg.ridgePeakVariance * depthScale,
     );
     const color = lerpColor(cfg.ridgeColorNear, cfg.ridgeColorFar, t);
-    group.add(buildRidgeMesh(profile, width, depth, cfg.ridgeBaseY, color, cfg.hazeColor, cfg.ridgeHazeMix));
+    group.add(
+      buildRidgeMesh(profile, width, depth, cfg.ridgeBaseY, color, cfg.hazeColor, cfg.ridgeHazeMix),
+    );
   }
 
   group.add(buildValleyFloor());

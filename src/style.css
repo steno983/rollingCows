@@ -26,6 +26,50 @@
   display: none;
 }
 
+/* Icone in linea (SVG dentro hud.ts): niente file esterni, è una regola del
+   progetto. Prendono il colore del testo che affiancano, così un badge chiaro
+   e uno scuro non hanno bisogno di due versioni dell'icona. */
+.icon {
+  width: 1.15em;
+  height: 1.15em;
+  flex: none;
+  vertical-align: -0.2em;
+}
+
+/* Unico elemento dell'HUD che riceve i tap. Sta nell'angolo in alto a destra,
+   fuori dalla zona centrale dove si swipa: senza di lui, su telefono la pausa
+   era semplicemente irraggiungibile (esisteva solo su Esc/P) e dalla schermata
+   di pausa si poteva soltanto USCIRE. */
+.hud__pause {
+  position: absolute;
+  top: calc(8px + env(safe-area-inset-top));
+  right: calc(8px + env(safe-area-inset-right));
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  /* Mai sotto i 44px: è la misura minima di un bersaglio da pollice. */
+  width: 48px;
+  height: 48px;
+  padding: 0;
+  border: 0;
+  border-radius: 14px;
+  color: #f7fbff;
+  background: rgba(11, 28, 44, 0.5);
+  box-shadow: inset 0 0 0 2px rgba(255, 255, 255, 0.28);
+  cursor: pointer;
+  touch-action: manipulation;
+  pointer-events: auto;
+}
+
+.hud__pause .icon {
+  width: 22px;
+  height: 22px;
+}
+
+.hud__pause:active {
+  transform: scale(0.94);
+}
+
 .hud__points {
   font-size: clamp(28px, 9vw, 56px);
   font-weight: 800;
@@ -34,8 +78,85 @@
   text-shadow: 0 2px 0 rgba(0, 0, 0, 0.35);
 }
 
+/* Da qui in poi si sta correndo oltre il proprio record: il numero resta
+   marcato per tutto il resto della corsa. */
+.hud__points--record {
+  color: #ffd166;
+}
+
+/* Il moltiplicatore TOTALE (stella × valanga × serie): è il numero su cui si
+   decide se rischiare, e prima non era mostrato da nessuna parte. */
+.hud__multiplier {
+  margin-top: -6px;
+  font-size: clamp(16px, 5vw, 26px);
+  font-weight: 900;
+  letter-spacing: 0.04em;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.5;
+  transition: opacity 120ms ease, color 120ms ease, transform 120ms ease;
+}
+
+.hud__multiplier--boosted {
+  color: #ffd166;
+  opacity: 1;
+  transform: scale(1.1);
+}
+
+.hud__distance {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.85;
+}
+
+.hud__record {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  padding: 4px 12px;
+  border-radius: 999px;
+  font-size: 15px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  color: #3a2400;
+  background: rgba(255, 209, 102, 0.9);
+  opacity: 0;
+  transform: translateY(-6px);
+  transition: opacity 160ms ease, transform 160ms ease;
+}
+
+.hud__record--visible {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.hud__charge-row {
+  display: flex;
+  width: min(420px, 78%);
+  align-items: center;
+  gap: 8px;
+}
+
+.hud__charge-row .icon {
+  width: 20px;
+  height: 20px;
+  opacity: 0.9;
+}
+
+.hud__tags {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
 .hud__charge {
-  width: min(420px, 70%);
+  flex: 1;
   height: 14px;
   border-radius: 7px;
   overflow: hidden;
@@ -51,13 +172,28 @@
   transition: width 90ms linear;
 }
 
-.hud__size {
+.hud__size,
+.hud__streak {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   padding: 4px 12px;
   border-radius: 999px;
   font-size: 16px;
   font-weight: 700;
   letter-spacing: 0.08em;
   background: rgba(11, 28, 44, 0.45);
+}
+
+/* La serie compare solo quando c'è: a zero è una riga in più da leggere e
+   nient'altro. */
+.hud__streak {
+  display: none;
+  color: #ffe0a3;
+}
+
+.hud__streak--visible {
+  display: flex;
 }
 
 .hud__buffs {
@@ -68,6 +204,9 @@
 }
 
 .hud__buff {
+  display: flex;
+  align-items: center;
+  gap: 5px;
   padding: 4px 10px;
   border-radius: 999px;
   font-size: 13px;
@@ -97,6 +236,11 @@
   color: #fff6f5;
 }
 
+/* Il pannello del bivio evidenziava IL RAMO RICCO, cioè ripeteva l'unica cosa
+   che il mondo sa già dire da solo (quel ramo è pieno di fiocchi) e taceva
+   l'unica che il mondo non può dire: cosa sto scegliendo io. Ora le due frecce
+   nascono neutre; si accende quella scelta, e per un attimo quella che si
+   ottiene non facendo nulla. */
 .hud__fork {
   position: absolute;
   top: 50%;
@@ -116,20 +260,75 @@
 }
 
 .hud__fork-side {
-  padding: 6px 14px;
-  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 12px;
+  border-radius: 12px;
   font-size: 14px;
   font-weight: 800;
   letter-spacing: 0.06em;
   background: rgba(11, 28, 44, 0.45);
-  opacity: 0.55;
+  opacity: 0.6;
+  transition: opacity 120ms ease, background 120ms ease, box-shadow 120ms ease;
 }
 
-.hud__fork-side--rich {
+.hud__fork-side .icon {
+  width: 30px;
+  height: 30px;
+}
+
+/* Il ramo che si ottiene restando fermi: lampo breve all'apparire del bivio. */
+.hud__fork-side--default {
   opacity: 1;
-  background: rgba(255, 209, 102, 0.55);
-  color: #3a2400;
-  box-shadow: 0 0 0 2px rgba(255, 209, 102, 0.8);
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.85);
+}
+
+/* Il ramo che ho scelto io. */
+.hud__fork-side--chosen {
+  opacity: 1;
+  color: #06202f;
+  background: rgba(191, 230, 255, 0.9);
+  box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.5);
+}
+
+/* Vignetta calda della valanga: un radial-gradient su un elemento già
+   presente, quindi costo zero in WebGL (nessun render target, nessun
+   passaggio a schermo pieno in più). I due numeri arrivano da
+   CONFIG.render.avalancheFx tramite variabili CSS. */
+.hud__vignette {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  background: radial-gradient(
+    circle at 50% 55%,
+    rgba(255, 176, 74, 0) 38%,
+    rgba(255, 138, 46, 0.55) 78%,
+    rgba(214, 74, 20, 0.9) 100%
+  );
+  transition: opacity 180ms ease;
+}
+
+.hud__vignette--on {
+  opacity: var(--vignette-opacity, 0.32);
+  animation: hud-vignette-pulse var(--vignette-period, 0.625s) ease-in-out infinite;
+}
+
+@keyframes hud-vignette-pulse {
+  0%,
+  100% {
+    opacity: calc(var(--vignette-opacity, 0.32) * 0.6);
+  }
+  50% {
+    opacity: var(--vignette-opacity, 0.32);
+  }
+}
+
+/* Ultimi due secondi di un buff: il badge lampeggia. Il tempo residuo è
+   arrotondato per eccesso, quindi senza questo si legge "1s" per un secondo
+   intero e poi il badge sparisce di colpo. */
+.hud__buff--expiring.hud__buff--active {
+  animation: hud-blink 0.4s steps(2, end) infinite;
 }
 
 .hud--avalanche .hud__points {
@@ -238,6 +437,7 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  gap: 10px;
   /* Area di tap comoda anche col pollice: mai sotto i 44px. */
   min-height: 56px;
   min-width: 200px;
@@ -267,21 +467,286 @@
   box-shadow: inset 0 0 0 2px rgba(255, 255, 255, 0.25);
 }
 
+.button--ghost .icon {
+  width: 20px;
+  height: 20px;
+}
+
+/** Numero di servizio dentro un bottone (il record della corsa del giorno). */
+.button__note {
+  font-size: 13px;
+  font-weight: 700;
+  opacity: 0.7;
+  font-variant-numeric: tabular-nums;
+}
+
 .button:active {
   transform: translateY(2px);
+}
+
+/* --------------------------------------------------- profili e missioni -- */
+
+/* Selettore di difficoltà. Con la spaziatura normale una bambina piccola
+   arriva a una decina di secondi ogni volta, e il gioco nasce dall'idea di una
+   bambina: il profilo va scelto prima di partire, non subito. */
+.profiles {
+  display: flex;
+  width: 100%;
+  gap: 6px;
+}
+
+.profile {
+  flex: 1;
+  min-height: 44px;
+  padding: 0 6px;
+  border: 0;
+  border-radius: 12px;
+  font: inherit;
+  font-size: 14px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  color: #f7fbff;
+  background: rgba(255, 255, 255, 0.1);
+  box-shadow: inset 0 0 0 2px rgba(255, 255, 255, 0.18);
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.profile--selected {
+  color: #06202f;
+  background: linear-gradient(180deg, #ffffff, #bfe6ff);
+  box-shadow: inset 0 0 0 2px rgba(255, 255, 255, 0.7);
+}
+
+.quests {
+  width: 100%;
+}
+
+.quests__title {
+  margin: 0 0 8px;
+  font-size: 13px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  opacity: 0.7;
+}
+
+.quests__list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.quest {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 4px 10px;
+  padding: 8px 12px;
+  border-radius: 12px;
+  text-align: left;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.quest__label {
+  font-size: 14px;
+  line-height: 1.25;
+}
+
+.quest__value {
+  font-size: 13px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.8;
+}
+
+.quest__bar {
+  grid-column: 1 / -1;
+  height: 6px;
+  border-radius: 3px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.15);
+}
+
+.quest__bar-fill {
+  display: block;
+  height: 100%;
+  border-radius: 3px;
+  background: linear-gradient(90deg, #7fd7ff, #ffffff);
+}
+
+.quest--done {
+  background: rgba(255, 209, 102, 0.22);
+}
+
+.quest--done .quest__value {
+  color: #ffd166;
+  opacity: 1;
+}
+
+.quest--done .quest__bar-fill {
+  background: linear-gradient(90deg, #ffd166, #ffe9b5);
+}
+
+/* ------------------------------------------- statistiche di fine corsa -- */
+
+/* Punteggio e record da soli sono un vicolo cieco: dicono quanto è andata, mai
+   come sta andando. Le statistiche e soprattutto le due righe di confronto
+   sono ciò che fa premere RIGIOCA. */
+.stats {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 8px;
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.stat {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.stat__value {
+  font-size: 20px;
+  font-weight: 900;
+  font-variant-numeric: tabular-nums;
+}
+
+.stat__label {
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  opacity: 0.7;
+}
+
+.compare {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: #ffb3ab;
+}
+
+.compare--up {
+  color: #a8e6a1;
+}
+
+/* -------------------------------------------------- comandi e tutorial -- */
+
+/* I comandi esistevano solo nel README: qui stanno nel menu, con l'icona
+   accanto alla frase, perché chi non legge ancora riconosce comunque la
+   forma. */
+.controls {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.control {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  text-align: left;
+  opacity: 0.8;
+}
+
+/* Prompt del tutorial: unico elemento vivo mentre si gioca, quindi non deve
+   mai prendere i touch (il contenitore #ui-root è pointer-events:none, ma qui
+   lo si ribadisce perché è l'unico elemento che sta sopra al canvas durante la
+   corsa). */
+.prompt {
+  position: absolute;
+  /* Sotto la fascia dell'HUD, non sopra: a 26% il prompt copriva la taglia e i
+     badge dei buff, cioè nascondeva informazione di gioco proprio nei primi
+     secondi di chi sta ancora imparando a giocare. Più in basso resta
+     leggibilissimo (è il testo più grande dello schermo) e lascia libera la
+     parte alta. */
+  top: 46%;
+  left: 50%;
+  margin: 0;
+  padding: 10px 22px;
+  border-radius: 16px;
+  font-size: clamp(24px, 8vw, 42px);
+  font-weight: 900;
+  letter-spacing: 0.1em;
+  text-align: center;
+  text-shadow: 0 3px 0 rgba(0, 0, 0, 0.4);
+  background: rgba(8, 22, 36, 0.55);
+  opacity: 0;
+  transform: translate(-50%, -10px);
+  transition: opacity 180ms ease, transform 180ms ease;
+  pointer-events: none;
+}
+
+.prompt--visible {
+  opacity: 1;
+  transform: translate(-50%, 0);
 }
 
 @media (prefers-reduced-motion: reduce) {
   .hud--avalanche .hud__points,
   .hud--warning .hud__charge,
   .hud--warning .hud__size,
-  .hud__fork {
+  .hud__buff--expiring.hud__buff--active,
+  .hud__fork,
+  .hud__record,
+  .hud__multiplier,
+  .prompt {
     animation: none;
     transition: none;
   }
 
   .hud__charge-fill {
     transition: none;
+  }
+
+  /*
+   * L'ultimo secondo di valanga È un avviso, non un ornamento: subito dopo
+   * c'è di norma un ostacolo, e l'invulnerabilità non c'è più. Qui la
+   * versione precedente si limitava a togliere il lampeggio senza metterci
+   * nulla al posto, cioè lasciava senza preavviso proprio chi ha chiesto meno
+   * movimento. Il lampeggio diventa un cambio di colore statico e un bordo
+   * pieno: stessa informazione, zero animazione.
+   */
+  .hud--warning .hud__charge {
+    background: rgba(230, 72, 60, 0.55);
+    box-shadow: inset 0 0 0 3px #ffd166;
+  }
+
+  .hud--warning .hud__charge-fill {
+    background: linear-gradient(90deg, #ffd166, #ffd166);
+  }
+
+  .hud--warning .hud__size {
+    color: #3a2400;
+    background: #ffd166;
+    box-shadow: inset 0 0 0 3px #e6483c;
+  }
+
+  /* Stesso principio per il buff in scadenza: niente lampeggio, ma il badge
+     deve restare distinguibile da uno appena raccolto. */
+  .hud__buff--expiring.hud__buff--active {
+    box-shadow: inset 0 0 0 3px #e6483c;
+  }
+
+  /* La vignetta pulsa: sotto riduzione del movimento si spegne del tutto.
+     L'ingresso in valanga resta comunque annunciato dal moltiplicatore, dal
+     colore della barra e dal suono. */
+  .hud__vignette--on {
+    display: none;
   }
 }
 

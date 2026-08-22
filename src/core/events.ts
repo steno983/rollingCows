@@ -28,7 +28,32 @@ export interface GameEvents {
   'fork:resolved': { side: 'left' | 'right' };
   'buff:gained': { kind: BuffKind };
   'buff:expired': { kind: BuffKind };
+  /** Un buff a tempo sta per scadere: emesso una sola volta per buff, a
+   *  `CONFIG.buffs.expiryWarnSeconds` dalla fine. Serve perché il tempo
+   *  residuo nell'HUD è arrotondato per eccesso: si legge "1s" per un secondo
+   *  intero e poi il badge sparisce, senza alcun preavviso. */
+  'buff:expiring': { kind: BuffKind };
   'shield:consumed': Record<string, never>;
+  /** Le tre azioni del giocatore. Non producevano alcun evento, quindi salto e
+   *  scivolata — le due cose che si fanno più spesso in tutto il gioco —
+   *  erano completamente mute: nessun suono, nessuna particella, nessuna
+   *  deformazione. `airborneSeconds` sull'atterraggio permette di dosare il
+   *  tonfo in base a quanto si è saltato in alto. */
+  'player:jumped': Record<string, never>;
+  'player:landed': { airborneSeconds: number };
+  'player:slid': Record<string, never>;
+  /** La scivolata è finita (per scadenza o interrotta da un salto): chiude il
+   *  rumore in loop che accompagna lo scivolamento. */
+  'player:slideEnded': Record<string, never>;
+  /** Serie di ostacoli superati senza subire colpi: cambia di gradino. Il
+   *  moltiplicatore è già quello nuovo. */
+  'streak:changed': { streak: number; multiplier: number };
+  /** Il punteggio ha superato il record precedente, durante la corsa. Era il
+   *  momento più gratificante di una partita e non lo comunicava nessuno:
+   *  lo si scopriva morendo. */
+  'record:beaten': { points: number };
+  /** Una missione è stata completata durante la corsa. */
+  'quest:completed': { id: string; label: string };
 }
 
 export type EventName = keyof GameEvents;

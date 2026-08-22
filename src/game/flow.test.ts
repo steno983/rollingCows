@@ -4,11 +4,11 @@ import {
   armDeath,
   commitGameOver,
   createFlow,
+  type GameOverPayload,
   isDying,
   requestExternalPause,
   resetFlow,
   tickDeath,
-  type GameOverPayload,
 } from './flow';
 
 const PAYLOAD: GameOverPayload = { points: 42, distance: 100, isRecord: false };

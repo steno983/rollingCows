@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import { CONFIG } from '../game/config';
-import { createPath, type PathState } from '../game/path';
+import {
+  createPath,
+  forkApproaching,
+  forkCommitted,
+  forkRealigning,
+  type PathNone,
+  type PathState,
+} from '../game/path';
 import { heightAt, trackCenterOffsets, trackHalfWidths } from './terrain';
 
 /** Stessa zona sempre-piatta calcolata in terrain.ts: la separazione dei
@@ -8,6 +15,12 @@ import { heightAt, trackCenterOffsets, trackHalfWidths } from './terrain';
  *  qualunque ramo, in qualunque momento di un bivio. */
 const FLAT_HALF_WIDTH = CONFIG.path.branchSeparation + CONFIG.world.trackWidth / 2;
 const LENGTH = CONFIG.world.chunkLength;
+/** Profondità della pista dinamica e passo delle sue righe di geometria,
+ *  rispecchiati da render/terrain.ts (TRACK_DEPTH e TRACK_DEPTH /
+ *  TRACK_SEGMENTS): servono a controllare la continuità del centro pista
+ *  proprio dove la geometria la campiona, non su un continuo ideale. */
+const TRACK_DEPTH = CONFIG.world.chunkLength * CONFIG.world.chunkCount;
+const ROW_STEP = TRACK_DEPTH / 60;
 
 describe('heightAt', () => {
   it('è 0 dentro la zona sempre piatta, per qualunque z', () => {
@@ -68,35 +81,93 @@ describe('heightAt', () => {
   });
 });
 
-/** Base da createPath, non un letterale scritto a mano: un campo nuovo di
- *  PathState non deve costringere a toccare le fixture dei test di vista. */
-function fixture(overrides: Partial<PathState> = {}): PathState {
-  return { ...createPath(), nextForkIn: 100, ...overrides };
+/** Percorso dritto. `PathState` è un'unione discriminata su `phase` (vedi
+ *  game/path.ts): gli stati di bivio si costruiscono con i costruttori
+ *  dedicati, che chiedono esattamente i campi che quella fase possiede — non
+ *  esiste più un `{ phase: 'none', activeBranch: 'right' }`, cioè uno stato
+ *  che il gioco non può produrre e su cui non ha senso testare la vista. */
+function straight(offsetX = 0): PathNone {
+  return { ...createPath(), nextForkIn: 100, offsetX };
+}
+
+/** Un bivio in una delle tre fasi, alla distanza data: serve ai test che
+ *  spazzano tutte le fasi con lo stesso corpo. */
+function forkAt(
+  phase: 'approaching' | 'committed' | 'realigning',
+  forkZ: number,
+  offsetX = 0,
+): PathState {
+  if (phase === 'approaching') return forkApproaching({ forkZ, offsetX });
+  if (phase === 'committed') return forkCommitted({ forkZ, activeBranch: 'left', offsetX });
+  return forkRealigning({ forkZ, activeBranch: 'left', realignProgress: 0, offsetX });
 }
 
 describe('trackCenterOffsets', () => {
   it('senza bivio, i due nastri coincidono sempre a offsetX', () => {
-    const path = fixture({ offsetX: 1.5 });
+    const path = straight(1.5);
     for (const z of [0, 10, 90, 200]) {
       expect(trackCenterOffsets(path, z)).toEqual([1.5, 1.5]);
     }
   });
 
   it('con un bivio in corso ma prima della biforcazione (z <= forkZ), resta un solo nastro', () => {
-    const path = fixture({ phase: 'approaching', forkZ: 40, offsetX: 0 });
+    const path = forkApproaching({ forkZ: 40 });
     expect(trackCenterOffsets(path, 0)).toEqual([0, 0]);
     expect(trackCenterOffsets(path, 40)).toEqual([0, 0]);
   });
 
-  it('oltre la biforcazione (z > forkZ) i due nastri divergono ai due rami', () => {
-    const path = fixture({ phase: 'approaching', forkZ: 40, offsetX: 0 });
-    const [left, right] = trackCenterOffsets(path, 41);
+  it('a fine apertura (forkZ + forkBlendZ) i due nastri sono ai due rami', () => {
+    const path = forkApproaching({ forkZ: 40 });
+    const [left, right] = trackCenterOffsets(path, 40 + CONFIG.path.forkBlendZ);
     expect(left).toBeCloseTo(-CONFIG.path.branchSeparation, 6);
     expect(right).toBeCloseTo(CONFIG.path.branchSeparation, 6);
   });
 
+  it('subito dopo la biforcazione i due nastri sono ancora quasi coincidenti', () => {
+    // Il difetto che l'apertura graduale corregge: qui i nastri valevano già
+    // ±branchSeparation, cioè il bivio nasceva come due piste parallele
+    // comparse di fianco alla propria invece che come una Y.
+    const path = forkApproaching({ forkZ: 40 });
+    const [left, right] = trackCenterOffsets(path, 41);
+    expect(Math.abs(left)).toBeLessThan(CONFIG.world.trackWidth / 2);
+    expect(Math.abs(right)).toBeLessThan(CONFIG.world.trackWidth / 2);
+  });
+
+  it('i due rami si aprono in modo monotono, senza mai tornare indietro', () => {
+    const path = forkApproaching({ forkZ: 30 });
+    let previous = 0;
+    for (let z = 30; z <= 30 + CONFIG.path.forkBlendZ + 10; z += 0.5) {
+      const separation = trackCenterOffsets(path, z)[1] - trackCenterOffsets(path, z)[0];
+      expect(separation).toBeGreaterThanOrEqual(previous - 1e-9);
+      previous = separation;
+    }
+    expect(previous).toBeCloseTo(2 * CONFIG.path.branchSeparation, 6);
+  });
+
+  it('due righe adiacenti di geometria non scostano mai il centro di più di mezza pista', () => {
+    // L'invariante che mancava: la pista è fatta di righe distanti ROW_STEP, e
+    // fra una riga e la successiva il centro di un nastro non può spostarsi
+    // tanto da non sovrapporsi più a sé stesso — altrimenti quello che si vede
+    // non è una piega ma uno scalino, con neve non battuta scoperta in mezzo.
+    // Vale per QUALUNQUE posizione della biforcazione, anche già superata.
+    const maxJump = CONFIG.world.trackWidth / 2;
+    for (const phase of ['approaching', 'committed', 'realigning'] as const) {
+      for (let forkZ = -60; forkZ <= 120; forkZ += 1) {
+        const path = forkAt(phase, forkZ);
+        let [previousLeft, previousRight] = trackCenterOffsets(path, 0);
+        for (let z = ROW_STEP; z <= TRACK_DEPTH; z += ROW_STEP) {
+          const [left, right] = trackCenterOffsets(path, z);
+          expect(Math.abs(left - previousLeft)).toBeLessThanOrEqual(maxJump);
+          expect(Math.abs(right - previousRight)).toBeLessThanOrEqual(maxJump);
+          previousLeft = left;
+          previousRight = right;
+        }
+      }
+    }
+  });
+
   it('durante il riallineamento, offsetX si somma anche ai nastri divergenti', () => {
-    const path = fixture({ phase: 'committed', forkZ: 5, offsetX: -2 });
+    const path = forkCommitted({ forkZ: 5, activeBranch: 'left', offsetX: -2 });
     const [left, right] = trackCenterOffsets(path, 90);
     expect(left).toBeCloseTo(-CONFIG.path.branchSeparation - 2, 6);
     expect(right).toBeCloseTo(CONFIG.path.branchSeparation - 2, 6);
@@ -107,19 +178,23 @@ describe('trackHalfWidths', () => {
   const full = CONFIG.world.trackWidth / 2;
 
   it('fuori dal riallineamento i due nastri sono larghi uguale', () => {
-    for (const phase of ['none', 'approaching', 'committed'] as const) {
-      const path = fixture({ phase, activeBranch: 'left', realignProgress: 0 });
+    const paths: readonly PathState[] = [
+      straight(),
+      forkApproaching({ forkZ: 40 }),
+      forkCommitted({ forkZ: 5, activeBranch: 'left' }),
+    ];
+    for (const path of paths) {
       expect([...trackHalfWidths(path)]).toEqual([full, full]);
     }
   });
 
   it('durante il riallineamento il nastro SCARTATO si assottiglia, quello scelto no', () => {
-    const path = fixture({ phase: 'realigning', activeBranch: 'left', realignProgress: 0.5 });
+    const path = forkRealigning({ activeBranch: 'left', realignProgress: 0.5 });
     const [left, right] = trackHalfWidths(path);
     expect(left).toBe(full);
     expect(right).toBeCloseTo(full * 0.5, 10);
 
-    const mirrored = fixture({ phase: 'realigning', activeBranch: 'right', realignProgress: 0.5 });
+    const mirrored = forkRealigning({ activeBranch: 'right', realignProgress: 0.5 });
     const [mirroredLeft, mirroredRight] = trackHalfWidths(mirrored);
     expect(mirroredLeft).toBeCloseTo(full * 0.5, 10);
     expect(mirroredRight).toBe(full);
@@ -129,13 +204,13 @@ describe('trackHalfWidths', () => {
     // Nel frame successivo la fase torna 'none' e i due nastri tornano a
     // coincidere al centro. Se il nastro scartato fosse ancora largo, quel
     // ritorno sarebbe uno scatto laterale di 2 * branchSeparation.
-    const path = fixture({ phase: 'realigning', activeBranch: 'right', realignProgress: 1 });
+    const path = forkRealigning({ activeBranch: 'right', realignProgress: 1 });
     expect(trackHalfWidths(path)[0]).toBe(0);
     expect(trackHalfWidths(path)[1]).toBe(full);
   });
 
   it('non scende mai sotto zero, nemmeno con un avanzamento oltre 1', () => {
-    const path = fixture({ phase: 'realigning', activeBranch: 'left', realignProgress: 1.5 });
+    const path = forkRealigning({ activeBranch: 'left', realignProgress: 1.5 });
     expect(trackHalfWidths(path)[1]).toBe(0);
   });
 });

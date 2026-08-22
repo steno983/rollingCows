@@ -1,6 +1,8 @@
+import * as THREE from 'three';
 import { describe, expect, it } from 'vitest';
 import { createRng } from '../core/rng';
-import { generateRidgeProfile, generateVillageLayout } from './backdrop';
+import { CONFIG } from '../game/config';
+import { buildValleyFloor, generateRidgeProfile, generateVillageLayout } from './backdrop';
 
 describe('generateRidgeProfile', () => {
   it('produce segments + 1 picchi', () => {
@@ -73,5 +75,45 @@ describe('generateVillageLayout', () => {
       expect(Math.abs(house.x)).toBeLessThanOrEqual(spread * 1.5);
       expect(Math.abs(house.z)).toBeLessThanOrEqual(spread * 1.5);
     }
+  });
+});
+
+describe('buildValleyFloor', () => {
+  /** Normale geometrica di un triangolo del fondovalle, calcolata dai vertici
+   *  nell'ordine in cui li legge il rasterizzatore: è l'avvolgimento a
+   *  decidere quale faccia è quella frontale, non l'attributo `normal`. */
+  function triangleNormal(mesh: THREE.Mesh, triangle: number): THREE.Vector3 {
+    const geometry = mesh.geometry;
+    const index = geometry.getIndex();
+    expect(index).not.toBeNull();
+    const position = geometry.getAttribute('position');
+    const vertices = [new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3()];
+    for (let corner = 0; corner < 3; corner += 1) {
+      const slot = index?.getX(triangle * 3 + corner) ?? 0;
+      vertices[corner]?.fromBufferAttribute(position, slot);
+    }
+    const [a, b, c] = vertices as [THREE.Vector3, THREE.Vector3, THREE.Vector3];
+    return new THREE.Triangle(a, b, c).getNormal(new THREE.Vector3());
+  }
+
+  it("entrambi i triangoli guardano verso l'alto, cioè verso la camera", () => {
+    // Regressione: con l'avvolgimento sbagliato le normali valevano (0,-1,0) e
+    // il fondovalle, disegnato con un materiale a side: FrontSide, spariva.
+    const mesh = buildValleyFloor();
+    for (const triangle of [0, 1]) {
+      expect(triangleNormal(mesh, triangle).y).toBeGreaterThan(0.99);
+    }
+  });
+
+  it("copre l'intervallo di profondità e la larghezza di config", () => {
+    const cfg = CONFIG.render.backdrop;
+    const mesh = buildValleyFloor();
+    mesh.geometry.computeBoundingBox();
+    const box = mesh.geometry.boundingBox;
+    expect(box).not.toBeNull();
+    expect(box?.min.z).toBeCloseTo(cfg.valleyDistance, 6);
+    expect(box?.max.z).toBeCloseTo(cfg.valleyDistance + cfg.valleyDepth, 6);
+    expect(box?.max.x).toBeCloseTo(cfg.valleyWidth / 2, 6);
+    expect(box?.min.y).toBeCloseTo(cfg.valleyY, 6);
   });
 });

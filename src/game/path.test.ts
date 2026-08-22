@@ -1,17 +1,20 @@
 import { describe, expect, it } from 'vitest';
-import { createEventBus } from '../core/events';
 import type { EventBus, GameEvents } from '../core/events';
+import { createEventBus } from '../core/events';
 import { createRng } from '../core/rng';
 import { CONFIG } from './config';
+import type { PathState } from './path';
 import {
+  activeBranchOf,
   branchIsSolid,
   branchOffsetX,
   chooseBranch,
-  rememberChoice,
   createPath,
+  forkApproaching,
+  realignProgressOf,
+  rememberChoice,
   updatePath,
 } from './path';
-import type { PathState } from './path';
 import { speedAt } from './speed';
 
 const STEP = 1 / 60;
@@ -27,46 +30,82 @@ function recordedBus<K extends keyof GameEvents>(
 }
 
 /** Avanza il percorso di `distance` unità a velocità costante, a passi di STEP
- *  (l'ultimo passo può essere più corto, per chiudere esattamente su `distance`). */
+ *  (l'ultimo passo può essere più corto, per chiudere esattamente su
+ *  `distance`) e RESTITUISCE lo stato risultante: `PathState` è un'unione
+ *  discriminata su `phase`, quindi una transizione di fase produce un oggetto
+ *  nuovo e il chiamante deve riassegnare. */
 function travel(
   path: PathState,
   distance: number,
   speed: number,
   rng: ReturnType<typeof createRng>,
   bus: EventBus,
-): void {
+): PathState {
+  let current = path;
   let remaining = distance;
   while (remaining > 0) {
     const step = Math.min(speed * STEP, remaining);
-    updatePath(path, step, speed, rng, bus);
+    current = updatePath(current, step, speed, rng, bus);
     remaining -= step;
   }
+  return current;
+}
+
+/** Avanza finché il bivio non compare. Sostituisce il vecchio
+ *  `travel(path, path.nextForkIn + 1, ...)`: `nextForkIn` esiste solo nella
+ *  fase 'none' e dopo un travel il compilatore — giustamente — non sa più in
+ *  quale fase sia il percorso. */
+function travelToFork(
+  path: PathState,
+  speed: number,
+  rng: ReturnType<typeof createRng>,
+  bus: EventBus,
+): PathState {
+  let current = path;
+  let guard = 0;
+  while (current.phase === 'none' && guard < 10000) {
+    current = updatePath(current, speed * STEP, speed, rng, bus);
+    guard += 1;
+  }
+  return current;
+}
+
+/** La scelta corrente, o null dove non c'è un bivio che possa averne una.
+ *  Vive qui e non in path.ts perché serve solo a questi test: il gioco legge
+ *  la scelta solo dentro una fase in cui esiste. */
+function choiceOf(path: PathState): 'left' | 'right' | null {
+  return path.phase === 'none' ? null : path.choice;
+}
+
+/** Il ramo ricco del bivio in corso, o null se non c'è alcun bivio. */
+function richBranchOf(path: PathState): 'left' | 'right' | null {
+  return path.phase === 'none' ? null : path.richBranch;
 }
 
 describe('createPath', () => {
   it('parte senza bivio, sul ramo main, offset zero', () => {
-    const path = createPath();
+    const path: PathState = createPath();
     expect(path.phase).toBe('none');
-    expect(path.activeBranch).toBe('main');
+    expect(activeBranchOf(path)).toBe('main');
     expect(path.offsetX).toBe(0);
-    expect(path.choice).toBeNull();
+    expect(choiceOf(path)).toBeNull();
   });
 });
 
 describe('updatePath — comparsa del bivio', () => {
   it('non compare prima della distanza attesa', () => {
     const { bus } = recordedBus('fork:appeared');
-    const path = createPath();
+    let path: PathState = createPath();
     const rng = createRng(1);
-    travel(path, CONFIG.path.firstForkIn - 1, CONFIG.world.startSpeed, rng, bus);
+    path = travel(path, CONFIG.path.firstForkIn - 1, CONFIG.world.startSpeed, rng, bus);
     expect(path.phase).toBe('none');
   });
 
   it('compare dopo la distanza attesa', () => {
     const { bus, payloads } = recordedBus('fork:appeared');
-    const path = createPath();
+    let path: PathState = createPath();
     const rng = createRng(1);
-    travel(path, CONFIG.path.firstForkIn + 1, CONFIG.world.startSpeed, rng, bus);
+    path = travel(path, CONFIG.path.firstForkIn + 1, CONFIG.world.startSpeed, rng, bus);
     expect(path.phase).toBe('approaching');
     expect(payloads.length).toBe(1);
     expect(['left', 'right']).toContain(payloads[0]?.richBranch);
@@ -74,14 +113,14 @@ describe('updatePath — comparsa del bivio', () => {
 
   it('emette fork:appeared una sola volta per bivio, dalla comparsa alla chiusura', () => {
     const { bus, payloads } = recordedBus('fork:appeared');
-    const path = createPath();
+    let path: PathState = createPath();
     const rng = createRng(1);
     const totalToClose =
       CONFIG.path.minGap +
       CONFIG.path.previewZ +
       CONFIG.path.realignSeconds * CONFIG.world.startSpeed +
       5;
-    travel(path, totalToClose, CONFIG.world.startSpeed, rng, bus);
+    path = travel(path, totalToClose, CONFIG.world.startSpeed, rng, bus);
     expect(path.phase).toBe('none');
     expect(payloads.length).toBe(1);
   });
@@ -90,28 +129,28 @@ describe('updatePath — comparsa del bivio', () => {
 describe('chooseBranch', () => {
   it('prima del punto di non ritorno cambia la scelta, anche più volte', () => {
     const bus = createEventBus();
-    const path = createPath();
+    let path: PathState = createPath();
     const rng = createRng(1);
-    travel(path, CONFIG.path.firstForkIn + 1, CONFIG.world.startSpeed, rng, bus);
+    path = travel(path, CONFIG.path.firstForkIn + 1, CONFIG.world.startSpeed, rng, bus);
     expect(path.phase).toBe('approaching');
 
     expect(chooseBranch(path, 'left')).toBe(true);
-    expect(path.choice).toBe('left');
+    expect(choiceOf(path)).toBe('left');
 
     expect(chooseBranch(path, 'right')).toBe(true);
-    expect(path.choice).toBe('right');
+    expect(choiceOf(path)).toBe('right');
 
     expect(chooseBranch(path, 'left')).toBe(true);
-    expect(path.choice).toBe('left');
+    expect(choiceOf(path)).toBe('left');
   });
 
   it('dopo il punto di non ritorno restituisce false e non cambia più nulla', () => {
     const bus = createEventBus();
-    const path = createPath();
+    let path: PathState = createPath();
     const rng = createRng(1);
-    travel(path, CONFIG.path.firstForkIn + 1, CONFIG.world.startSpeed, rng, bus);
+    path = travel(path, CONFIG.path.firstForkIn + 1, CONFIG.world.startSpeed, rng, bus);
     chooseBranch(path, 'left');
-    travel(
+    path = travel(
       path,
       CONFIG.path.previewZ - CONFIG.path.commitZ + 1,
       CONFIG.world.startSpeed,
@@ -120,28 +159,28 @@ describe('chooseBranch', () => {
     );
     expect(path.phase).not.toBe('approaching');
 
-    const lockedChoice = path.choice;
+    const lockedChoice = choiceOf(path);
     expect(chooseBranch(path, lockedChoice === 'left' ? 'right' : 'left')).toBe(false);
-    expect(path.choice).toBe(lockedChoice);
+    expect(choiceOf(path)).toBe(lockedChoice);
   });
 
   it('restituisce false se non c-è alcun bivio in corso', () => {
-    const path = createPath();
+    const path: PathState = createPath();
     expect(chooseBranch(path, 'left')).toBe(false);
-    expect(path.choice).toBeNull();
+    expect(choiceOf(path)).toBeNull();
   });
 });
 
 describe('senza scelta', () => {
   it('al punto di non ritorno impone il ramo NON ricco', () => {
     const { bus, payloads } = recordedBus('fork:resolved');
-    const path = createPath();
+    let path: PathState = createPath();
     const rng = createRng(7);
-    travel(path, CONFIG.path.firstForkIn + 1, CONFIG.world.startSpeed, rng, bus);
-    const rich = path.richBranch;
+    path = travel(path, CONFIG.path.firstForkIn + 1, CONFIG.world.startSpeed, rng, bus);
+    const rich = richBranchOf(path);
     const expectedChoice = rich === 'left' ? 'right' : 'left';
 
-    travel(
+    path = travel(
       path,
       CONFIG.path.previewZ - CONFIG.path.commitZ + 1,
       CONFIG.world.startSpeed,
@@ -149,8 +188,8 @@ describe('senza scelta', () => {
       bus,
     );
 
-    expect(path.choice).toBe(expectedChoice);
-    expect(path.activeBranch).toBe(expectedChoice);
+    expect(choiceOf(path)).toBe(expectedChoice);
+    expect(activeBranchOf(path)).toBe(expectedChoice);
     expect(payloads.length).toBe(1);
     expect(payloads[0]?.side).toBe(expectedChoice);
   });
@@ -159,19 +198,19 @@ describe('senza scelta', () => {
 describe('branchIsSolid', () => {
   it('main è sempre solido, in ogni fase', () => {
     const bus = createEventBus();
-    const path = createPath();
+    let path: PathState = createPath();
     expect(branchIsSolid(path, 'main')).toBe(true);
 
     const rng = createRng(1);
-    travel(path, CONFIG.path.firstForkIn + 1, CONFIG.world.startSpeed, rng, bus);
+    path = travel(path, CONFIG.path.firstForkIn + 1, CONFIG.world.startSpeed, rng, bus);
     expect(branchIsSolid(path, 'main')).toBe(true);
   });
 
   it('durante approaching nessun ramo laterale è solido', () => {
     const bus = createEventBus();
-    const path = createPath();
+    let path: PathState = createPath();
     const rng = createRng(1);
-    travel(path, CONFIG.path.firstForkIn + 1, CONFIG.world.startSpeed, rng, bus);
+    path = travel(path, CONFIG.path.firstForkIn + 1, CONFIG.world.startSpeed, rng, bus);
     expect(path.phase).toBe('approaching');
     expect(branchIsSolid(path, 'left')).toBe(false);
     expect(branchIsSolid(path, 'right')).toBe(false);
@@ -179,11 +218,11 @@ describe('branchIsSolid', () => {
 
   it('dopo il commit solo il ramo scelto è solido', () => {
     const bus = createEventBus();
-    const path = createPath();
+    let path: PathState = createPath();
     const rng = createRng(1);
-    travel(path, CONFIG.path.firstForkIn + 1, CONFIG.world.startSpeed, rng, bus);
+    path = travel(path, CONFIG.path.firstForkIn + 1, CONFIG.world.startSpeed, rng, bus);
     chooseBranch(path, 'left');
-    travel(
+    path = travel(
       path,
       CONFIG.path.previewZ - CONFIG.path.commitZ + 1,
       CONFIG.world.startSpeed,
@@ -191,7 +230,7 @@ describe('branchIsSolid', () => {
       bus,
     );
 
-    expect(path.activeBranch).toBe('left');
+    expect(activeBranchOf(path)).toBe('left');
     expect(branchIsSolid(path, 'left')).toBe(true);
     expect(branchIsSolid(path, 'right')).toBe(false);
   });
@@ -200,11 +239,11 @@ describe('branchIsSolid', () => {
 describe('riallineamento', () => {
   it('finisce sempre con offsetX esattamente 0, phase none, activeBranch main', () => {
     const bus = createEventBus();
-    const path = createPath();
+    let path: PathState = createPath();
     const rng = createRng(3);
-    travel(path, CONFIG.path.firstForkIn + 1, CONFIG.world.startSpeed, rng, bus);
+    path = travel(path, CONFIG.path.firstForkIn + 1, CONFIG.world.startSpeed, rng, bus);
     chooseBranch(path, 'right');
-    travel(
+    path = travel(
       path,
       CONFIG.path.previewZ + CONFIG.path.realignSeconds * CONFIG.world.startSpeed + 5,
       CONFIG.world.startSpeed,
@@ -214,16 +253,16 @@ describe('riallineamento', () => {
 
     expect(path.phase).toBe('none');
     expect(path.offsetX).toBe(0);
-    expect(path.activeBranch).toBe('main');
+    expect(activeBranchOf(path)).toBe('main');
   });
 
   it('durante il riallineamento la posizione a schermo del ramo scelto converge al centro monotonamente', () => {
     const bus = createEventBus();
-    const path = createPath();
+    let path: PathState = createPath();
     const rng = createRng(3);
-    travel(path, CONFIG.path.firstForkIn + 1, CONFIG.world.startSpeed, rng, bus);
+    path = travel(path, CONFIG.path.firstForkIn + 1, CONFIG.world.startSpeed, rng, bus);
     chooseBranch(path, 'right');
-    travel(path, CONFIG.path.previewZ, CONFIG.world.startSpeed, rng, bus);
+    path = travel(path, CONFIG.path.previewZ, CONFIG.world.startSpeed, rng, bus);
     expect(path.phase === 'committed' || path.phase === 'realigning').toBe(true);
 
     // "Posizione a schermo del ramo scelto" = branchOffsetX('right') + offsetX:
@@ -236,7 +275,7 @@ describe('riallineamento', () => {
     const chosenOffset = CONFIG.path.branchSeparation; // branchOffsetX(path, 'right')
     let previous = Math.abs(chosenOffset + path.offsetX);
     for (let i = 0; i < 60; i++) {
-      updatePath(path, CONFIG.world.startSpeed * STEP, CONFIG.world.startSpeed, rng, bus);
+      path = updatePath(path, CONFIG.world.startSpeed * STEP, CONFIG.world.startSpeed, rng, bus);
       if (path.phase === 'none') break;
       const current = Math.abs(chosenOffset + path.offsetX);
       expect(current).toBeLessThanOrEqual(previous + 1e-9);
@@ -264,7 +303,7 @@ describe('simulazione lunga', () => {
       appearedCount += 1;
     });
 
-    const path = createPath();
+    let path: PathState = createPath();
     const rng = createRng(42);
     let distance = 0;
     const steps = Math.round(60 / STEP);
@@ -273,7 +312,7 @@ describe('simulazione lunga', () => {
       const speed = speedAt(distance);
       const travelled = speed * STEP;
       const wasNone = path.phase === 'none';
-      updatePath(path, travelled, speed, rng, bus);
+      path = updatePath(path, travelled, speed, rng, bus);
       distance += travelled;
 
       if (!wasNone && path.phase === 'none' && path.offsetX === 0) {
@@ -316,14 +355,14 @@ describe('determinismo', () => {
       const sequence: Array<'left' | 'right'> = [];
       bus.on('fork:appeared', (payload) => sequence.push(payload.richBranch));
 
-      const path = createPath();
+      let path: PathState = createPath();
       const rng = createRng(seed);
       let distance = 0;
       const steps = Math.round(40 / STEP);
       for (let i = 0; i < steps; i++) {
         const speed = speedAt(distance);
         const travelled = speed * STEP;
-        updatePath(path, travelled, speed, rng, bus);
+        path = updatePath(path, travelled, speed, rng, bus);
         distance += travelled;
       }
       return sequence;
@@ -337,7 +376,7 @@ describe('determinismo', () => {
 
 describe('branchOffsetX', () => {
   it('è simmetrico e nullo per il ramo main', () => {
-    const path = createPath();
+    const path: PathState = createPath();
     expect(branchOffsetX(path, 'main')).toBe(0);
     expect(branchOffsetX(path, 'left')).toBe(-CONFIG.path.branchSeparation);
     expect(branchOffsetX(path, 'right')).toBe(CONFIG.path.branchSeparation);
@@ -347,47 +386,107 @@ describe('branchOffsetX', () => {
 describe('scelta anticipata', () => {
   it('uno swipe dato poco prima che il bivio compaia vale come scelta, ed è annunciato', () => {
     const { bus, payloads } = recordedBus('fork:chosen');
-    const path = createPath();
+    let path: PathState = createPath();
     const rng = createRng(1);
     const speed = 20;
 
     // A un passo dal bivio: il tracciato è ancora dritto, quindi lo swipe non
     // può essere una scelta vera.
-    travel(path, path.nextForkIn - speed * STEP, speed, rng, bus);
+    path = travel(path, path.nextForkIn - speed * STEP, speed, rng, bus);
     expect(path.phase).toBe('none');
     expect(chooseBranch(path, 'right')).toBe(false);
-    rememberChoice(path, 'right');
+    // Il bivio è imminente (manca meno di earlyChoiceWindowZ), quindi lo swipe
+    // viene davvero memorizzato.
+    expect(rememberChoice(path, 'right')).toBe(true);
     expect(payloads).toEqual([]);
 
-    updatePath(path, speed * STEP, speed, rng, bus);
+    path = updatePath(path, speed * STEP, speed, rng, bus);
 
     expect(path.phase).toBe('approaching');
-    expect(path.choice).toBe('right');
+    expect(choiceOf(path)).toBe('right');
     expect(payloads).toEqual([{ side: 'right' }]);
   });
 
   it('uno swipe più vecchio di earlyChoiceSeconds è dimenticato', () => {
     const { bus, payloads } = recordedBus('fork:chosen');
-    const path = createPath();
+    let path: PathState = createPath();
     const rng = createRng(2);
     const speed = 20;
 
-    rememberChoice(path, 'left');
-    // Il tempo scorre ben oltre la finestra della scelta anticipata, e comunque
-    // molto prima che il bivio compaia (minGap è 120 unità).
-    travel(path, speed * CONFIG.path.earlyChoiceSeconds * 2, speed, rng, bus);
+    // Ci si porta dentro la finestra di prossimità, altrimenti lo swipe non
+    // verrebbe nemmeno memorizzato e il test non misurerebbe la SCADENZA.
+    path = travel(
+      path,
+      CONFIG.path.firstForkIn - CONFIG.path.earlyChoiceWindowZ + 1,
+      speed,
+      rng,
+      bus,
+    );
+    expect(rememberChoice(path, 'left')).toBe(true);
+
+    // Il tempo scorre oltre la finestra della scelta anticipata, ma ancora
+    // prima che il bivio compaia.
+    path = travel(path, speed * CONFIG.path.earlyChoiceSeconds * 1.1, speed, rng, bus);
     expect(path.pendingChoice).toBeNull();
 
-    travel(path, path.nextForkIn + 1, speed, rng, bus);
+    path = travelToFork(path, speed, rng, bus);
     expect(path.phase).toBe('approaching');
-    expect(path.choice).toBeNull();
+    expect(choiceOf(path)).toBeNull();
     expect(payloads).toEqual([]);
   });
 
+  it('uno swipe dato lontano da qualunque bivio non viene nemmeno memorizzato', () => {
+    // È la correzione del difetto: fuori da un bivio uno swipe laterale è
+    // quasi sempre un salto malriuscito (un diagonale letto come laterale), e
+    // ricordarlo per 0,6 s significava imboccare un ramo 0,6 s dopo senza che
+    // il giocatore lo avesse deciso — sulla decisione di firma del gioco.
+    const { bus, payloads } = recordedBus('fork:chosen');
+    let path: PathState = createPath();
+    const rng = createRng(3);
+    const speed = 20;
+
+    expect(CONFIG.path.firstForkIn).toBeGreaterThan(CONFIG.path.earlyChoiceWindowZ);
+    expect(rememberChoice(path, 'left')).toBe(false);
+    expect(path.pendingChoice).toBeNull();
+    expect(path.pendingChoiceTimeLeft).toBe(0);
+
+    path = travelToFork(path, speed, rng, bus);
+    expect(path.phase).toBe('approaching');
+    expect(choiceOf(path)).toBeNull();
+    expect(payloads).toEqual([]);
+  });
+
+  it('la memoria vale per il bivio in arrivo, non per quello successivo', () => {
+    // Durante un bivio in corso `nextForkIn` è un residuo del bivio precedente
+    // (viene ricalcolato solo alla chiusura): senza l'uscita anticipata sulla
+    // fase, uno swipe dato dopo il punto di non ritorno verrebbe letto come
+    // "bivio imminente" e applicato al bivio dopo, oltre cento unità più
+    // avanti.
+    const bus = createEventBus();
+    let path: PathState = createPath();
+    const rng = createRng(4);
+    const speed = 20;
+
+    path = travelToFork(path, speed, rng, bus);
+    path = travel(path, CONFIG.path.previewZ - CONFIG.path.commitZ + 1, speed, rng, bus);
+    expect(path.phase === 'committed' || path.phase === 'realigning').toBe(true);
+    // Prima qui si verificava che `nextForkIn` fosse un residuo del bivio
+    // precedente, cioè un valore che avrebbe ingannato la finestra di
+    // prossimità. Ora quel campo non esiste proprio in questa fase: è il tipo
+    // a garantire ciò che l'asserzione controllava a runtime.
+
+    expect(rememberChoice(path, 'left')).toBe(false);
+    expect(path.pendingChoice).toBeNull();
+  });
+
   it('una scelta vera cancella quella anticipata ancora in memoria', () => {
-    const path = createPath();
-    rememberChoice(path, 'left');
-    path.phase = 'approaching';
+    // La scelta anticipata si porta dietro la comparsa del bivio: la si
+    // ricrea sullo stato di avvicinamento invece di "spingere" un percorso
+    // dritto cambiandogli la fase, che l'unione discriminata non consente più
+    // — ed è la stessa cosa che impediva di scriverla a mano nel gioco.
+    const path = forkApproaching({ forkZ: CONFIG.path.previewZ });
+    path.pendingChoice = 'left';
+    path.pendingChoiceTimeLeft = CONFIG.path.earlyChoiceSeconds;
 
     expect(chooseBranch(path, 'right')).toBe(true);
     expect(path.pendingChoice).toBeNull();
@@ -398,18 +497,18 @@ describe('scelta anticipata', () => {
 describe('realignProgress', () => {
   it('vale 0 fuori dal riallineamento, sale da 0 a 1 durante, e torna 0 alla chiusura', () => {
     const bus = createEventBus();
-    const path = createPath();
+    let path: PathState = createPath();
     const rng = createRng(7);
     const speed = 20;
 
-    travel(path, path.nextForkIn + 1, speed, rng, bus);
+    path = travel(path, path.nextForkIn + 1, speed, rng, bus);
     expect(path.phase).toBe('approaching');
-    expect(path.realignProgress).toBe(0);
+    expect(realignProgressOf(path)).toBe(0);
 
     const seen: number[] = [];
     let guard = 0;
     while (path.phase !== 'none' && guard < 5000) {
-      updatePath(path, speed * STEP, speed, rng, bus);
+      path = updatePath(path, speed * STEP, speed, rng, bus);
       if (path.phase === 'realigning') seen.push(path.realignProgress);
       guard += 1;
     }
@@ -437,6 +536,6 @@ describe('realignProgress', () => {
     if (last === undefined) throw new Error('nessun campione finale');
     expect(last).toBeGreaterThan(1 - nominalStep - 1e-9);
     expect(path.phase).toBe('none');
-    expect(path.realignProgress).toBe(0);
+    expect(realignProgressOf(path)).toBe(0);
   });
 });

@@ -1,5 +1,5 @@
 import { CONFIG } from './config';
-import { speedAt } from './speed';
+import { DEFAULT_DIFFICULTY_PROFILE, type DifficultyProfile, speedAt } from './speed';
 
 export interface Chunk {
   id: number;
@@ -15,7 +15,14 @@ export interface WorldState {
   recycled: Chunk[];
 }
 
-export function createWorld(): WorldState {
+/**
+ * Il profilo di difficoltà è un parametro e non una lettura di CONFIG perché è
+ * lo stato di gioco a possederlo (vedi game/speed.ts): il mondo si limita a
+ * usarlo per interrogare la curva di velocità. È opzionale e ricade sul
+ * profilo normale, i cui tre numeri coincidono con quelli di CONFIG: chi non
+ * lo passa — i test di modulo, per esempio — ottiene il gioco di riferimento.
+ */
+export function createWorld(profile: DifficultyProfile = DEFAULT_DIFFICULTY_PROFILE): WorldState {
   const { chunkCount, chunkLength } = CONFIG.world;
   const chunks: Chunk[] = [];
   for (let i = 0; i < chunkCount; i++) {
@@ -23,7 +30,7 @@ export function createWorld(): WorldState {
   }
   return {
     distance: 0,
-    speed: speedAt(0),
+    speed: speedAt(0, profile),
     chunks,
     recycled: [],
   };
@@ -31,12 +38,16 @@ export function createWorld(): WorldState {
 
 /** Avanza distanza e scorre i chunk. I chunk usciti dietro vengono riposizionati
  *  in coda e messi in `world.recycled` (array riusato, svuotato a ogni chiamata). */
-export function updateWorld(world: WorldState, dt: number): void {
+export function updateWorld(
+  world: WorldState,
+  dt: number,
+  profile: DifficultyProfile = DEFAULT_DIFFICULTY_PROFILE,
+): void {
   const { chunkLength, despawnBehindZ } = CONFIG.world;
   const chunks = world.chunks;
 
   world.recycled.length = 0;
-  world.speed = speedAt(world.distance);
+  world.speed = speedAt(world.distance, profile);
 
   const delta = world.speed * dt;
   world.distance += delta;

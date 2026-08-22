@@ -9,12 +9,77 @@ const BURST_TOWARD_CAMERA = 0.35;
 const BURST_LIFT = 0.6;
 const BURST_LIFE = 0.9;
 const BURST_LIFE_SPREAD = 0.8;
-/** Cubetti al secondo della scia, a intensità 1. */
-const TRAIL_PER_SECOND = 70;
 /** Tetto per chiamata: impedisce che un frame lungo svuoti il pool. */
 const MAX_TRAIL_PER_CALL = 24;
-const TRAIL_LIFE = 0.9;
 const SNOW_COLOR = PALETTE[0] ?? 0xffffff;
+/** I due ori con cui la stella è disegnata (models.ts, PALETTE 15 e 16): la
+ *  scia si riconosce come "quella cosa che ho appena raccolto" solo se è dei
+ *  colori del buff, non di un oro qualunque. */
+const STAR_COLORS: readonly number[] = [PALETTE[15] ?? 0xffcf3d, PALETTE[16] ?? 0xfff3b0];
+
+/**
+ * Forma di una scia continua. Le due scie del gioco (neve della valanga, oro
+ * della stella) hanno la stessa identica infrastruttura — accumulatore in
+ * frazioni di cubetto, tetto per chiamata, rumore locale — e differiscono
+ * solo per questi numeri: tenerle come due funzioni gemelle scritte a mano
+ * significherebbe correggere ogni bug due volte.
+ */
+interface TrailSpec {
+  /** Cubetti al secondo a intensità 1. */
+  perSecond: number;
+  /** Semi-ampiezza laterale della nuvola, in unità di mondo. */
+  spread: number;
+  /** Quota massima di nascita sopra il punto passato. */
+  rise: number;
+  /** Quanto indietro (verso la camera) può nascere un cubetto. */
+  depth: number;
+  /** Componente verticale iniziale: minimo più una parte casuale. */
+  liftMin: number;
+  liftSpread: number;
+  /** Componente all'indietro iniziale, stesso schema (segno già negato). */
+  backMin: number;
+  backSpread: number;
+  life: number;
+  lifeSpread: number;
+  /** Colori estratti a rotazione, NON dal rumore: alternarli in modo
+   *  deterministico costa zero e lascia intatta la sequenza di noise(), che
+   *  la scia della valanga consumava già in un ordine preciso. */
+  colors: readonly number[];
+}
+
+/** Muro di neve della valanga: numeri invariati rispetto a quando questa era
+ *  l'unica scia del gioco. */
+const AVALANCHE_TRAIL: TrailSpec = {
+  perSecond: 70,
+  spread: 1.2,
+  rise: 0.6,
+  depth: 1.5,
+  liftMin: 2,
+  liftSpread: 3,
+  backMin: 2,
+  backSpread: 3,
+  life: 0.9,
+  lifeSpread: 0.4,
+  colors: [SNOW_COLOR],
+};
+
+/** Scintille della stella: molto più rade (è un effetto che dura 8 secondi,
+ *  non un'esplosione), strette addosso alla mucca e con poca spinta
+ *  all'indietro, così restano riconoscibili come un'aura che la accompagna e
+ *  non come un altro muro di detriti. */
+const STAR_SPARKLE_TRAIL: TrailSpec = {
+  perSecond: 11,
+  spread: 0.75,
+  rise: 1.5,
+  depth: 0.8,
+  liftMin: 1.6,
+  liftSpread: 2.2,
+  backMin: 0.4,
+  backSpread: 1.2,
+  life: 0.55,
+  lifeSpread: 0.35,
+  colors: STAR_COLORS,
+};
 
 /**
  * Rumore locale della vista: volutamente separato dall'Rng di gioco, che è a
@@ -30,12 +95,22 @@ function noise(): number {
   return ((noiseState >>> 0) % 4096) / 4096;
 }
 
-let trailAccumulator = 0;
+/** Frazioni di cubetto non ancora emesse, UNA PER SCIA: con un accumulatore
+ *  solo, accendere la stella durante la valanga avrebbe fatto emettere alla
+ *  stella il debito accumulato dalla neve (e viceversa), cioè uno sbuffo di
+ *  cubetti al momento sbagliato. */
+const avalancheTrailState = { accumulator: 0 };
+const starTrailState = { accumulator: 0 };
+/** Indice del prossimo colore, per scia: vedi TrailSpec.colors. */
+const trailColorCursor = { avalanche: 0, star: 0 };
 
-/** Riporta rumore e accumulatore allo stato iniziale (nuova run, test). */
+/** Riporta rumore e accumulatori allo stato iniziale (nuova run, test). */
 export function resetDebris(): void {
   noiseState = 0x9e3779b9;
-  trailAccumulator = 0;
+  avalancheTrailState.accumulator = 0;
+  starTrailState.accumulator = 0;
+  trailColorCursor.avalanche = 0;
+  trailColorCursor.star = 0;
 }
 
 /**
@@ -103,9 +178,56 @@ export function burstFromModel(
 }
 
 /**
- * Scia di neve dietro la mucca durante la valanga. Il rateo è in cubetti al
- * secondo e le frazioni si accumulano fra una chiamata e l'altra: la densità
- * della scia è la stessa a 30, 60 o 120 fps.
+ * Motore comune delle scie. Il rateo è in cubetti al secondo e le frazioni si
+ * accumulano fra una chiamata e l'altra: la densità è la stessa a 30, 60 o
+ * 120 fps. `state` è l'accumulatore della singola scia, non condiviso.
+ */
+function emitTrail(
+  pool: VoxelPool,
+  state: { accumulator: number },
+  spec: TrailSpec,
+  cursorKey: 'avalanche' | 'star',
+  dt: number,
+  x: number,
+  y: number,
+  z: number,
+  intensity: number,
+): void {
+  if (intensity <= 0 || dt <= 0) return;
+
+  state.accumulator += dt * spec.perSecond * intensity;
+  let budget = MAX_TRAIL_PER_CALL;
+
+  while (state.accumulator >= 1 && budget > 0) {
+    state.accumulator -= 1;
+    budget -= 1;
+    const cursor = trailColorCursor[cursorKey];
+    const color = spec.colors[cursor % spec.colors.length] ?? SNOW_COLOR;
+    trailColorCursor[cursorKey] = (cursor + 1) % spec.colors.length;
+    const spread = (noise() * 2 - 1) * spec.spread * intensity;
+    // L'ordine delle chiamate a noise() è quello originale della scia della
+    // valanga e non va cambiato: gli argomenti sono valutati da sinistra a
+    // destra, quindi riordinarli cambierebbe la sequenza pseudocasuale e con
+    // essa la forma della scia.
+    const alive = pool.spawn(
+      x + spread,
+      y + noise() * spec.rise,
+      z - noise() * spec.depth,
+      spread * 1.5,
+      spec.liftMin + noise() * spec.liftSpread,
+      -spec.backMin - noise() * spec.backSpread,
+      color,
+      spec.life + noise() * spec.lifeSpread,
+    );
+    if (!alive) break;
+  }
+
+  // Niente debito infinito quando il pool è pieno o il frame è stato lungo.
+  if (state.accumulator > MAX_TRAIL_PER_CALL) state.accumulator = MAX_TRAIL_PER_CALL;
+}
+
+/**
+ * Scia di neve dietro la mucca durante la valanga.
  */
 export function avalancheTrail(
   pool: VoxelPool,
@@ -115,28 +237,28 @@ export function avalancheTrail(
   z: number,
   intensity: number,
 ): void {
-  if (intensity <= 0 || dt <= 0) return;
+  emitTrail(pool, avalancheTrailState, AVALANCHE_TRAIL, 'avalanche', dt, x, y, z, intensity);
+}
 
-  trailAccumulator += dt * TRAIL_PER_SECOND * intensity;
-  let budget = MAX_TRAIL_PER_CALL;
-
-  while (trailAccumulator >= 1 && budget > 0) {
-    trailAccumulator -= 1;
-    budget -= 1;
-    const spread = (noise() * 2 - 1) * 1.2 * intensity;
-    const alive = pool.spawn(
-      x + spread,
-      y + noise() * 0.6,
-      z - noise() * 1.5,
-      spread * 1.5,
-      2 + noise() * 3,
-      -2 - noise() * 3,
-      SNOW_COLOR,
-      TRAIL_LIFE + noise() * 0.4,
-    );
-    if (!alive) break;
-  }
-
-  // Niente debito infinito quando il pool è pieno o il frame è stato lungo.
-  if (trailAccumulator > MAX_TRAIL_PER_CALL) trailAccumulator = MAX_TRAIL_PER_CALL;
+/**
+ * Scintille dorate attorno alla mucca mentre la stella è attiva. Stessa
+ * infrastruttura della scia della valanga (emitTrail), altri numeri.
+ *
+ * Perché esiste: stella e calamita sono i due buff più lunghi del gioco (8
+ * secondi) ed esistevano SOLO come chip nell'HUD, che il giocatore non sta
+ * guardando — sta guardando gli ostacoli. Il buff più remunerativo del gioco
+ * era invisibile nel gioco.
+ *
+ * `intensity` è anche la leva del lampeggio di scadenza e del degrado
+ * prestazionale: chi chiama la abbassa, qui non c'è alcuna logica di tempo.
+ */
+export function starTrail(
+  pool: VoxelPool,
+  dt: number,
+  x: number,
+  y: number,
+  z: number,
+  intensity: number,
+): void {
+  emitTrail(pool, starTrailState, STAR_SPARKLE_TRAIL, 'star', dt, x, y, z, intensity);
 }

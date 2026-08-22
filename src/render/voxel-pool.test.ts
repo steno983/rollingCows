@@ -135,3 +135,81 @@ describe('createVoxelPool — zero allocazioni', () => {
     expect(pool.activeCount).toBe(0);
   });
 });
+
+describe('createVoxelPool — banda verso la GPU', () => {
+  it('a pool vuoto update non tocca affatto il buffer delle matrici', () => {
+    const pool = createVoxelPool(4000, 0.25);
+    const attribute = pool.mesh.instanceMatrix;
+    const version = attribute.version;
+
+    for (let step = 0; step < 120; step += 1) pool.update(1 / 60, 30);
+
+    // Prima: 4000 × 16 float × 4 byte = 256 KB caricati a ogni frame anche
+    // senza un solo detrito vivo.
+    expect(attribute.version).toBe(version);
+    expect(attribute.updateRanges).toHaveLength(0);
+  });
+
+  it('l upload copre la sola regione viva, non tutta la capacità', () => {
+    const pool = createVoxelPool(4000, 0.25);
+    for (let i = 0; i < 3; i += 1) pool.spawn(0, 1, 0, 0, 0, 0, WHITE, 1);
+    pool.mesh.instanceMatrix.clearUpdateRanges();
+
+    pool.update(1 / 60, 0);
+
+    const ranges = pool.mesh.instanceMatrix.updateRanges;
+    expect(ranges).toHaveLength(1);
+    expect(ranges[0]?.start).toBe(0);
+    expect(ranges[0]?.count).toBe(3 * 16);
+  });
+
+  it('l ultimo frame di un detrito carica anche la sua matrice nulla, poi si ferma', () => {
+    const pool = createVoxelPool(4000, 0.25);
+    // Vita più corta di un passo: muore esattamente in questo update.
+    pool.spawn(0, 1, 0, 0, 0, 0, WHITE, 0.01);
+    pool.update(1 / 60, 0);
+    expect(pool.activeCount).toBe(0);
+
+    const attribute = pool.mesh.instanceMatrix;
+    // La release ha scritto la matrice nulla: quel frame l'upload ci vuole.
+    expect(attribute.updateRanges.at(-1)?.count).toBe(16);
+    const version = attribute.version;
+    attribute.clearUpdateRanges();
+
+    for (let step = 0; step < 60; step += 1) pool.update(1 / 60, 0);
+    expect(attribute.version).toBe(version);
+    expect(attribute.updateRanges).toHaveLength(0);
+  });
+
+  it('uno slot riusato dopo essere stato liberato resta dentro la regione caricata', () => {
+    const pool = createVoxelPool(64, 0.25);
+    // Riempie e svuota: la free list è LIFO, quindi la prossima spawn può
+    // riprendere uno slot alto liberato poco fa.
+    expect(fill(pool, 0.01)).toBe(64);
+    pool.update(1 / 60, 0);
+    expect(pool.activeCount).toBe(0);
+
+    pool.spawn(0, 1, 0, 0, 0, 0, WHITE, 1);
+    pool.mesh.instanceMatrix.clearUpdateRanges();
+    pool.update(1 / 60, 0);
+
+    const ranges = pool.mesh.instanceMatrix.updateRanges;
+    expect(ranges).toHaveLength(1);
+    expect(ranges[0]?.count).toBe(pool.mesh.count * 16);
+    expect(pool.mesh.count).toBeGreaterThan(0);
+  });
+
+  it('reset azzera il conteggio e riparte da una regione vuota', () => {
+    const pool = createVoxelPool(64, 0.25);
+    fill(pool, 5);
+    pool.update(1 / 60, 0);
+    pool.reset();
+
+    expect(pool.mesh.count).toBe(0);
+    expect(pool.mesh.instanceMatrix.updateRanges).toHaveLength(0);
+
+    const version = pool.mesh.instanceMatrix.version;
+    pool.update(1 / 60, 0);
+    expect(pool.mesh.instanceMatrix.version).toBe(version);
+  });
+});

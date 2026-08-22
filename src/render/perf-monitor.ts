@@ -5,7 +5,20 @@ export interface PerfMonitor {
   readonly degraded: boolean;
   /** Campiona un frame. Restituisce true SOLO nel frame in cui scatta il degrado. */
   sample(dt: number): boolean;
-  reset(): void;
+  /**
+   * Azzera la MISURA, non la decisione. Va chiamata quando il loop riparte
+   * dopo essere stato fermo (tab tornata visibile), perché il primo campione
+   * dopo una sospensione non è indicativo.
+   *
+   * `degraded` sopravvive apposta: il contratto dichiarato è «scatta una volta
+   * sola, la qualità non oscilla», ma il vecchio reset() lo rimetteva a false
+   * mentre il degrado restava applicato al mondo (particelle ridotte, ombre
+   * spente). Lo stato del monitor e quello della scena divergevano, e il
+   * getter pubblico mentiva; reggeva solo perché chi chiamava aveva un secondo
+   * lucchetto. Con il degrado permanente per la sessione, riportarlo a false
+   * non ha alcun significato utile.
+   */
+  resetSampling(): void;
 }
 
 /**
@@ -65,11 +78,10 @@ export function createPerfMonitor(): PerfMonitor {
       return false;
     },
 
-    reset(): void {
+    resetSampling(): void {
       averageFps = 0;
       seeded = false;
       belowSeconds = 0;
-      degraded = false;
     },
   };
 }

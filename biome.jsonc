@@ -1,0 +1,76 @@
+{
+  "$schema": "https://biomejs.dev/schemas/2.5.10/schema.json",
+
+  // Lo stile del progetto era uniforme perché qualcuno lo teneva tale a mano.
+  // Questa configurazione descrive lo stile che c'è GIÀ — non ne impone uno
+  // nuovo — così il primo contributore che non lo conosce non produce un diff
+  // rumoroso. I numeri qui sotto sono stati dedotti dai sorgenti, non scelti.
+  "vcs": { "enabled": true, "clientKind": "git", "useIgnoreFile": true },
+
+  "files": {
+    "includes": ["src/**/*.ts", "*.ts", "*.json", "*.jsonc"]
+  },
+
+  "formatter": {
+    "enabled": true,
+    "indentStyle": "space",
+    "indentWidth": 2,
+    // 16085 righe su 16234 stanno entro i 96 caratteri e solo 88 superano i
+    // 100 (quasi tutte stringhe o URL che nessun formatter può spezzare): 100
+    // è la larghezza che il codice già rispetta.
+    "lineWidth": 100
+  },
+
+  "javascript": {
+    "formatter": {
+      "quoteStyle": "single",
+      "semicolons": "always",
+      "trailingCommas": "all",
+      "arrowParentheses": "always",
+      "bracketSpacing": true
+    }
+  },
+
+  "linter": {
+    "enabled": true,
+    // Il dominio `project` accende le regole che ragionano sull'intero grafo
+    // dei moduli (import ciclici); `test` quelle sui file di test.
+    "domains": { "project": "all", "test": "recommended" },
+    "rules": {
+      "preset": "recommended",
+      "correctness": {
+        // Import senza estensione: è la risoluzione "bundler" di Vite e del
+        // tsconfig, non una dimenticanza. Con la regola accesa il progetto
+        // produrrebbe 217 avvisi su codice corretto.
+        "useImportExtensions": "off"
+      },
+      "suspicious": {
+        // console.log dimenticate: errore. console.info/warn/error restano
+        // ammesse perché sono telemetria voluta (budget grafico, degrado di
+        // qualità, handler di eventi che esplode).
+        "noConsole": {
+          "level": "error",
+          "options": { "allow": ["info", "warn", "error"] }
+        },
+        // Un ciclo di import non rompe il bundle ma rende l'ordine di
+        // inizializzazione dipendente dal punto di ingresso: il tipo di bug
+        // che si manifesta solo in produzione.
+        "noImportCycles": "error",
+        // Regola sintattica: segnala anche `forEach((b) => b.click())`, dove
+        // il valore "restituito" è già void. Vale come segnalazione, non come
+        // motivo per bloccare la CI.
+        "useIterableCallbackReturn": "warn"
+      },
+      "nursery": {
+        // Una promessa non attesa perde silenziosamente gli errori: è
+        // esattamente ciò che il compilatore non vede e un linter sì.
+        "noFloatingPromises": "error"
+      }
+    }
+  },
+
+  "assist": {
+    "enabled": true,
+    "actions": { "source": { "organizeImports": "on" } }
+  }
+}

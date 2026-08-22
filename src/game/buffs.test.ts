@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest';
 import { createEventBus, type EventBus, type EventName, type GameEvents } from '../core/events';
-import { CONFIG } from './config';
 import {
   applyBuff,
   buffMultiplier,
@@ -10,13 +9,14 @@ import {
   resetBuffs,
   updateBuffs,
 } from './buffs';
+import { CONFIG } from './config';
 
 interface Recorded {
   name: EventName;
   payload: unknown;
 }
 
-const ALL_EVENTS: EventName[] = ['buff:gained', 'buff:expired', 'shield:consumed'];
+const ALL_EVENTS: EventName[] = ['buff:gained', 'buff:expired', 'buff:expiring', 'shield:consumed'];
 
 function recordEvents(bus: EventBus): Recorded[] {
   const seen: Recorded[] = [];
@@ -32,10 +32,7 @@ function countOf(events: readonly Recorded[], name: EventName): number {
   return events.filter((event) => event.name === name).length;
 }
 
-function payloadsOf<K extends EventName>(
-  events: readonly Recorded[],
-  name: K,
-): GameEvents[K][] {
+function payloadsOf<K extends EventName>(events: readonly Recorded[], name: K): GameEvents[K][] {
   return events
     .filter((event) => event.name === name)
     .map((event) => event.payload as GameEvents[K]);
@@ -43,7 +40,13 @@ function payloadsOf<K extends EventName>(
 
 describe('createBuffs', () => {
   it('parte tutto spento/azzerato', () => {
-    expect(createBuffs()).toEqual({ shield: false, starTimeLeft: 0, magnetTimeLeft: 0 });
+    expect(createBuffs()).toEqual({
+      shield: false,
+      starTimeLeft: 0,
+      magnetTimeLeft: 0,
+      starWarned: false,
+      magnetWarned: false,
+    });
   });
 });
 
@@ -121,7 +124,13 @@ describe('applyBuff', () => {
 
     applyBuff(state, 'crystal', bus);
 
-    expect(state).toEqual({ shield: false, starTimeLeft: 0, magnetTimeLeft: 0 });
+    expect(state).toEqual({
+      shield: false,
+      starTimeLeft: 0,
+      magnetTimeLeft: 0,
+      starWarned: false,
+      magnetWarned: false,
+    });
     // Senza questo evento il cristallo sarebbe l'unico raccoglibile muto: il
     // suo timbro audio (CONFIG.audio.chime) resterebbe codice morto.
     expect(events).toEqual([{ name: 'buff:gained', payload: { kind: 'crystal' } }]);
@@ -184,8 +193,76 @@ describe('updateBuffs', () => {
 
     updateBuffs(state, 5, bus);
 
-    expect(state).toEqual({ shield: false, starTimeLeft: 0, magnetTimeLeft: 0 });
+    expect(state).toEqual({
+      shield: false,
+      starTimeLeft: 0,
+      magnetTimeLeft: 0,
+      starWarned: false,
+      magnetWarned: false,
+    });
     expect(events).toHaveLength(0);
+  });
+});
+
+describe('avviso di scadenza (buff:expiring)', () => {
+  it('avvisa a expiryWarnSeconds dalla fine, UNA SOLA VOLTA per buff', () => {
+    const bus = createEventBus();
+    const events = recordEvents(bus);
+    const state = createBuffs();
+    applyBuff(state, 'star', bus);
+
+    // Fino a un attimo prima della finestra di avviso non deve dire niente.
+    updateBuffs(state, CONFIG.buffs.starSeconds - CONFIG.buffs.expiryWarnSeconds - 0.1, bus);
+    expect(countOf(events, 'buff:expiring')).toBe(0);
+
+    updateBuffs(state, 0.2, bus);
+    expect(payloadsOf(events, 'buff:expiring')).toEqual([{ kind: 'star' }]);
+
+    // La condizione "manca meno di expiryWarnSeconds" resta vera per decine di
+    // frame: senza il flag, l'avviso sarebbe un flusso invece di un evento.
+    for (let i = 0; i < 20; i++) updateBuffs(state, 0.05, bus);
+    expect(countOf(events, 'buff:expiring')).toBe(1);
+  });
+
+  it("il frame della scadenza emette solo buff:expired, non anche l'avviso", () => {
+    const bus = createEventBus();
+    const events = recordEvents(bus);
+    const state = createBuffs();
+    applyBuff(state, 'magnet', bus);
+
+    updateBuffs(state, CONFIG.buffs.magnetSeconds, bus);
+
+    expect(countOf(events, 'buff:expired')).toBe(1);
+    expect(countOf(events, 'buff:expiring')).toBe(0);
+  });
+
+  it("ricaricare il buff riarma l'avviso", () => {
+    const bus = createEventBus();
+    const events = recordEvents(bus);
+    const state = createBuffs();
+    applyBuff(state, 'star', bus);
+
+    updateBuffs(state, CONFIG.buffs.starSeconds - 1, bus);
+    expect(countOf(events, 'buff:expiring')).toBe(1);
+
+    applyBuff(state, 'star', bus);
+    updateBuffs(state, CONFIG.buffs.starSeconds - 1, bus);
+    expect(countOf(events, 'buff:expiring')).toBe(2);
+  });
+
+  it('star e magnet hanno avvisi indipendenti', () => {
+    const bus = createEventBus();
+    const events = recordEvents(bus);
+    const state = createBuffs();
+    applyBuff(state, 'star', bus);
+    updateBuffs(state, 1, bus);
+    applyBuff(state, 'magnet', bus);
+
+    updateBuffs(state, CONFIG.buffs.starSeconds - 1 - CONFIG.buffs.expiryWarnSeconds, bus);
+    expect(payloadsOf(events, 'buff:expiring')).toEqual([{ kind: 'star' }]);
+
+    updateBuffs(state, 1, bus);
+    expect(payloadsOf(events, 'buff:expiring')).toEqual([{ kind: 'star' }, { kind: 'magnet' }]);
   });
 });
 
@@ -247,6 +324,12 @@ describe('resetBuffs', () => {
 
     resetBuffs(state);
 
-    expect(state).toEqual({ shield: false, starTimeLeft: 0, magnetTimeLeft: 0 });
+    expect(state).toEqual({
+      shield: false,
+      starTimeLeft: 0,
+      magnetTimeLeft: 0,
+      starWarned: false,
+      magnetWarned: false,
+    });
   });
 });

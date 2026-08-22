@@ -7,7 +7,16 @@ export interface VoxelModel {
   palette: readonly number[];
 }
 
-/** Palette condivisa da tutti i modelli: 13 colori, alta montagna. */
+/**
+ * Palette condivisa da tutti i modelli, alta montagna.
+ *
+ * Regola che la governa: caldo e saturo significa "buff da prendere", e basta.
+ * La scenografia (tetto della baita, fieno) è deliberatamente desaturata,
+ * altrimenti il rosso del tetto e l'oro della balla di fieno danno al giocatore
+ * lo stesso segnale a colpo d'occhio della calamita e della stella. Al
+ * contrario, gli ostacoli chiari su neve chiara (cornicione, arco) hanno un
+ * bordo scuro dedicato che li stacca dallo sfondo.
+ */
 export const PALETTE: readonly number[] = [
   0xffffff, //  0 neve / pelo bianco
   0x1c1c22, //  1 nero
@@ -18,8 +27,8 @@ export const PALETTE: readonly number[] = [
   0x5a3a24, //  6 legno
   0x2f7a46, //  7 abete
   0x1f5c34, //  8 abete scuro
-  0xb43a3a, //  9 tetto della baita
-  0xe0c060, // 10 fieno
+  0x6c7f91, //  9 tetto della baita, blu-grigio spento
+  0xbfae86, // 10 fieno, oro sporco
   0x123048, // 11 buio del crepaccio
   0x9fd8ff, // 12 ghiaccio
   0x2fe6d0, // 13 cristallo di ghiaccio (buff)
@@ -29,6 +38,9 @@ export const PALETTE: readonly number[] = [
   0xe6483c, // 17 calamita (buff), rosso
   0xd7dde3, // 18 punte della calamita, acciaio
   0xc98f36, // 19 campanaccio (buff), ottone
+  0x2b4a63, // 20 ombra del ghiaccio, per staccare il cornicione dalla neve
+  0x3c4149, // 21 ombra della roccia, per staccare l'arco dalla neve
+  0x4aa8d8, // 22 nucleo del fiocco di neve, azzurro saturo
 ];
 
 const SNOW = 0;
@@ -51,6 +63,9 @@ const GOLD_LIGHT = 16;
 const MAGNET_RED = 17;
 const STEEL = 18;
 const BRASS = 19;
+const ICE_SHADOW = 20;
+const ROCK_SHADOW = 21;
+const ICE_CORE = 22;
 
 /**
  * Griglia logica in cui vivono i modelli: 64³ celle centrate sull'origine.
@@ -77,8 +92,12 @@ function createBuilder(): VoxelBuilder {
   };
 
   const box = (
-    x: number, y: number, z: number,
-    w: number, h: number, d: number,
+    x: number,
+    y: number,
+    z: number,
+    w: number,
+    h: number,
+    d: number,
     color: number,
   ): void => {
     for (let i = 0; i < w; i += 1) {
@@ -212,7 +231,11 @@ function buildCabin(): VoxelModel {
       b.set(halfWidth, y, z, LIGHT_WOOD);
     }
   }
-  // tetto a due falde, che rientra di due celle per ogni palco
+  // Tetto a due falde, che rientra di due celle per ogni palco. È dello stesso
+  // blu-grigio dei tetti del villaggio lontano (CONFIG.render.backdrop.village
+  // .roofColor = 0x6c7f91), scelto lì proprio per non farli somigliare a un
+  // ostacolo: la baita vicina aveva bisogno della stessa regola, perché il
+  // rosso saturo che aveva prima è il colore della calamita.
   for (let layer = 0; ; layer += 1) {
     const x0 = -halfWidth + layer * 2;
     const x1 = halfWidth - layer * 2;
@@ -249,19 +272,27 @@ function buildBranch(): VoxelModel {
   return b.build();
 }
 
-/** Fiocco di neve: croce 5×5 con un accenno di spessore. */
+/**
+ * Fiocco di neve: croce 5×5 con un accenno di spessore.
+ *
+ * È il raccoglibile più frequente del gioco ed era bianco su neve bianca: le
+ * braccia restano di neve, ma il nucleo — le due calotte in profondità, che
+ * sono quelle che il giocatore vede di faccia, e i quattro raccordi diagonali —
+ * passa a un azzurro saturo. Non è il verde-acqua del cristallo: quello deve
+ * restare il segnale esclusivo di un buff.
+ */
 function buildSnowflake(): VoxelModel {
   const b = createBuilder();
   for (let i = -2; i <= 2; i += 1) {
     b.set(i, 2, 0, SNOW);
     b.set(0, 2 + i, 0, SNOW);
   }
-  b.set(0, 2, 1, ICE);
-  b.set(0, 2, -1, ICE);
-  b.set(1, 3, 0, ICE);
-  b.set(-1, 3, 0, ICE);
-  b.set(1, 1, 0, ICE);
-  b.set(-1, 1, 0, ICE);
+  b.set(0, 2, 1, ICE_CORE);
+  b.set(0, 2, -1, ICE_CORE);
+  b.set(1, 3, 0, ICE_CORE);
+  b.set(-1, 3, 0, ICE_CORE);
+  b.set(1, 1, 0, ICE_CORE);
+  b.set(-1, 1, 0, ICE_CORE);
   return b.build();
 }
 
@@ -322,23 +353,36 @@ function buildArch(): VoxelModel {
     const thickness = 2 + rise;
     for (let y = 0; y < thickness; y += 1) {
       for (let z = -2; z <= 2; z += 1) {
-        b.set(x, y, z, (x + y + z) % 4 === 0 ? ROCK_DARK : ROCK);
+        // Stessa cura del cornicione: la fila più bassa è in ombra, perché
+        // anche questo è un ostacolo sospeso e il grigio su bianco non basta
+        // a segnalare da lontano dove finisce l'architrave.
+        const shade = y === 0 ? ROCK_SHADOW : (x + y + z) % 4 === 0 ? ROCK_DARK : ROCK;
+        b.set(x, y, z, shade);
       }
     }
   }
   return b.build();
 }
 
-/** Cornicione di ghiaccio: mensola larga con una fila di ghiaccioli di
- *  lunghezza variabile che pendono verso il basso. */
+/**
+ * Cornicione di ghiaccio: mensola larga con una fila di ghiaccioli di
+ * lunghezza variabile che pendono verso il basso.
+ *
+ * È l'ostacolo che richiede la reazione più anticipata di tutte (è sospeso) ed
+ * era il meno leggibile del gioco: ghiaccio azzurro chiaro su neve azzurrina.
+ * Resta di ghiaccio — è quello che è — ma la fila inferiore della mensola e la
+ * punta di ogni ghiacciolo passano all'ombra scura, che gli disegna sotto una
+ * linea netta contro lo sfondo.
+ */
 function buildCornice(): VoxelModel {
   const b = createBuilder();
   const half = 8;
-  b.box(-half, 2, -2, half * 2 + 1, 2, 4, ICE);
+  b.box(-half, 3, -2, half * 2 + 1, 1, 4, ICE);
+  b.box(-half, 2, -2, half * 2 + 1, 1, 4, ICE_SHADOW);
   for (let x = -half + 1; x <= half - 1; x += 2) {
     const spike = 1 + (Math.abs(x * 7) % 3);
     for (let d = 0; d < spike; d += 1) {
-      b.set(x, 1 - d, 0, ICE);
+      b.set(x, 1 - d, 0, d === spike - 1 ? ICE_SHADOW : ICE);
     }
   }
   return b.build();
@@ -372,8 +416,18 @@ function buildCrystal(): VoxelModel {
 function buildStar(): VoxelModel {
   const b = createBuilder();
   b.box(-1, -1, -1, 3, 3, 3, GOLD_LIGHT);
-  const long: readonly [number, number][] = [[1, 0], [-1, 0], [0, 1], [0, -1]];
-  const short: readonly [number, number][] = [[1, 1], [1, -1], [-1, 1], [-1, -1]];
+  const long: readonly [number, number][] = [
+    [1, 0],
+    [-1, 0],
+    [0, 1],
+    [0, -1],
+  ];
+  const short: readonly [number, number][] = [
+    [1, 1],
+    [1, -1],
+    [-1, 1],
+    [-1, -1],
+  ];
   for (const [dx, dy] of long) {
     for (let i = 1; i <= 4; i += 1) {
       b.set(dx * (i + 1), dy * (i + 1), 0, i === 4 ? GOLD_LIGHT : GOLD);
@@ -454,19 +508,130 @@ export const MODELS: Record<'cow' | 'cabin' | 'tree' | 'hay' | EntityKind, Voxel
  * Le sei facce del cubo unitario, con l'ordine dei vertici antiorario visto
  * da fuori: è ciò che rende corretti il backface culling e le normali.
  */
-const FACES: readonly {
+interface CubeFace {
   nx: number;
   ny: number;
   nz: number;
   corners: readonly (readonly [number, number, number])[];
-}[] = [
-  { nx: 1, ny: 0, nz: 0, corners: [[1, 0, 1], [1, 0, 0], [1, 1, 0], [1, 1, 1]] },
-  { nx: -1, ny: 0, nz: 0, corners: [[0, 0, 0], [0, 0, 1], [0, 1, 1], [0, 1, 0]] },
-  { nx: 0, ny: 1, nz: 0, corners: [[0, 1, 1], [1, 1, 1], [1, 1, 0], [0, 1, 0]] },
-  { nx: 0, ny: -1, nz: 0, corners: [[0, 0, 0], [1, 0, 0], [1, 0, 1], [0, 0, 1]] },
-  { nx: 0, ny: 0, nz: 1, corners: [[0, 0, 1], [1, 0, 1], [1, 1, 1], [0, 1, 1]] },
-  { nx: 0, ny: 0, nz: -1, corners: [[1, 0, 0], [0, 0, 0], [0, 1, 0], [1, 1, 0]] },
+}
+
+const FACES: readonly CubeFace[] = [
+  {
+    nx: 1,
+    ny: 0,
+    nz: 0,
+    corners: [
+      [1, 0, 1],
+      [1, 0, 0],
+      [1, 1, 0],
+      [1, 1, 1],
+    ],
+  },
+  {
+    nx: -1,
+    ny: 0,
+    nz: 0,
+    corners: [
+      [0, 0, 0],
+      [0, 0, 1],
+      [0, 1, 1],
+      [0, 1, 0],
+    ],
+  },
+  {
+    nx: 0,
+    ny: 1,
+    nz: 0,
+    corners: [
+      [0, 1, 1],
+      [1, 1, 1],
+      [1, 1, 0],
+      [0, 1, 0],
+    ],
+  },
+  {
+    nx: 0,
+    ny: -1,
+    nz: 0,
+    corners: [
+      [0, 0, 0],
+      [1, 0, 0],
+      [1, 0, 1],
+      [0, 0, 1],
+    ],
+  },
+  {
+    nx: 0,
+    ny: 0,
+    nz: 1,
+    corners: [
+      [0, 0, 1],
+      [1, 0, 1],
+      [1, 1, 1],
+      [0, 1, 1],
+    ],
+  },
+  {
+    nx: 0,
+    ny: 0,
+    nz: -1,
+    corners: [
+      [1, 0, 0],
+      [0, 0, 0],
+      [0, 1, 0],
+      [1, 1, 0],
+    ],
+  },
 ];
+
+/**
+ * Fattore di luminosità per i quattro livelli di occlusione, dal vertice
+ * completamente chiuso a quello libero. Il colore dei vertici è già in spazio
+ * lineare (`setHex` con SRGBColorSpace e ColorManagement attivo), quindi
+ * moltiplicare qui è fisicamente corretto: la curva percepita è molto più
+ * dolce di quanto i numeri lascino pensare.
+ */
+const AO_SHADE: readonly number[] = [0.55, 0.72, 0.87, 1];
+
+/**
+ * Livello di occlusione 0..3 di un singolo vertice. I tre vicini che contano
+ * sono quelli che circondano l'angolo NEL PIANO davanti alla faccia, cioè a
+ * partire dal blocco vuoto in (px, py, pz): i due laterali e il diagonale.
+ * Se entrambi i laterali sono pieni lo spigolo è chiuso e il livello è 0 senza
+ * guardare il diagonale, che lì dietro non è comunque visibile.
+ *
+ * Senza questo, tutta l'informazione di forma è delegata alla normale: sotto
+ * il tetto della baita, fra le zampe della mucca o negli incastri dei palchi
+ * dell'abete non ci sarebbe nessuno scurimento, ed è il motivo per cui un
+ * modello voxel senza AO legge come un ammasso di scatole invece che come un
+ * volume. Si paga una volta sola in fase di build.
+ */
+function vertexAo(
+  occupied: ReadonlySet<number>,
+  px: number,
+  py: number,
+  pz: number,
+  face: CubeFace,
+  corner: readonly [number, number, number],
+): number {
+  // I due assi tangenti alla faccia sono quelli a componente nulla nella
+  // normale; u non ha mai componente z e v non ha mai componente x.
+  const ux = face.nx !== 0 ? 0 : 1;
+  const uy = face.nx !== 0 ? 1 : 0;
+  const vy = face.nz !== 0 ? 1 : 0;
+  const vz = face.nz !== 0 ? 0 : 1;
+  // Da che parte cade l'angolo lungo ciascun asse: -1 o +1.
+  const su = 2 * (corner[0] * ux + corner[1] * uy) - 1;
+  const sv = 2 * (corner[1] * vy + corner[2] * vz) - 1;
+
+  const sideU = occupied.has(packKey(px + su * ux, py + su * uy, pz)) ? 1 : 0;
+  const sideV = occupied.has(packKey(px, py + sv * vy, pz + sv * vz)) ? 1 : 0;
+  if (sideU === 1 && sideV === 1) return 0;
+  const diagonal = occupied.has(packKey(px + su * ux, py + su * uy + sv * vy, pz + sv * vz))
+    ? 1
+    : 0;
+  return 3 - (sideU + sideV + diagonal);
+}
 
 /**
  * "Cuoce" un modello in UNA sola BufferGeometry indicizzata con i colori nei
@@ -518,19 +683,47 @@ export function buildGeometry(model: VoxelModel, voxelSize: number): THREE.Buffe
     for (const face of FACES) {
       // faccia interna: c'è un cubetto attaccato, nessuno la vedrà mai
       if (occupied.has(packKey(x + face.nx, y + face.ny, z + face.nz))) continue;
+
+      const ao: number[] = [];
       for (const corner of face.corners) {
+        const level = vertexAo(occupied, x + face.nx, y + face.ny, z + face.nz, face, corner);
+        ao.push(level);
         positions.push(
           (x + corner[0] + offsetX) * voxelSize,
           (y + corner[1] + offsetY) * voxelSize,
           (z + corner[2] + offsetZ) * voxelSize,
         );
         normals.push(face.nx, face.ny, face.nz);
-        colors.push(color.r, color.g, color.b);
+        const shade = AO_SHADE[level] ?? 1;
+        colors.push(color.r * shade, color.g * shade, color.b * shade);
       }
-      indices.push(
-        vertexCount, vertexCount + 1, vertexCount + 2,
-        vertexCount, vertexCount + 2, vertexCount + 3,
-      );
+
+      // Con AO anisotropi sui quattro angoli la diagonale 0-2 taglierebbe il
+      // gradiente di traverso e si vedrebbe lo spigolo del triangolo: in quel
+      // caso si ribalta sulla 1-3, mantenendo l'ordine antiorario.
+      const ao0 = ao[0] ?? 3;
+      const ao1 = ao[1] ?? 3;
+      const ao2 = ao[2] ?? 3;
+      const ao3 = ao[3] ?? 3;
+      if (ao0 + ao2 === ao1 + ao3) {
+        indices.push(
+          vertexCount,
+          vertexCount + 1,
+          vertexCount + 2,
+          vertexCount,
+          vertexCount + 2,
+          vertexCount + 3,
+        );
+      } else {
+        indices.push(
+          vertexCount + 1,
+          vertexCount + 2,
+          vertexCount + 3,
+          vertexCount + 1,
+          vertexCount + 3,
+          vertexCount,
+        );
+      }
       vertexCount += 4;
     }
   }

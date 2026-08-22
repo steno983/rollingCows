@@ -18,6 +18,7 @@ import {
   realignProgressOf,
   SIGNPOST_OFFSET_Z,
   signpostIsSolid,
+  turnOf,
   updatePath,
 } from './path';
 import { resolveDifficultyProfile, speedAt } from './speed';
@@ -196,7 +197,7 @@ describe('chooseBranch', () => {
     expect(choiceOf(path)).toBe('left');
   });
 
-  it('dopo il punto di non ritorno restituisce false e non cambia più nulla', () => {
+  it('dopo la biforcazione restituisce false e non cambia più nulla', () => {
     const bus = createEventBus();
     let path: PathState = createPath();
     const rng = createRng(1);
@@ -220,6 +221,140 @@ describe('chooseBranch', () => {
     const path: PathState = createPath();
     expect(chooseBranch(path, 'left')).toBe(false);
     expect(choiceOf(path)).toBeNull();
+  });
+});
+
+/**
+ * LA ZONA MORTA NON ESISTE PIÙ, ed è il difetto per cui tutto questo esiste.
+ *
+ * La finestra di scelta si chiudeva a `commitZ` = 20 unità PRIMA della
+ * biforcazione, mentre il cartello — l'unica cosa in scena che dice «qui si
+ * decide» — sta 19,2 unità OLTRE. In mezzo c'erano ~39 unità, da 0,85 s a
+ * oltre 2 s secondo la velocità, in cui il bivio è spalancato davanti, il
+ * cartello pure, e ogni pressione viene rifiutata in silenzio. Riportato tre
+ * volte come «l'input della curva non funziona»: era esatto.
+ *
+ * Questi test non verificano un numero, verificano che quella zona non esista
+ * in nessun frame di nessuna corsa.
+ */
+describe('la scelta resta possibile fino alla biforcazione', () => {
+  /** Copia dello stato su cui provare `chooseBranch` senza sporcare la corsa:
+   *  la funzione muta la scelta, e qui interessa solo se ACCETTA. */
+  function accepts(path: PathState, side: 'left' | 'right'): boolean {
+    if (path.phase !== 'approaching') return chooseBranch(path, side);
+    return chooseBranch({ ...path }, side);
+  }
+
+  it('non esiste un solo frame in cui il bivio è davanti e la pressione viene rifiutata', () => {
+    for (const name of ['calf', 'normal', 'bull'] as const) {
+      const profile = resolveDifficultyProfile(name);
+      for (const speed of [
+        profile.startSpeed,
+        (profile.startSpeed + profile.maxSpeed) / 2,
+        profile.maxSpeed,
+      ]) {
+        const bus = createEventBus();
+        const rng = createRng(11);
+        let path: PathState = createPath();
+        let openFrames = 0;
+        let lastAcceptedForkZ = Number.POSITIVE_INFINITY;
+        let forkSeen = false;
+
+        for (let frame = 0; frame < 20000; frame++) {
+          path = updatePath(path, speed * STEP, speed, rng, bus);
+          if (path.phase !== 'approaching') {
+            if (forkSeen) break;
+            continue;
+          }
+          forkSeen = true;
+          if (!path.choiceOpen) continue;
+          openFrames += 1;
+          if (path.forkZ > 0) {
+            // IL PUNTO: finché la biforcazione è davanti, si sceglie. Sempre.
+            expect(
+              accepts(path, 'left'),
+              `${name} a ${speed} u/s: rifiutata a forkZ ${path.forkZ.toFixed(2)}`,
+            ).toBe(true);
+            lastAcceptedForkZ = path.forkZ;
+          } else {
+            // Oltre la biforcazione no: chi non ha scelto prosegue dritto e
+            // trova il cartello. È la regola, non una zona morta.
+            expect(accepts(path, 'left')).toBe(false);
+          }
+        }
+
+        expect(openFrames).toBeGreaterThan(60);
+        // L'ultimo frame in cui la scelta è stata accettata dista dalla
+        // biforcazione meno di un frame di corsa: fra "si può scegliere" e "il
+        // bivio è arrivato" non c'è spazio per nient'altro.
+        expect(lastAcceptedForkZ).toBeLessThanOrEqual(speed * STEP + 1e-9);
+      }
+    }
+  });
+
+  it('la finestra dura i due secondi voluti, su tutti e tre i profili e a ogni velocità', () => {
+    // Non più il minimo fra il tempo concesso e ciò che `previewZ` permette:
+    // con la chiusura sulla biforcazione il pareggio si sposta a 110 / 2 = 55
+    // u/s, sopra la punta di qualunque profilo. La misura è fatta con
+    // l'accelerazione dentro la finestra, che è l'unica cosa che la accorcia.
+    for (const name of ['calf', 'normal', 'bull'] as const) {
+      const profile = resolveDifficultyProfile(name);
+      for (const startDistance of [0, 1500, 20000]) {
+        const bus = createEventBus();
+        const rng = createRng(5);
+        let path: PathState = createPath();
+        let distance = startDistance;
+        let openedAt: number | null = null;
+        let seconds: number | null = null;
+
+        for (let frame = 0; frame < 200000; frame++) {
+          const speed = speedAt(distance, profile);
+          path = updatePath(path, speed * STEP, speed, rng, bus);
+          distance += speed * STEP;
+          if (openedAt === null && choiceIsOpen(path)) openedAt = frame;
+          else if (openedAt !== null && !choiceIsOpen(path)) {
+            seconds = (frame - openedAt) * STEP;
+            // Si è chiusa perché la biforcazione è arrivata, non per altro.
+            const forkZ = forkZOf(path);
+            expect(forkZ).not.toBeNull();
+            if (forkZ !== null) expect(forkZ).toBeLessThanOrEqual(0);
+            if (forkZ !== null) expect(forkZ).toBeGreaterThan(-speedAt(distance, profile) * STEP);
+            break;
+          }
+        }
+
+        if (seconds === null) throw new Error(`finestra mai chiusa (${name})`);
+        expect(seconds).toBeGreaterThan(CONFIG.path.choiceWindowSeconds - 0.1);
+        expect(seconds).toBeLessThanOrEqual(CONFIG.path.choiceWindowSeconds + 1e-9);
+      }
+    }
+  });
+
+  it('la pressione data prima che la finestra apra non va persa (pendingChoice)', () => {
+    // La zona in cui il bivio si vede ma la finestra non è ancora aperta non è
+    // sparita, si è ALLARGATA: la finestra si apre a `speed * 2` unità invece
+    // che a `20 + speed * 2`, quindi a velocità di partenza sono 74 unità
+    // (4,1 s) di bivio visibile e muto contro le 54 di prima. Buttare via una
+    // pressione data lì dentro sarebbe lo stesso difetto, spostato.
+    const speed = CONFIG.world.startSpeed;
+    const bus = createEventBus();
+    const rng = createRng(4);
+    let path: PathState = travelToFork(createPath(), speed, rng, bus);
+    expect(path.phase).toBe('approaching');
+    expect(choiceIsOpen(path)).toBe(false);
+
+    // Preme appena vede il bivio: rifiutata come scelta, tenuta da parte.
+    expect(chooseBranch(path, 'right')).toBe(false);
+    expect(choiceOf(path)).toBeNull();
+
+    let guard = 0;
+    while (!choiceIsOpen(path) && guard < 5000) {
+      path = updatePath(path, speed * STEP, speed, rng, bus);
+      guard += 1;
+    }
+    // All'apertura la scelta c'è già, e con lei la piegata comincia.
+    expect(choiceOf(path)).toBe('right');
+    expect(guard).toBeGreaterThan(60);
   });
 });
 
@@ -424,16 +559,9 @@ describe('riallineamento', () => {
     const rng = createRng(3);
     path = travelToChoice(path, CONFIG.world.startSpeed, rng, bus);
     chooseBranch(path, 'right');
-    // Fin quasi al punto di non ritorno, restando dentro la finestra di
-    // scelta: la finestra dura `choiceWindowSeconds` per costruzione, quindi
-    // è quella la distanza da percorrere, meno un'unità per non superarla.
-    path = travel(
-      path,
-      CONFIG.world.startSpeed * CONFIG.path.choiceWindowSeconds - 1,
-      CONFIG.world.startSpeed,
-      rng,
-      bus,
-    );
+    // Si misura dall'istante della SCELTA e non da quello del commit: è da lì
+    // che il ramo comincia a scivolare al centro, e la convergenza monotona
+    // deve valere per tutta la piegata, non solo per il suo ultimo tratto.
     expect(path.phase).toBe('approaching');
 
     // Lo scostamento PEGGIORE del ramo scelto su tutta la pista visibile, non
@@ -646,8 +774,9 @@ describe('la strada su cui si corre è dritta, non solo centrata', () => {
    * formula (branchCenterAt): il centro è branchSeparation per l'apertura per
    * il raddrizzamento, e in un frame si percorrono al più maxSpeed * STEP
    * unità. Le due smoothstep hanno pendenza al più 1,5 diviso la loro
-   * lunghezza (forkBlendZ per l'apertura, commitZ per il raddrizzamento) e si
-   * sommano nel caso peggiore.
+   * lunghezza (forkBlendZ per l'apertura, turnRampZ per il raddrizzamento, che
+   * è il pavimento della sua rampa e quindi il caso peggiore) e si sommano nel
+   * caso peggiore.
    */
   /** La velocità più alta che il gioco raggiunge davvero, che non è
    *  `CONFIG.world.maxSpeed` (40, il tetto del profilo di riferimento) ma
@@ -660,13 +789,13 @@ describe('la strada su cui si corre è dritta, non solo centrata', () => {
     TOP_SPEED *
     STEP *
     1.5 *
-    (1 / CONFIG.path.forkBlendZ + 1 / CONFIG.path.commitZ);
+    (1 / CONFIG.path.forkBlendZ + 1 / CONFIG.path.turnRampZ);
 
   /**
    * Tetto ASSOLUTO, e non derivato come quello sopra.
    *
-   * `MAX_STEP` si muove insieme a `commitZ`: abbassare il punto di non ritorno
-   * rende la piegata più ripida E alza la soglia che dovrebbe accorgersene,
+   * `MAX_STEP` si muove insieme a `turnRampZ`: accorciare la rampa della
+   * piegata la rende più ripida E alza la soglia che dovrebbe accorgersene,
    * quindi da solo quel controllo non può mai fallire per quella causa —
    * verifica che la formula descriva il codice, non che il risultato sia
    * guardabile. Questo numero invece resta fermo: 0,40 unità per frame a 60 Hz
@@ -675,11 +804,93 @@ describe('la strada su cui si corre è dritta, non solo centrata', () => {
    * leggersi come una curva e torna a leggersi come la deformazione che il
    * raddrizzamento è stato introdotto per togliere.
    *
-   * Misurato oggi alla velocità di punta di "Toro" (46 u/s, commitZ = 20):
-   * 0,345, contro 0,287 con il vecchio commitZ = 24. A commitZ 16 salirebbe a
-   * 0,430 e questo test diventerebbe rosso, che è esattamente il suo scopo.
+   * Misurato alla velocità di punta di "Toro" (46 u/s, turnRampZ = 20): 0,345,
+   * lo STESSO valore di quando la rampa era la fase impegnata e durava
+   * commitZ = 20. Spostare la piegata dal commit alla scelta non l'ha resa più
+   * ripida di un millimetro: è il pavimento della rampa a decidere, e vale
+   * quanto valeva. A turnRampZ 16 salirebbe a 0,430 e questo test diventerebbe
+   * rosso, che è esattamente il suo scopo.
    */
   const ABSOLUTE_MAX_STEP = 0.4;
+
+  it('nessuno scatto nemmeno scegliendo all-ultimo istante o cambiando idea', () => {
+    // Il caso peggiore NON è più chi sceglie appena può: quello ha una piegata
+    // lunga quanto la strada che gli resta, quindi dolce (0,244 a 46 u/s).
+    // È chi sceglie sull'ultimo metro, o cambia idea lì: la sua piegata cade
+    // sul pavimento della rampa (turnRampZ) e sale alla massima ripidità
+    // ammessa. È esattamente il caso che il tetto assoluto deve sorvegliare, e
+    // fino a oggi il test non lo attraversava perché la piegata cominciava al
+    // punto di non ritorno e la sua durata non dipendeva dal giocatore.
+    let worstStep = 0;
+    let stepDetail = '';
+
+    for (const speed of [CONFIG.world.startSpeed, 28, CONFIG.world.maxSpeed, TOP_SPEED]) {
+      for (const side of SIDES) {
+        for (const flip of [false, true]) {
+          const other: 'left' | 'right' = side === 'left' ? 'right' : 'left';
+          const bus = createEventBus();
+          const rng = createRng(13);
+          let path: PathState = createPath();
+          let chosen = false;
+          let flipped = !flip;
+          let previous: number[] | null = null;
+          let previousPhase: ForkPhase = 'none';
+
+          for (let frame = 0; frame < 20000; frame++) {
+            path = updatePath(path, speed * STEP, speed, rng, bus);
+            const forkZ = forkZOf(path);
+            if (forkZ !== null) {
+              // Scelta iniziale: subito se poi si cambierà idea (serve una
+              // piegata già cresciuta da disfare), all'ultimo istante utile
+              // altrimenti.
+              if (!chosen && choiceIsOpen(path) && (flip || forkZ <= speed * STEP)) {
+                chosen = chooseBranch(path, flip ? other : side);
+              }
+              if (chosen && !flipped && forkZ <= speed * STEP) {
+                flipped = chooseBranch(path, side);
+              }
+            }
+            if (!chosen) continue;
+
+            const branch = path.phase === 'none' ? 'main' : side;
+            const current = Z_SAMPLES.map((z) => branchCenterAt(path, branch, z));
+            if (previous !== null) {
+              for (let i = 0; i < current.length; i++) {
+                const before = previous[i];
+                const now = current[i];
+                if (before === undefined || now === undefined) throw new Error('campione mancante');
+                const step = Math.abs(now - before);
+                if (step > worstStep) {
+                  worstStep = step;
+                  stepDetail = `${speed} u/s, ramo ${side}, ${flip ? 'cambio idea' : 'scelta tardiva'}, z ${Z_SAMPLES[i]?.toFixed(0)}, ${previousPhase} -> ${path.phase}`;
+                }
+              }
+            }
+            if (path.phase === 'none') {
+              // Chiusura: pista dritta a ogni z. Non "toBe(0)" come nel caso
+              // normale — chi cambia idea all'ultimo arriva al bersaglio con
+              // l'ultimo passo, quindi il frame prima vale 1 meno un epsilon
+              // di virgola mobile, non 1 esatto.
+              for (const c of current) expect(Math.abs(c)).toBeLessThan(1e-9);
+              expect(flipped).toBe(true);
+              break;
+            }
+            previous = current;
+            previousPhase = path.phase;
+          }
+          expect(chosen).toBe(true);
+        }
+      }
+    }
+
+    expect(
+      worstStep,
+      `scatto laterale oltre il tetto assoluto — ${stepDetail}`,
+    ).toBeLessThanOrEqual(ABSOLUTE_MAX_STEP);
+    // E non è un test che passa perché non succede niente: il caso peggiore
+    // qui misurato è più severo di quello di chi sceglie appena può.
+    expect(worstStep).toBeGreaterThan(0.3);
+  });
 
   it('nessuno scatto a nessuna z, nemmeno ai cambi di fase (3 velocità x 2 rami x 5 seed)', () => {
     let worstStep = 0;
@@ -764,6 +975,211 @@ describe('la strada su cui si corre è dritta, non solo centrata', () => {
   });
 });
 
+/**
+ * LA PIEGATA È LEGATA ALLA SCELTA, e questo blocco è la sua specifica.
+ *
+ * Prima cresceva sulle ultime `commitZ` unità prima della biforcazione, cioè
+ * il riscontro visivo della decisione arrivava quando la decisione non era più
+ * modificabile — e teneva la scadenza inchiodata a 20 unità dal bivio, che è
+ * il difetto per cui `commitZ` è ora zero.
+ */
+describe('la piegata segue la scelta', () => {
+  /** Percorre un bivio scegliendo `side` quando la biforcazione dista
+   *  `chooseAt` unità (o al primo istante utile, se la finestra si apre più
+   *  tardi) e restituisce la storia della piegata. */
+  function runFork(options: {
+    speed: number;
+    side?: 'left' | 'right';
+    chooseAt?: number;
+    flipTo?: 'left' | 'right';
+    flipAt?: number;
+  }): { turns: number[]; forkZs: number[]; closed: boolean } {
+    const { speed } = options;
+    const bus = createEventBus();
+    const rng = createRng(9);
+    let path: PathState = createPath();
+    const turns: number[] = [];
+    const forkZs: number[] = [];
+    let chosen = false;
+    let flipped = false;
+    let closed = false;
+
+    for (let frame = 0; frame < 20000; frame++) {
+      path = updatePath(path, speed * STEP, speed, rng, bus);
+      const forkZ = forkZOf(path);
+      if (forkZ === null) {
+        if (turns.length > 0) {
+          closed = true;
+          break;
+        }
+        continue;
+      }
+      if (
+        !chosen &&
+        options.side !== undefined &&
+        choiceIsOpen(path) &&
+        forkZ <= (options.chooseAt ?? Number.POSITIVE_INFINITY)
+      ) {
+        chosen = chooseBranch(path, options.side);
+      }
+      if (chosen && !flipped && options.flipTo !== undefined && forkZ <= (options.flipAt ?? 0)) {
+        flipped = chooseBranch(path, options.flipTo);
+      }
+      turns.push(turnOf(path));
+      forkZs.push(forkZ);
+    }
+    return { turns, forkZs, closed };
+  }
+
+  it('chi non sceglie mai non piega di un grado: va dritto sul cartello', () => {
+    for (const speed of [CONFIG.world.startSpeed, 28, CONFIG.world.maxSpeed]) {
+      const { turns, closed } = runFork({ speed });
+      expect(turns.length).toBeGreaterThan(100);
+      for (const turn of turns) expect(turn).toBe(0);
+      // La rete di sicurezza chiude comunque il bivio (advanceUnchosen).
+      expect(closed).toBe(true);
+    }
+  });
+
+  it('chi sceglie presto piega a lungo e dolcemente, chi sceglie tardi in fretta', () => {
+    const speed = CONFIG.world.maxSpeed;
+    // Distanza percorsa dalla scelta al completamento della piegata.
+    function rampLength(chooseAt: number): number {
+      const { turns, forkZs } = runFork({ speed, side: 'left', chooseAt });
+      let start: number | null = null;
+      for (let i = 0; i < turns.length; i++) {
+        const turn = turns[i];
+        const forkZ = forkZs[i];
+        if (turn === undefined || forkZ === undefined) continue;
+        if (start === null && turn !== 0) start = forkZ + speed * STEP;
+        if (start !== null && turn === -1) return start - forkZ;
+      }
+      throw new Error('piegata mai completata');
+    }
+
+    const early = rampLength(80);
+    const late = rampLength(6);
+    // Chi sceglie con 80 unità di margine se le prende quasi tutte; chi sceglie
+    // a 6 unità dal bivio non può distribuirle, e la piegata si accorcia fino
+    // al pavimento — che è il tetto di ripidità, non un caso a parte.
+    expect(early).toBeGreaterThan(late * 2);
+    expect(late).toBeGreaterThanOrEqual(CONFIG.path.turnRampZ);
+    expect(late).toBeLessThan(CONFIG.path.turnRampZ + 2 * speed * STEP);
+  });
+
+  it('la piegata non supera MAI il tetto di ripidità, comunque si scelga', () => {
+    // Il tetto vale per frame ed è quello che tiene lo scatto laterale del
+    // nastro dove stava (vedi ABSOLUTE_MAX_STEP più sotto): la piegata avanza
+    // al più di `travelled / turnRampZ` per frame, e nessun modo di scegliere —
+    // presto, tardi, cambiando idea — la fa andare più veloce.
+    for (const speed of [CONFIG.world.startSpeed, 28, CONFIG.world.maxSpeed, 46]) {
+      const runs = [
+        runFork({ speed, side: 'left', chooseAt: 80 }),
+        runFork({ speed, side: 'left', chooseAt: 4 }),
+        runFork({ speed, side: 'left', flipTo: 'right', flipAt: 20 }),
+        runFork({ speed, side: 'left', flipTo: 'right', flipAt: 1 }),
+      ];
+      const cap = (speed * STEP) / CONFIG.path.turnRampZ + 1e-9;
+      for (const { turns } of runs) {
+        for (let i = 1; i < turns.length; i++) {
+          const previous = turns[i - 1];
+          const current = turns[i];
+          if (previous === undefined || current === undefined) continue;
+          expect(Math.abs(current - previous)).toBeLessThanOrEqual(cap);
+        }
+      }
+    }
+  });
+
+  it('CAMBIARE IDEA: la piegata torna indietro e riparte, non salta di segno', () => {
+    const speed = CONFIG.world.maxSpeed;
+    const { turns, closed } = runFork({ speed, side: 'left', flipTo: 'right', flipAt: 24 });
+    expect(closed).toBe(true);
+
+    const lowest = Math.min(...turns);
+    const highest = Math.max(...turns);
+    // È andata davvero da una parte e poi dall'altra.
+    expect(lowest).toBeLessThan(-0.3);
+    expect(highest).toBe(1);
+    // E per farlo è passata per lo zero, frame per frame: nessun campione
+    // salta il segno con ampiezza, che è ciò che rende il cambio guardabile.
+    let crossings = 0;
+    for (let i = 1; i < turns.length; i++) {
+      const previous = turns[i - 1];
+      const current = turns[i];
+      if (previous === undefined || current === undefined) continue;
+      if (previous < 0 && current > 0) {
+        crossings += 1;
+        expect(Math.abs(previous)).toBeLessThanOrEqual((speed * STEP) / CONFIG.path.turnRampZ);
+        expect(Math.abs(current)).toBeLessThanOrEqual((speed * STEP) / CONFIG.path.turnRampZ);
+      }
+    }
+    expect(crossings).toBe(1);
+  });
+
+  it('il bivio non si chiude finché la strada non è dritta davvero', () => {
+    // Un cambio di idea sull'ultimo metro impone alla piegata due unità di
+    // escursione invece di una, cioè fino a 40 unità: chiudere il bivio a
+    // riallineamento finito (28) lascerebbe la strada storta e la
+    // raddrizzerebbe di colpo. La chiusura aspetta.
+    const speed = CONFIG.world.maxSpeed;
+    const { turns, forkZs, closed } = runFork({
+      speed,
+      side: 'left',
+      flipTo: 'right',
+      flipAt: 0.5,
+    });
+    expect(closed).toBe(true);
+    const lastTurn = turns[turns.length - 1];
+    const lastForkZ = forkZs[forkZs.length - 1];
+    if (lastTurn === undefined || lastForkZ === undefined) throw new Error('nessun campione');
+    // All'ultimo frame di bivio la piegata è arrivata (a meno dell'ultimo
+    // passo, che la porta al bersaglio ESATTO nel frame della chiusura).
+    expect(lastTurn).toBeGreaterThan(1 - (speed * STEP) / CONFIG.path.turnRampZ);
+    // Ha davvero aspettato oltre la fine del riallineamento.
+    expect(-lastForkZ).toBeGreaterThan(CONFIG.path.forkBlendZ);
+  });
+
+  it('un ramo che non è ancora arrivato sotto la mucca non è solido', () => {
+    // L'unica classe di morte che il progetto non ammette: un ostacolo che
+    // uccide mentre sullo schermo passa di lato. Dopo un cambio di idea
+    // tardivo la strada scelta arriva sotto la mucca con qualche decina di
+    // unità di ritardo, e in quel tratto ciò che ci sta sopra è disegnato
+    // altrove (vedi branchIsSolid).
+    const speed = CONFIG.world.maxSpeed;
+    const bus = createEventBus();
+    const rng = createRng(9);
+    let path: PathState = createPath();
+    let chosen = false;
+    let flipped = false;
+    let sawNonSolid = false;
+
+    for (let frame = 0; frame < 20000; frame++) {
+      path = updatePath(path, speed * STEP, speed, rng, bus);
+      const forkZ = forkZOf(path);
+      if (forkZ === null) {
+        if (chosen) break;
+        continue;
+      }
+      if (!chosen && choiceIsOpen(path)) chosen = chooseBranch(path, 'left');
+      if (chosen && !flipped && forkZ <= 0.5) flipped = chooseBranch(path, 'right');
+      for (const side of SIDES) {
+        if (!branchIsSolid(path, side)) continue;
+        // INVARIANTE: se è solido, è sotto la mucca.
+        expect(Math.abs(branchCenterAt(path, side, 0))).toBeLessThanOrEqual(
+          CONFIG.world.trackWidth / 2,
+        );
+      }
+      if (flipped && activeBranchOf(path) === 'right' && !branchIsSolid(path, 'right')) {
+        sawNonSolid = true;
+      }
+    }
+    expect(flipped).toBe(true);
+    // Il caso limite esiste davvero, e questo test lo attraversa.
+    expect(sawNonSolid).toBe(true);
+  });
+});
+
 describe('realignProgress', () => {
   it('vale 0 fuori dal riallineamento, sale da 0 a 1 durante, e torna 0 alla chiusura', () => {
     const bus = createEventBus();
@@ -782,14 +1198,22 @@ describe('realignProgress', () => {
     let guard = 0;
     while (path.phase !== 'none' && guard < 5000) {
       path = updatePath(path, speed * STEP, speed, rng, bus);
-      if (path.phase === 'realigning') seen.push(path.realignProgress);
+      if (path.phase === 'realigning') {
+        // L'avanzamento È la distanza percorsa oltre la biforcazione, in ogni
+        // singolo frame: non una rampa parallela che le somiglia.
+        expect(path.realignProgress).toBeCloseTo(
+          Math.min(1, -path.forkZ / CONFIG.path.forkBlendZ),
+          12,
+        );
+        seen.push(path.realignProgress);
+      }
       guard += 1;
     }
 
     expect(seen.length).toBeGreaterThan(10);
-    // Cresce in modo monotono e a passi regolari: nessun raddoppio nel primo
-    // frame, che è ciò che faceva scattare lateralmente il mondo all'inizio di
-    // ogni riallineamento.
+    // Cresce in modo monotono e a passi regolari: nessun raddoppio in corsa,
+    // che è ciò che faceva scattare lateralmente il mondo durante il
+    // riallineamento.
     const first = seen[0];
     if (first === undefined) throw new Error('nessun frame di riallineamento');
     // L'avanzamento è una frazione di DISTANZA (forkBlendZ), non di tempo:
@@ -797,7 +1221,15 @@ describe('realignProgress', () => {
     // diviso la lunghezza dell'apertura.
     const nominalStep = (speed * STEP) / CONFIG.path.forkBlendZ;
     expect(first).toBeGreaterThan(0);
-    expect(first).toBeLessThanOrEqual(nominalStep + 1e-9);
+    // DUE passi nominali e non uno, e solo per il primo campione. Da quando la
+    // scadenza della scelta è la biforcazione stessa (config, commitZ = 0) la
+    // fase impegnata non è più un tratto di strada ma il singolo frame che
+    // ATTRAVERSA la biforcazione: il riallineamento comincia quindi dal frame
+    // dopo, quando il bivio è già due frame alle spalle. Non è un salto
+    // dell'avanzamento — `realignProgress` continua a essere esattamente la
+    // distanza percorsa oltre il bivio, come si verifica qui sotto — è il
+    // primo campione che parte da più in là.
+    expect(first).toBeLessThanOrEqual(2 * nominalStep + 1e-9);
     for (let i = 1; i < seen.length; i++) {
       const previous = seen[i - 1];
       const current = seen[i];

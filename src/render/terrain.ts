@@ -9,6 +9,7 @@ import {
   forkZOf,
   type PathState,
   realignProgressOf,
+  turnOf,
 } from '../game/path';
 import type { Branch } from '../game/types';
 import type { WorldState } from '../game/world';
@@ -512,10 +513,17 @@ export function trackHalfWidths(path: PathState): readonly [number, number] {
 /**
  * Ultimo stato del percorso da cui la geometria della pista è stata scritta.
  * Tutto ciò che entra nel calcolo di una riga sta qui dentro: i due centri
- * dipendono da phase, forkZ e activeBranch (l'apertura e il raddrizzamento si
- * ricavano da quelli, vedi game/path.ts, branchCenterAt; forkBlendZ e commitZ
- * sono costanti di configurazione), le due semilarghezze da phase,
- * activeBranch e realignProgress.
+ * dipendono da phase, forkZ e dalla PIEGATA (l'apertura si ricava dai primi
+ * due, il raddrizzamento è la piegata stessa: vedi game/path.ts,
+ * branchCenterAt), le due semilarghezze da phase, activeBranch e
+ * realignProgress.
+ *
+ * La piegata non era qui e ora ci sta perché il raddrizzamento non dipende più
+ * dalla fase: prima si ricavava da forkZ dentro 'committed', quindi forkZ lo
+ * copriva; ora è uno stato a sé che cambia anche a forkZ fermo — un frame in
+ * pausa, o qualunque chiamante che aggiorni la piegata senza far scorrere il
+ * mondo — e senza questo campo la pista resterebbe disegnata come al frame
+ * prima.
  */
 interface TrackGeometryKey {
   phase: ForkPhase;
@@ -525,13 +533,15 @@ interface TrackGeometryKey {
   forkZ: number | null;
   realignProgress: number;
   activeBranch: Branch;
+  /** Piegata con segno (game/path.ts, turnOf): 0 fuori da un bivio. */
+  turn: number;
 }
 
 /** forkZ a NaN come sentinella: NaN non è uguale nemmeno a sé stesso, quindi
  *  il primo confronto fallisce sempre e la geometria viene scritta almeno una
  *  volta, senza bisogno di un flag "prima volta" a parte. */
 function createTrackGeometryKey(): TrackGeometryKey {
-  return { phase: 'none', forkZ: NaN, realignProgress: 0, activeBranch: 'main' };
+  return { phase: 'none', forkZ: NaN, realignProgress: 0, activeBranch: 'main', turn: 0 };
 }
 
 /**
@@ -569,11 +579,13 @@ function updateTrackGeometry(
   const forkZ = forkZOf(path);
   const realignProgress = realignProgressOf(path);
   const activeBranch = activeBranchOf(path);
+  const turn = turnOf(path);
   if (
     last.phase === path.phase &&
     last.forkZ === forkZ &&
     last.realignProgress === realignProgress &&
-    last.activeBranch === activeBranch
+    last.activeBranch === activeBranch &&
+    last.turn === turn
   ) {
     return;
   }
@@ -581,6 +593,7 @@ function updateTrackGeometry(
   last.forkZ = forkZ;
   last.realignProgress = realignProgress;
   last.activeBranch = activeBranch;
+  last.turn = turn;
 
   const position = geometry.getAttribute('position');
   const [leftHalf, rightHalf] = trackHalfWidths(path);

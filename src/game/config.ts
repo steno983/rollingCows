@@ -19,46 +19,70 @@ export const CONFIG = {
      *  render.fogNear=95) e il contenuto dei rami si leggeva già sbiancato.
      *  A 110 nasce appena fuori, nella zona nitida. */
     previewZ: 110,
-    /** Punto di non ritorno, in unità prima della biforcazione. Alzato da 12:
-     *  a 12 unità la fase impegnata durava 0,30 s a velocità massima, cioè il
-     *  passaggio da "posso ancora cambiare" a "sono impegnato" era
-     *  impercettibile e coincideva con l'inizio della piegata — il feedback
-     *  della scelta arrivava quando la scelta non era più modificabile. A 24
-     *  la fase impegnata dura 0,60 s e la piegata parte visibilmente PRIMA
-     *  della biforcazione.
-     *
-     *  DA QUANDO L'INDECISIONE COSTA LA CORSA (design §4, regola nuova: chi
-     *  non sceglie va dritto contro il cartello) questo non è più solo il
-     *  punto in cui la scelta smette di essere reversibile, è la SCADENZA.
-     *
-     *  Non è più anche l'estremo INFERIORE della finestra di scelta, che ora
-     *  è a tempo: vedi `choiceWindowSeconds`.
-     *
-     *  ABBASSATO DA 24. È la distanza su cui il ramo scelto scivola al centro
-     *  (`straightenProgress`), quindi accorciarla rende più ripido lo
-     *  spostamento laterale della strada: misurato sul punto peggiore del
-     *  nastro visibile, a 46 u/s, lo scatto per frame vale 0,287 unità a 24,
-     *  0,345 a 20, 0,430 a 16, 0,574 a 12 — cresce più che linearmente, e
-     *  oltre un certo punto la piegata torna a essere lo strappo che il
-     *  raddrizzamento è stato introdotto per togliere.
-     *
-     *  20 compra due cose e ne paga una. Compra 4 unità in meno di "non posso
-     *  più scegliere ma non sono ancora arrivato al cartello" (da 42 a 38
-     *  unità, cioè da 1,05 a 0,95 s a 40 u/s), e soprattutto toglie il tetto
-     *  che `previewZ` metteva alla finestra di scelta: (110 − 20) / 46 = 1,96
-     *  s ≥ i 2,0 s nominali meno l'accelerazione, quindi la finestra vale
-     *  ~2 s su TUTTI i profili invece che 1,87 s sul solo "Toro" al tetto.
-     *  Paga il 20% di scatto laterale in più, che resta ampiamente sotto la
-     *  soglia percettiva verificata in path.test.ts.
-     *
-     *  Se un giorno servisse avvicinare ancora la scadenza al cartello, la
-     *  leva NON è continuare ad abbassare questo numero (a 12 lo scatto
-     *  raddoppia) ma slegare il raddrizzamento dalla fase impegnata: farlo
-     *  durare una distanza propria a partire dalla scelta, lasciandolo
-     *  proseguire oltre la biforcazione dentro il riallineamento. */
-    commitZ: 20,
     /**
-     * Per quanto TEMPO la scelta resta aperta, prima del punto di non ritorno.
+     * SCADENZA della scelta, in unità PRIMA della biforcazione. Zero: si può
+     * scegliere finché non si arriva al bivio, non un metro prima.
+     *
+     * IL DIFETTO CHE QUESTO CORREGGE, ed è il terzo giro su questa zona. Era
+     * 20. La finestra di scelta si chiudeva quindi 20 unità prima della
+     * biforcazione, mentre il cartello — l'unica cosa che in scena dice «qui
+     * si decide» — sta 19,2 unità OLTRE (vedi path.ts, SIGNPOST_OFFSET_Z).
+     * Fra i due c'erano ~39 unità, da 0,85 s a oltre 2 s secondo la velocità,
+     * in cui il giocatore vede il bivio spalancato e il cartello davanti al
+     * muso e ogni pressione viene rifiutata in silenzio. Segnalato tre volte
+     * come «l'input della curva non funziona», ed era esattamente così: non
+     * un bug dell'input, una zona morta messa a progetto. Era già stata
+     * misurata e accettata come numero; era la decisione sbagliata.
+     *
+     * A zero la regola diventa quella che il mondo racconta da sé: puoi
+     * scegliere finché non arrivi al bivio; se non lo fai prosegui dritto e
+     * dopo 19,2 unità trovi il cartello. Quelle 19 unità restano l'ultimo
+     * avviso, non un rifiuto — non c'è più nessun momento in cui il gioco
+     * chiede una decisione che non accetta più.
+     *
+     * COSA NON È PIÙ. Non è più la distanza su cui il ramo scelto scivola al
+     * centro: quella ora parte dalla SCELTA e vive in `turnRampZ`, che ne ha
+     * ereditato il valore e con esso l'intera taratura della ripidità. Il
+     * disaccoppiamento era già scritto qui sotto come l'unica via per
+     * avvicinare la scadenza al cartello senza irrigidire la piegata, e
+     * questa è la volta in cui si è fatto.
+     *
+     * COSA RESTA. La fase 'committed' comincia ancora qui, quindi con zero
+     * comincia alla biforcazione e dura il solo frame che la attraversa; è la
+     * fase, non un tratto di strada, ed è ciò che rende irrevocabile la
+     * scelta e toglie di mezzo le entità del ramo scartato. Resta anche
+     * l'estremo inferiore della finestra di scelta (`choiceWindowSeconds`),
+     * che ora coincide con la biforcazione.
+     */
+    commitZ: 0,
+    /**
+     * Su quante unità cresce la PIEGATA: il ramo scelto che scivola al centro
+     * (path.ts, `straightenProgress`) e, con lui, rotazione del mondo,
+     * inclinazione della mucca e rollio della camera (render/curve.ts).
+     *
+     * Non è la durata della piegata ma il suo TETTO DI RIPIDITÀ. La piegata
+     * parte quando il giocatore sceglie e punta a completarsi alla
+     * biforcazione, quindi chi sceglie presto la ottiene lunga e dolce
+     * (distribuita su tutta la distanza che gli resta) e chi sceglie
+     * all'ultimo istante la ottiene rapida — ma mai più rapida di così: la
+     * velocità per unità percorsa è al più 1/questo numero, e ciò che avanza
+     * si completa oltre la biforcazione, dentro il riallineamento.
+     *
+     * 20 È IL VECCHIO `commitZ`, ed è lo stesso numero per la stessa ragione.
+     * Lo scatto laterale peggiore del nastro visibile cresce più che
+     * linearmente accorciando questa distanza: a 46 u/s vale 0,287 unità per
+     * frame a 24, 0,345 a 20, 0,430 a 16, 0,574 a 12, contro un tetto di
+     * guardabilità di 0,40 (path.test.ts, ABSOLUTE_MAX_STEP). Tenendolo a 20
+     * lo scatto peggiore resta ESATTAMENTE quello di prima: la scadenza si è
+     * spostata di 20 unità senza che la piegata paghi nulla.
+     *
+     * Deve inoltre restare sotto `forkBlendZ` (28): chi sceglie sull'ultimo
+     * centimetro completa la piegata entro il riallineamento invece di
+     * arrivare alla chiusura del bivio con la strada ancora storta.
+     */
+    turnRampZ: 20,
+    /**
+     * Per quanto TEMPO la scelta resta aperta, prima della sua scadenza.
      *
      * La visibilita' del bivio e la possibilita' di sceglierlo erano la stessa
      * cosa, e non dovevano esserlo. La Y del tracciato si vede arrivare da
@@ -75,13 +99,17 @@ export const CONFIG = {
      * numero`, ed e' l'unica soglia del bivio espressa in tempo: dura uguale a
      * qualunque velocita', che e' esattamente cio' che serviva.
      *
-     * 2,0 s. Il tetto vero e' il minimo fra questo e cio' che `previewZ`
-     * concede, perche' non si puo' aprire la scelta su un bivio che non si
-     * vede ancora: il pareggio e' a (110 − 24) / 2 = 43 u/s, quindi sotto i 43
-     * u/s comanda questo numero e sopra comanda `previewZ`. In pratica: 2,00 s
-     * per tutti i profili tranne "Toro" vicino al suo tetto, dove restano gli
-     * 1,87 s di prima. Il cambio quindi ACCORCIA solo dove era troppo lungo e
-     * non tocca il caso gia' stretto.
+     * 2,0 s, e da quando `commitZ` vale 0 sono due secondi che FINISCONO SULLA
+     * BIFORCAZIONE invece che 20 unita' prima. La durata nominale non cambia
+     * (la finestra e' lunga `speed * 2` unita' in entrambi i casi: si e' solo
+     * spostata avanti di 20 unita'), ma cambia il tetto: il minimo fra questo
+     * numero e cio' che `previewZ` concede si spostava a (110 − 20) / 2 = 45
+     * u/s, e ora sta a 110 / 2 = 55 u/s, cioe' sopra la velocita' di punta di
+     * qualunque profilo ("Toro" arriva a 46). La finestra vale quindi ~2 s su
+     * TUTTI i profili a TUTTE le velocita', senza piu' alcun caso in cui la
+     * visibilita' la accorcia. Misurata sul serio, con l'accelerazione dentro
+     * la finestra: 1,98-2,00 s dalla partenza al tetto, su tutti e tre i
+     * profili (path.test.ts la verifica).
      *
      * Non e' tempo dedicato solo a decidere: dentro quella finestra si
      * continua a saltare e scivolare (a 46 u/s ci passano ~3,5 ostacoli).
@@ -123,7 +151,7 @@ export const CONFIG = {
     gapPerSpeed: 6,
     /** Il primo tratto di OGNI ramo, subito dopo la biforcazione, nasce
      *  sgombro per questa distanza. Non è una scelta estetica: il ramo scelto
-     *  diventa solido al punto di non ritorno, ma la traslazione laterale
+     *  diventa solido alla biforcazione, ma la traslazione laterale
      *  parte solo quando la biforcazione arriva a z=0 e dura realignSeconds.
      *  Nel frattempo un ostacolo del ramo — disegnato a branchSeparation di
      *  lato, cioè fino a 6 unità fuori da un corridoio largo 4 — era già

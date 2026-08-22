@@ -18,19 +18,28 @@ describe('worldYawFor', () => {
     expect(worldYawFor(straight())).toBe(0);
   });
 
-  it('resta zero durante approaching, anche a bivio già scelto (si può ancora cambiare idea)', () => {
-    expect(worldYawFor(forkApproaching({ forkZ: 40, choice: 'left' }))).toBe(0);
-    expect(worldYawFor(forkApproaching({ forkZ: 40, choice: 'right' }))).toBe(0);
+  it('resta zero durante approaching finché nessuno sceglie, e SOLO finché nessuno sceglie', () => {
+    // Il cambio di regola: prima la piegata restava a zero per tutto
+    // l'avvicinamento anche a scelta già data, perché era legata al punto di
+    // non ritorno. Ora è legata alla scelta, quindi zero vuol dire una cosa
+    // sola — nessuno ha scelto — e chi non sceglierà mai va dritto sul
+    // cartello senza che il mondo si muova di un grado.
+    expect(worldYawFor(forkApproaching({ forkZ: 40 }))).toBe(0);
+    // Appena scelto la piegata è ancora a zero (parte da lì e cresce), ma
+    // dallo stesso avvicinamento, a piegata avviata, non lo è più.
+    expect(worldYawFor(forkApproaching({ forkZ: 40, choice: 'left', turn: 0 }))).toBe(0);
+    expect(worldYawFor(forkApproaching({ forkZ: 40, choice: 'left', turn: -0.4 }))).toBeLessThan(0);
+    expect(worldYawFor(forkApproaching({ forkZ: 40, choice: 'right', turn: 0.4 }))).toBeGreaterThan(
+      0,
+    );
   });
 
-  it('è negativo a ramo sinistro attivo e cresce avvicinandosi al bivio', () => {
-    const early = worldYawFor(
-      forkCommitted({ forkZ: CONFIG.path.commitZ - 0.1, activeBranch: 'left' }),
-    );
-    const late = worldYawFor(forkCommitted({ forkZ: 1, activeBranch: 'left' }));
+  it('è negativo a ramo sinistro scelto e cresce col crescere della piegata', () => {
+    const early = worldYawFor(forkApproaching({ forkZ: 40, choice: 'left', turn: -0.2 }));
+    const late = worldYawFor(forkApproaching({ forkZ: 8, choice: 'left', turn: -0.9 }));
     expect(early).toBeLessThan(0);
     expect(late).toBeLessThan(0);
-    // Più vicini al bivio, più marcata la piegata (in valore assoluto).
+    // Più avanti nella piegata, più marcata (in valore assoluto).
     expect(Math.abs(late)).toBeGreaterThan(Math.abs(early));
   });
 
@@ -55,15 +64,17 @@ describe('worldYawFor', () => {
   });
 
   it('nessuno scatto brusco fra un frame e il successivo lungo tutto il ciclo del bivio', () => {
-    // Ricalca esattamente la sequenza di fasi/valori che game/path.ts produce
-    // durante un bivio scelto a sinistra: dentro 'committed' forkZ scende da
-    // commitZ a 0, poi 'realigning' con realignProgress che sale da 0 a 1.
+    // Ricalca la sequenza di fasi/valori che game/path.ts produce durante un
+    // bivio scelto a sinistra: la piegata sale da 0 a -1 durante
+    // l'avvicinamento (è la scelta a farla partire, non il punto di non
+    // ritorno), attraversa la biforcazione e rientra durante 'realigning'.
     const samples: number[] = [];
     const steps = 50;
     for (let i = 0; i <= steps; i += 1) {
-      const forkZ = CONFIG.path.commitZ * (1 - i / steps);
-      samples.push(worldYawFor(forkCommitted({ forkZ, activeBranch: 'left' })));
+      const turn = -i / steps;
+      samples.push(worldYawFor(forkApproaching({ forkZ: 40 - i / 2, choice: 'left', turn })));
     }
+    samples.push(worldYawFor(forkCommitted({ forkZ: 0, activeBranch: 'left' })));
     for (let i = 0; i <= steps; i += 1) {
       const realignProgress = i / steps;
       samples.push(worldYawFor(forkRealigning({ activeBranch: 'left', realignProgress })));
@@ -80,14 +91,47 @@ describe('worldYawFor', () => {
     }
   });
 
+  it('CAMBIARE IDEA passa per lo zero: nessun salto di segno, nessuno scatto', () => {
+    // È il caso che aveva motivato di far partire la piegata solo al punto di
+    // non ritorno, ed è quello che ora va gestito davvero. Il giocatore ha
+    // piegato a sinistra fino a metà e cambia ramo: la piegata torna indietro
+    // fino a zero e riparte dall'altra parte, alla stessa velocità (il valore
+    // è uno solo, con segno: game/path.ts, advanceTurn). Fra due frame
+    // consecutivi il segno non può quindi invertirsi saltando l'ampiezza.
+    const samples: number[] = [];
+    const steps = 60;
+    for (let i = 0; i <= steps; i += 1) {
+      // Da -0.6 a +0.6 a passo costante, cioè quello che advanceTurn produce.
+      const turn = -0.6 + (1.2 * i) / steps;
+      samples.push(worldYawFor(forkApproaching({ forkZ: 24, choice: 'right', turn })));
+    }
+    const maxStep = (CONFIG.render.curve.maxWorldTiltDeg * Math.PI) / 180 / steps;
+    let crossed = false;
+    for (let i = 1; i < samples.length; i += 1) {
+      const prev = samples[i - 1];
+      const curr = samples[i];
+      if (prev === undefined || curr === undefined) continue;
+      if (Math.sign(prev) !== Math.sign(curr)) {
+        // L'inversione di segno può avvenire SOLO passando per zero, cioè con
+        // entrambi i campioni piccolissimi: è la derivata nulla della
+        // smoothstep nell'origine a garantirlo.
+        crossed = true;
+        expect(Math.abs(prev)).toBeLessThan(maxStep * 3);
+        expect(Math.abs(curr)).toBeLessThan(maxStep * 3);
+      }
+      expect(Math.abs(curr - prev)).toBeLessThan(maxStep * 3);
+    }
+    expect(crossed).toBe(true);
+  });
+
   it(
     'a ramo sinistro scelto il mondo ruota nel verso che porta quel ramo davanti alla mucca ' +
       "(un'entità del ramo sinistro, in coordinate di vista come le usa entities-view.ts, si avvicina al centro)",
     () => {
-      const path = forkCommitted({
-        forkZ: CONFIG.path.commitZ / 2,
-        activeBranch: 'left',
-      });
+      // Piegata a metà: il ramo scelto è già scivolato verso il centro ma non
+      // ci è ancora arrivato, che è l'unico stato in cui questa verifica ha
+      // qualcosa da misurare (a piegata completa il ramo È il centro).
+      const path = forkApproaching({ forkZ: 30, choice: 'left', turn: -0.5 });
       const yaw = worldYawFor(path);
       expect(yaw).not.toBe(0);
 
@@ -98,7 +142,7 @@ describe('worldYawFor', () => {
       // distanza, e a monte della biforcazione i due rami coincidono ancora
       // col tronco. Si sceglie un punto oltre la fine dell'apertura, dove il
       // ramo esiste come strada separata.
-      const z = CONFIG.path.commitZ / 2 + CONFIG.path.forkBlendZ + 10;
+      const z = 30 + CONFIG.path.forkBlendZ + 10;
       const sceneX = worldToViewX(entityWorldOffsetX(path, { branch: 'left', z }));
       // Stessa rotazione Y che subirà il gruppo-mondo in three.js
       // (convenzione standard: x' = x·cosθ + z·sinθ per rotation.y = θ).
@@ -108,12 +152,9 @@ describe('worldYawFor', () => {
   );
 
   it('specularmente, a ramo destro scelto il ramo destro si avvicina al centro', () => {
-    const path = forkCommitted({
-      forkZ: CONFIG.path.commitZ / 2,
-      activeBranch: 'right',
-    });
+    const path = forkApproaching({ forkZ: 30, choice: 'right', turn: 0.5 });
     const yaw = worldYawFor(path);
-    const z = CONFIG.path.commitZ / 2 + CONFIG.path.forkBlendZ + 10;
+    const z = 30 + CONFIG.path.forkBlendZ + 10;
     const sceneX = worldToViewX(entityWorldOffsetX(path, { branch: 'right', z }));
     const rotatedX = sceneX * Math.cos(yaw) + z * Math.sin(yaw);
     expect(Math.abs(rotatedX)).toBeLessThan(Math.abs(sceneX));
@@ -152,12 +193,10 @@ describe('cameraRollFor', () => {
 });
 
 describe('riduzione del movimento', () => {
-  /** Un bivio a metà della fase impegnata: piegata ben diversa da zero, così
-   *  la riduzione ha qualcosa da ridurre. */
-  const path = forkCommitted({
-    forkZ: CONFIG.path.commitZ / 2,
-    activeBranch: 'left',
-  });
+  /** Un bivio a piegata mezza fatta: ben diversa da zero, così la riduzione ha
+   *  qualcosa da ridurre, e con il ramo ancora scostato dal centro, così la
+   *  verifica geometrica in fondo a questo blocco ha qualcosa da misurare. */
+  const path = forkApproaching({ forkZ: 30, choice: 'left', turn: -0.5 });
 
   it('curveMotionScale vale 1 senza riduzione e curveScale con la riduzione attiva', () => {
     expect(curveMotionScale(false)).toBe(1);
@@ -196,7 +235,7 @@ describe('riduzione del movimento', () => {
     // Stessa verifica geometrica del test a piena ampiezza: la riduzione
     // cambia quanto, mai cosa.
     const yaw = worldYawFor(path, curveMotionScale(true));
-    const z = CONFIG.path.commitZ / 2 + CONFIG.path.forkBlendZ + 10;
+    const z = 30 + CONFIG.path.forkBlendZ + 10;
     const sceneX = worldToViewX(entityWorldOffsetX(path, { branch: 'left', z }));
     const rotatedX = sceneX * Math.cos(yaw) + z * Math.sin(yaw);
     expect(Math.abs(rotatedX)).toBeLessThan(Math.abs(sceneX));

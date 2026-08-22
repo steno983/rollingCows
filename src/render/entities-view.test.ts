@@ -16,7 +16,9 @@ import {
   createEntitiesView,
   type EntitiesView,
   entityWorldOffsetX,
+  signpostGlowFor,
   signpostStateFor,
+  signpostSwell,
   type ViewKind,
 } from './entities-view';
 import { INSTANCE_CAPACITY } from './instancing';
@@ -413,6 +415,12 @@ describe('signpostStateFor', () => {
 });
 
 describe('createEntitiesView — il cartello mostra la scelta', () => {
+  /** Bivio visibile ma finestra ancora chiusa: la scelta si vede, il cartello
+   *  non pulsa. È lo stato in cui isolare l'asse della SCELTA. */
+  function dormantFork(choice: 'left' | 'right' | null = null): PathState {
+    return forkApproaching({ forkZ: 40, choice, choiceOpen: false });
+  }
+
   function colorsOf(view: EntitiesView): THREE.BufferAttribute | THREE.InterleavedBufferAttribute {
     return meshFor(view, 'signpost').geometry.getAttribute('color');
   }
@@ -422,10 +430,10 @@ describe('createEntitiesView — il cartello mostra la scelta', () => {
     const sign = [entity('signpost', { z: 30 })];
     const positions = meshFor(view, 'signpost').geometry.getAttribute('position');
 
-    view.sync(sign, forkApproaching({ forkZ: 40 }), 1 / 60);
+    view.sync(sign, dormantFork(), 1 / 60);
     const neutral = colorsOf(view);
 
-    view.sync(sign, forkApproaching({ forkZ: 40, choice: 'left' }), 1 / 60);
+    view.sync(sign, dormantFork('left'), 1 / 60);
     const chosen = colorsOf(view);
     expect(chosen).not.toBe(neutral);
     // Stessa geometria: è ciò che rende il cambio di stato gratuito e che
@@ -433,30 +441,227 @@ describe('createEntitiesView — il cartello mostra la scelta', () => {
     expect(meshFor(view, 'signpost').geometry.getAttribute('position')).toBe(positions);
     expect(chosen.count).toBe(neutral.count);
 
-    view.sync(sign, forkApproaching({ forkZ: 40, choice: 'right' }), 1 / 60);
+    view.sync(sign, dormantFork('right'), 1 / 60);
     expect(colorsOf(view)).not.toBe(chosen);
 
     // e tornando allo stato neutro si rimonta lo STESSO attributo di prima:
-    // i tre buffer restano tre, non se ne creano a ogni bivio.
+    // i buffer restano quelli, non se ne creano a ogni bivio.
     view.sync(sign, straight(), 1 / 60);
     expect(colorsOf(view)).toBe(neutral);
   });
 
-  it('non rimonta nulla se la scelta non cambia', () => {
+  it('non rimonta nulla se non cambia niente', () => {
     // Il confronto per frame deve costare un confronto, non un caricamento di
     // buffer: qui si verifica proprio che l'attributo resti lo stesso oggetto.
     const view = createEntitiesView();
-    const path = forkApproaching({ forkZ: 40, choice: 'left' });
+    const path = dormantFork('left');
     view.sync([entity('signpost')], path, 1 / 60);
     const first = colorsOf(view);
     for (let i = 0; i < 5; i += 1) view.sync([entity('signpost')], path, 1 / 60);
     expect(colorsOf(view)).toBe(first);
   });
 
-  it('resta UNA sola mesh e una sola draw call per tutti e tre gli stati', () => {
+  it('resta UNA sola mesh e una sola draw call per tutte le facce', () => {
     const view = createEntitiesView();
     expect(view.group.children).toHaveLength(ENTITY_ORDER.length + 1);
     view.sync([entity('signpost')], forkApproaching({ forkZ: 40, choice: 'left' }), 1 / 60);
     expect(meshFor(view, 'signpost').count).toBe(1);
+    expect(view.group.children).toHaveLength(ENTITY_ORDER.length + 1);
+  });
+});
+
+describe('signpostGlowFor — il cartello si accende quando si può scegliere', () => {
+  /** Un ciclo completo di pulsazione, in secondi (SIGNPOST_PULSE_SECONDS). Il
+   *  test non importa la costante: la RICAVA, così misura il comportamento
+   *  invece di ricopiare il numero. */
+  const CYCLE = (() => {
+    const open = forkApproaching({ forkZ: 40 });
+    const first = signpostGlowFor(open, 0, false);
+    for (let t = 0.05; t < 10; t += 0.05) {
+      if (signpostGlowFor(open, t, false) === first && signpostSwell(open, t, false) < 1.0001) {
+        return t;
+      }
+    }
+    throw new Error('la pulsazione non torna al punto di partenza');
+  })();
+
+  it('resta spento finché non c e niente da decidere', () => {
+    // Nessun bivio, e bivio visibile ma finestra ancora chiusa: in entrambi i
+    // casi il cartello è un oggetto del mondo, non un invito.
+    for (let t = 0; t < 2; t += 0.1) {
+      expect(signpostGlowFor(straight(), t, false)).toBe('dormant');
+      expect(signpostGlowFor(forkApproaching({ forkZ: 90, choiceOpen: false }), t, false)).toBe(
+        'dormant',
+      );
+    }
+  });
+
+  it('si spegne appena la scelta non è più possibile, anche restando in avvicinamento', () => {
+    // Chi non sceglie resta in 'approaching' e va dritto contro il cartello:
+    // lì la finestra è chiusa (forkZ <= commitZ) e un cartello che continuasse
+    // a chiamare direbbe una bugia.
+    const scaduto = forkApproaching({ forkZ: CONFIG.path.commitZ - 1 });
+    expect(signpostGlowFor(scaduto, 0.4, false)).toBe('dormant');
+    expect(
+      signpostGlowFor(
+        forkCommitted({ forkZ: CONFIG.path.commitZ, activeBranch: 'right' }),
+        0.4,
+        false,
+      ),
+    ).toBe('dormant');
+    expect(
+      signpostGlowFor(
+        forkRealigning({ forkZ: -8, activeBranch: 'left', realignProgress: 0.4 }),
+        0.4,
+        false,
+      ),
+    ).toBe('dormant');
+  });
+
+  it('con la finestra aperta pulsa, e non torna MAI a spento', () => {
+    // Se il fondo del respiro fosse `dormant`, per un pezzo di ogni ciclo un
+    // cartello acceso sarebbe indistinguibile da uno spento.
+    const open = forkApproaching({ forkZ: 40 });
+    const seen = new Set<string>();
+    for (let t = 0; t < CYCLE * 2; t += CYCLE / 40) {
+      const glow = signpostGlowFor(open, t, false);
+      expect(glow, `t=${t.toFixed(2)}`).not.toBe('dormant');
+      seen.add(glow);
+    }
+    // e la rampa li percorre tutti: un lampeggio fra due soli estremi si
+    // leggerebbe come una spia rotta, non come un respiro.
+    expect([...seen].sort()).toEqual(['lit1', 'lit2', 'lit3']);
+  });
+
+  it('la rampa sale e scende invece di saltare da un estremo all altro', () => {
+    const open = forkApproaching({ forkZ: 40 });
+    const rank: Record<string, number> = { lit1: 1, lit2: 2, lit3: 3 };
+    const step = CYCLE / 4;
+    // Campionato al centro di ogni gradino, così il confine non conta.
+    const ramp = [0, 1, 2, 3].map((i) => rank[signpostGlowFor(open, (i + 0.5) * step, false)] ?? 0);
+    expect(ramp).toEqual([1, 2, 3, 2]);
+  });
+
+  it('con la riduzione del movimento resta acceso e fermo sul gradino più profondo', () => {
+    // L informazione "puoi scegliere adesso" non è un abbellimento: non si
+    // toglie, si rende ferma. E ferma va sul gradino con più contrasto.
+    const open = forkApproaching({ forkZ: 40 });
+    for (let t = 0; t < CYCLE * 2; t += CYCLE / 20) {
+      expect(signpostGlowFor(open, t, true)).toBe('lit3');
+      expect(signpostSwell(open, t, true)).toBe(1);
+    }
+    // ma spento resta spento: la riduzione non accende niente da sé.
+    expect(signpostGlowFor(straight(), 0.4, true)).toBe('dormant');
+  });
+});
+
+describe('signpostSwell — il gonfiore non ruba spazio al cuneo', () => {
+  const open = forkApproaching({ forkZ: 40 });
+
+  it('vale 1 esatto quando non c e niente da decidere', () => {
+    for (let t = 0; t < 2; t += 0.1) {
+      expect(signpostSwell(straight(), t, false)).toBe(1);
+      expect(signpostSwell(forkCommitted({ forkZ: 10, activeBranch: 'left' }), t, false)).toBe(1);
+    }
+  });
+
+  it('cresce e basta: non accorcia mai il cartello sotto la sua sagoma', () => {
+    // La sagoma di collisione è la promessa «non c è quota a cui passarci
+    // sotto» (vedi models.ts, postTop): un cartello che si accorciasse la
+    // smentirebbe. E il tetto tiene il gonfiore piccolo.
+    for (let t = 0; t < 4; t += 0.01) {
+      const swell = signpostSwell(open, t, false);
+      expect(swell).toBeGreaterThanOrEqual(1);
+      expect(swell).toBeLessThanOrEqual(1.1 + 1e-9);
+    }
+  });
+
+  it('la vista lo applica SOLO in altezza, e solo al cartello', () => {
+    // Il cartello sta in un cuneo risolto per bisezione sulla condizione
+    // «semicuneo ≥ mezzo cartello + mezza mucca» (game/path.ts,
+    // SIGNPOST_OFFSET_Z): allargarlo, anche per un istante, rimetterebbe la
+    // tavola sopra la pista.
+    const view = createEntitiesView();
+    const matrix = new THREE.Matrix4();
+    const scale = new THREE.Vector3();
+    let grown = false;
+    for (let i = 0; i < 40; i += 1) {
+      view.sync([entity('signpost'), entity('rock')], open, 1 / 30);
+      meshFor(view, 'signpost').getMatrixAt(0, matrix);
+      matrix.decompose(new THREE.Vector3(), new THREE.Quaternion(), scale);
+      expect(scale.x).toBeCloseTo(1, 6);
+      expect(scale.z).toBeCloseTo(1, 6);
+      expect(scale.y).toBeGreaterThanOrEqual(1 - 1e-9);
+      if (scale.y > 1.01) grown = true;
+
+      // e nessun altro tipo si gonfia
+      meshFor(view, 'rock').getMatrixAt(0, matrix);
+      matrix.decompose(new THREE.Vector3(), new THREE.Quaternion(), scale);
+      expect(scale.y).toBeCloseTo(1, 6);
+    }
+    expect(grown, 'il cartello non si è mai gonfiato in un ciclo intero').toBe(true);
+  });
+});
+
+describe("createEntitiesView — l'accensione del cartello", () => {
+  function colorsOf(view: EntitiesView): THREE.BufferAttribute | THREE.InterleavedBufferAttribute {
+    return meshFor(view, 'signpost').geometry.getAttribute('color');
+  }
+
+  it('monta una faccia diversa quando la finestra si apre', () => {
+    const view = createEntitiesView();
+    const sign = [entity('signpost', { z: 40 })];
+    view.sync(sign, forkApproaching({ forkZ: 40, choiceOpen: false }), 1 / 60);
+    const spento = colorsOf(view);
+
+    view.sync(sign, forkApproaching({ forkZ: 40 }), 1 / 60);
+    expect(colorsOf(view)).not.toBe(spento);
+
+    // e alla chiusura della finestra torna esattamente a quella di prima.
+    view.sync(sign, forkApproaching({ forkZ: 40, choiceOpen: false }), 1 / 60);
+    expect(colorsOf(view)).toBe(spento);
+  });
+
+  it('i buffer sono quelli costruiti all avvio: la pulsazione non ne crea', () => {
+    // Le dodici facce (tre scelte × quattro gradini) nascono una volta sola
+    // all avvio, e un bivio ne tocca al massimo i tre gradini accesi della
+    // scelta in corso. Se la pulsazione allocasse un attributo per ciclo, il
+    // caricamento sulla GPU tornerebbe a costare a ogni cambio.
+    const view = createEntitiesView();
+    const sign = [entity('signpost')];
+    const path = forkApproaching({ forkZ: 40, choice: 'left' });
+    const seen = new Set<object>();
+    for (let i = 0; i < 300; i += 1) {
+      view.sync(sign, path, 1 / 30);
+      seen.add(colorsOf(view));
+    }
+    expect(seen.size).toBe(3);
+  });
+
+  it('con la riduzione del movimento monta una faccia sola e non la cambia più', () => {
+    const view = createEntitiesView();
+    view.setReducedMotion(true);
+    const sign = [entity('signpost')];
+    const path = forkApproaching({ forkZ: 40 });
+    view.sync(sign, path, 1 / 60);
+    const fermo = colorsOf(view);
+    for (let i = 0; i < 60; i += 1) view.sync(sign, path, 1 / 30);
+    expect(colorsOf(view)).toBe(fermo);
+    // ed è comunque una faccia ACCESA, diversa da quella a finestra chiusa.
+    view.sync(sign, forkApproaching({ forkZ: 40, choiceOpen: false }), 1 / 60);
+    expect(colorsOf(view)).not.toBe(fermo);
+  });
+
+  it('la pulsazione segue il tempo di GIOCO: in pausa il cartello sta fermo', () => {
+    // Stesso motivo della rotazione dei raccoglibili: `dt` è già scalato dal
+    // chiamante ed è zero in pausa. Un cartello che pulsasse a gioco fermo
+    // starebbe chiedendo una scelta che nessuno può dare.
+    const view = createEntitiesView();
+    const sign = [entity('signpost')];
+    const path = forkApproaching({ forkZ: 40 });
+    view.sync(sign, path, 0.5);
+    const fermo = colorsOf(view);
+    for (let i = 0; i < 20; i += 1) view.sync(sign, path, 0);
+    expect(colorsOf(view)).toBe(fermo);
   });
 });

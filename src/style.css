@@ -714,3 +714,24 @@
   line-height: 1.5;
   opacity: 0.8;
 }
+
+/* Pannello di diagnosi, presente solo con ?debug nell'indirizzo. Serve perché
+   il difetto dell'input al bivio non è riproducibile in un browser pilotato
+   dall'esterno: lì la finestra è in secondo piano e il gioco gira a un
+   fotogramma al secondo, dove l'azione in buffer scade prima di essere letta e
+   tutto sembra rotto. Qui si legge la catena vera mentre si gioca davvero. */
+.debug-panel {
+  position: absolute;
+  top: calc(8px + env(safe-area-inset-top));
+  left: calc(8px + env(safe-area-inset-left));
+  margin: 0;
+  padding: 10px 14px;
+  border-radius: 10px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre;
+  color: #d9ecff;
+  background: rgba(6, 18, 30, 0.82);
+  pointer-events: none;
+}

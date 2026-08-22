@@ -168,17 +168,28 @@ describe('trackCenterOffsets', () => {
     }
   });
 
-  it('nella fase impegnata il ramo scelto scivola al centro e lo SCARTATO resta dov-è', () => {
-    // È il cuore della correzione: alla biforcazione (forkZ 0) la strada
-    // scelta deve essere già dritta sotto la mucca, così il bivio si legge
-    // come "la mia strada prosegue e l'altra se ne va" invece che come una
-    // pista che si deforma. Il ramo scartato non viene portato via — resta
-    // alla propria distanza geometrica — altrimenti finirebbe a 12 unità di
-    // lato, fuori dalla fascia di terreno piatto e sopra i banchi.
-    const start = forkCommitted({ forkZ: CONFIG.path.commitZ, activeBranch: 'left' });
+  it('il ramo scelto scivola al centro con la PIEGATA e lo SCARTATO resta dov-è', () => {
+    // È il cuore della correzione: alla biforcazione la strada scelta deve
+    // essere già dritta sotto la mucca, così il bivio si legge come "la mia
+    // strada prosegue e l'altra se ne va" invece che come una pista che si
+    // deforma. Il ramo scartato non viene portato via — resta alla propria
+    // distanza geometrica — altrimenti finirebbe a 12 unità di lato, fuori
+    // dalla fascia di terreno piatto e sopra i banchi.
+    //
+    // I due estremi si prendono dalla PIEGATA e non più da `forkZ` dentro la
+    // fase impegnata: il raddrizzamento parte dalla scelta e non dal punto di
+    // non ritorno (game/path.ts, turnOf), quindi comincia in avvicinamento e
+    // alla biforcazione è normalmente già finito.
+    const start = forkApproaching({ forkZ: 20, choice: 'left', turn: 0 });
     const [startLeft, startRight] = trackCenterOffsets(start, 90);
     expect(startLeft).toBeCloseTo(-CONFIG.path.branchSeparation, 6);
     expect(startRight).toBeCloseTo(CONFIG.path.branchSeparation, 6);
+
+    const half = trackCenterOffsets(forkApproaching({ forkZ: 20, choice: 'left', turn: -0.5 }), 90);
+    expect(half[0]).toBeGreaterThan(startLeft);
+    expect(half[0]).toBeLessThan(0);
+    // Lo scartato non si muove di un millimetro mentre l'altro scivola.
+    expect(half[1]).toBeCloseTo(startRight, 6);
 
     const end = forkCommitted({ forkZ: 0, activeBranch: 'left' });
     const [endLeft, endRight] = trackCenterOffsets(end, 90);

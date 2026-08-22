@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { CONFIG } from '../game/config';
-import { branchCenterAt, type PathState } from '../game/path';
+import { branchCenterAt, choiceIsOpen, type PathState } from '../game/path';
 import type { Entity, EntityKind } from '../game/types';
 import { worldToViewX } from './camera-rig';
 import { createContactShadowMesh } from './contact-shadow';
@@ -8,8 +8,10 @@ import { INSTANCE_CAPACITY } from './instancing';
 import {
   buildGeometry,
   MODELS,
+  SIGNPOST_GLOWS,
   SIGNPOST_STATES,
   SIGNPOST_VARIANTS,
+  type SignpostGlow,
   type SignpostState,
 } from './models';
 
@@ -33,6 +35,17 @@ export interface EntitiesView {
    * STESSO dt già scalato che dà al resto del gioco, zero in pausa.
    */
   sync(entities: Entity[], path: PathState, dt: number): void;
+  /**
+   * `prefers-reduced-motion`. Riguarda una cosa sola in questa vista: la
+   * pulsazione del cartello quando la scelta è aperta (vedi
+   * `signpostGlowFor`). Con la riduzione attiva il cartello non lampeggia e
+   * non si gonfia, ma resta ACCESO al gradino più profondo: l'informazione
+   * "puoi scegliere adesso" non è un abbellimento e non si toglie, si rende
+   * ferma. Stessa firma di scene.setReducedMotion e
+   * avalancheFx.setReducedMotion, perché la media query può cambiare a
+   * partita in corso e main.ts la ridistribuisce a tutti allo stesso modo.
+   */
+  setReducedMotion(on: boolean): void;
   group: THREE.Group;
 }
 
@@ -163,6 +176,100 @@ export function signpostStateFor(path: PathState): SignpostState {
   return path.phase === 'none' ? 'none' : (path.choice ?? 'none');
 }
 
+/**
+ * La rampa della pulsazione: quali gradini di accensione si susseguono, in
+ * ordine, mentre la finestra di scelta è aperta.
+ *
+ * È triangolare e non un lampeggio fra due estremi: il gradino medio compare
+ * due volte per ciclo, in salita e in discesa, e il risultato si legge come un
+ * respiro invece che come una spia rotta. Non passa MAI da `dormant`, perché
+ * il fondo del respiro deve restare distinguibile da spento anche fermando
+ * l'immagine su un fotogramma qualunque.
+ */
+const SIGNPOST_PULSE: readonly SignpostGlow[] = ['lit1', 'lit2', 'lit3', 'lit2'];
+
+/**
+ * Durata di un ciclo completo. 1,2 s significa 0,3 s per gradino: abbastanza
+ * lento da leggersi come pulsazione e non come sfarfallio, e abbastanza veloce
+ * da compiere quasi due cicli interi dentro la finestra di scelta, che dura
+ * ~2 s (game/config.ts, path.choiceWindowSeconds). Un ciclo solo non basta:
+ * chi guarda la strada un istante dopo l'apertura ne vedrebbe metà.
+ */
+const SIGNPOST_PULSE_SECONDS = 1.2;
+
+/**
+ * Quanto il cartello si "gonfia" in altezza al culmine della pulsazione: +10%
+ * su 3,75 unità, cioè 0,37 unità di corsa dell'apice.
+ *
+ * PERCHÉ SOLO IN ALTEZZA. Il cartello sta in un cuneo largo quanto basta e non
+ * un dito di più: SIGNPOST_OFFSET_Z (game/path.ts) è risolto per bisezione
+ * esattamente sulla condizione «semicuneo ≥ mezzo cartello + mezza mucca».
+ * Allargarlo, anche del 10% e anche solo per un istante, mangerebbe quell'aria
+ * e rimetterebbe la tavola sopra la pista — cioè il difetto che quel numero è
+ * nato per correggere. In y invece non c'è niente da rubare, e il verso è
+ * l'unico sicuro: si cresce, non si accorcia mai sotto la sagoma di collisione
+ * (che è la promessa «non c'è quota a cui passarci sotto»).
+ *
+ * PERCHÉ AGGIUNGERE MOVIMENTO A UN CAMBIO DI COLORE. A 40-70 unità la tavola è
+ * alta una decina di pixel: un movimento di 0,37 unità è meno di cinque pixel,
+ * quindi da solo non basterebbe. Ma arriva in fase con lo scurirsi del legno —
+ * il massimo del gonfiore cade dentro il gradino più profondo — e due segnali
+ * concordi si notano molto prima di ciascuno dei due. Costa zero: la matrice
+ * dell'istanza viene riscritta ogni frame comunque.
+ */
+const SIGNPOST_SWELL = 0.1;
+
+/**
+ * Quanto il cartello è ACCESO in questo istante: `dormant` quando non c'è
+ * niente da decidere, un gradino della rampa quando la scelta è aperta.
+ *
+ * La sorgente è `choiceIsOpen(path)` e non la fase: la finestra è vera SOLO in
+ * avvicinamento e solo prima del punto di non ritorno, quindi il cartello che
+ * sfila accanto alla mucca dopo l'impegno smette di pulsare da sé. È giusto
+ * così — lì non c'è più niente da scegliere, e un cartello che continuasse a
+ * chiamare mentre la decisione è già presa sarebbe una bugia.
+ *
+ * `time` è il tempo di GIOCO accumulato (vedi la nota su `sync`): in pausa la
+ * pulsazione si ferma, come tutto il resto.
+ */
+export function signpostGlowFor(
+  path: PathState,
+  time: number,
+  reducedMotion: boolean,
+): SignpostGlow {
+  if (!choiceIsOpen(path)) return 'dormant';
+  // Riduzione del movimento: niente rampa, si resta fermi sul gradino più
+  // profondo, che è quello con più contrasto contro la neve.
+  if (reducedMotion) return 'lit3';
+  const step = SIGNPOST_PULSE_SECONDS / SIGNPOST_PULSE.length;
+  const slot = Math.floor(time / step) % SIGNPOST_PULSE.length;
+  return SIGNPOST_PULSE[slot] ?? 'lit1';
+}
+
+/**
+ * Fattore di scala in Y del cartello, 1 a riposo (vedi SIGNPOST_SWELL).
+ *
+ * Continua e non a gradini, al contrario del colore: la matrice si riscrive
+ * comunque a ogni frame, quindi qui una sinusoide non costa niente, e il
+ * movimento fluido copre lo scatto della rampa dei colori invece di
+ * sommarcisi. Il coseno parte da 1, cresce fino a 1 + SIGNPOST_SWELL a metà
+ * ciclo — cioè dentro il gradino `lit3` — e torna: gonfiore massimo e legno
+ * più scuro cadono insieme.
+ */
+export function signpostSwell(path: PathState, time: number, reducedMotion: boolean): number {
+  if (reducedMotion || !choiceIsOpen(path)) return 1;
+  const phase = (2 * Math.PI * time) / SIGNPOST_PULSE_SECONDS;
+  return 1 + SIGNPOST_SWELL * (0.5 - 0.5 * Math.cos(phase));
+}
+
+/** Aspetto completo del cartello: la scelta E l'accensione, che sono due assi
+ *  indipendenti e vanno combinati per pescare il buffer di colori giusto. */
+type SignpostLook = `${SignpostState}:${SignpostGlow}`;
+
+function signpostLook(state: SignpostState, glow: SignpostGlow): SignpostLook {
+  return `${state}:${glow}`;
+}
+
 /** Quota dell'ombra sopra la neve. Il corridoio è piatto a y = 0 (vedi
  *  terrain.heightAt: dentro la zona centrale il pendio è esattamente zero),
  *  quindi non serve campionare nulla; il pelo di stacco è appena sopra quello
@@ -229,15 +336,20 @@ export function createEntitiesView(): EntitiesView {
   const shadowSizes = new Map<ViewKind, THREE.Vector2>();
 
   /**
-   * I colori dei vertici delle tre facce del cartello. Le tre varianti hanno
-   * la STESSA geometria (models.ts, SIGNPOST_VARIANTS), quindi accendere una
-   * freccia costa lo scambio di un attributo — non una mesh in più, non un
-   * materiale in più, non una draw call in più. Lo scambio avviene solo quando
-   * la scelta CAMBIA, cioè un paio di volte per bivio: three tiene in cache i
-   * buffer per identità dell'attributo, quindi dopo il primo giro nessuno dei
-   * tre viene più ricaricato sulla GPU.
+   * I colori dei vertici delle dodici facce del cartello: tre scelte × quattro
+   * gradini di accensione. Tutte hanno la STESSA geometria (models.ts,
+   * SIGNPOST_VARIANTS), quindi accendere una freccia — o accendere il cartello
+   * intero — costa lo scambio di un attributo: non una mesh in più, non un
+   * materiale in più, non una draw call in più.
+   *
+   * Lo scambio avviene solo quando la coppia (scelta, accensione) cambia:
+   * qualche volta per bivio per la scelta, tre volte al secondo mentre la
+   * finestra è aperta per la pulsazione, e mai nel resto della corsa. three
+   * tiene in cache i buffer per identità dell'attributo, quindi dopo il primo
+   * giro di rampa nessuno dei dodici viene più ricaricato sulla GPU: lo
+   * scambio è un cambio di puntatore, non un upload.
    */
-  const signpostColors = new Map<SignpostState, THREE.BufferAttribute>();
+  const signpostColors = new Map<SignpostLook, THREE.BufferAttribute>();
 
   for (const kind of ENTITY_KINDS) {
     const geometry = buildGeometry(MODELS[kind], CONFIG.render.voxelSize);
@@ -254,15 +366,19 @@ export function createEntitiesView(): EntitiesView {
     group.add(mesh);
 
     if (kind === 'signpost') {
-      // Lo stato 'none' è già quello con cui il modello è stato costruito: si
-      // riusa l'attributo della mesh invece di ricostruirlo.
+      // La coppia ('none', 'dormant') è già quella con cui il modello è stato
+      // costruito: si riusa l'attributo della mesh invece di ricostruirlo.
       for (const state of SIGNPOST_STATES) {
-        const source =
-          state === 'none'
-            ? geometry
-            : buildGeometry(SIGNPOST_VARIANTS[state], CONFIG.render.voxelSize);
-        const colors = source.getAttribute('color');
-        if (colors instanceof THREE.BufferAttribute) signpostColors.set(state, colors);
+        for (const glow of SIGNPOST_GLOWS) {
+          const source =
+            state === 'none' && glow === 'dormant'
+              ? geometry
+              : buildGeometry(SIGNPOST_VARIANTS[state][glow], CONFIG.render.voxelSize);
+          const colors = source.getAttribute('color');
+          if (colors instanceof THREE.BufferAttribute) {
+            signpostColors.set(signpostLook(state, glow), colors);
+          }
+        }
       }
     }
 
@@ -285,8 +401,15 @@ export function createEntitiesView(): EntitiesView {
 
   /** Tempo di gioco accumulato: vedi la nota su `sync` nell'interfaccia. */
   let time = 0;
-  /** Faccia del cartello attualmente montata. */
-  let signpostState: SignpostState = 'none';
+  /** Faccia del cartello attualmente montata: scelta più accensione. */
+  let signpostLookNow: SignpostLook = signpostLook('none', 'dormant');
+  /** Vedi setReducedMotion. Falso finché main.ts non dice il contrario, che è
+   *  anche il valore giusto se nessuno lo dicesse mai. */
+  let reducedMotion = false;
+
+  function setReducedMotion(on: boolean): void {
+    reducedMotion = on;
+  }
 
   function sync(entities: Entity[], path: PathState, dt: number): void {
     time += dt;
@@ -295,16 +418,23 @@ export function createEntitiesView(): EntitiesView {
     for (const kind of ENTITY_KINDS) counters[kind] = 0;
     let shadowCount = 0;
 
-    // Un confronto per frame; il lavoro vero solo quando la scelta cambia.
-    const wantedState = signpostStateFor(path);
-    if (wantedState !== signpostState) {
-      const colors = signpostColors.get(wantedState);
+    // Un confronto per frame; il lavoro vero solo quando la scelta o
+    // l'accensione cambiano.
+    const wantedLook = signpostLook(
+      signpostStateFor(path),
+      signpostGlowFor(path, time, reducedMotion),
+    );
+    if (wantedLook !== signpostLookNow) {
+      const colors = signpostColors.get(wantedLook);
       const mesh = meshes.get('signpost');
       if (colors !== undefined && mesh !== undefined) {
         mesh.geometry.setAttribute('color', colors);
-        signpostState = wantedState;
+        signpostLookNow = wantedLook;
       }
     }
+    // Una sinusoide per frame, non una per cartello: la pulsazione è dello
+    // stato del bivio, non della singola istanza.
+    const swell = signpostSwell(path, time, reducedMotion);
 
     // UNA sola passata sull'array. Prima ce n'erano due per ciascuno dei
     // dodici tipi (un pre-conteggio con instanceCountFor più la scrittura),
@@ -335,7 +465,10 @@ export function createEntitiesView(): EntitiesView {
       const viewX = worldToViewX(entityWorldOffsetX(path, entity));
       dummy.position.set(viewX, entity.y + yBias, entity.z);
       dummy.rotation.set(0, yaw, 0);
-      dummy.scale.setScalar(1);
+      // Solo il cartello si gonfia, e solo mentre la scelta è aperta: per
+      // tutto il resto `swell` non viene nemmeno letto.
+      if (kind === 'signpost') dummy.scale.set(1, swell, 1);
+      else dummy.scale.setScalar(1);
       dummy.updateMatrix();
       mesh.setMatrixAt(used, dummy.matrix);
       counters[kind] = used + 1;
@@ -375,5 +508,5 @@ export function createEntitiesView(): EntitiesView {
     mesh.instanceMatrix.needsUpdate = true;
   }
 
-  return { sync, group };
+  return { sync, setReducedMotion, group };
 }

@@ -57,6 +57,9 @@ export const PALETTE: readonly number[] = [
   0x081826, // 23 abisso: il fondo del crepaccio, più cupo del buio 11
   0x33200f, // 24 ombra del legno, per la faccia inferiore del ramo sospeso
   0xd3d9de, // 25 legno sbiancato: la freccia SPENTA del cartello, quasi neve
+  0x442c1b, // 26 legno del cartello ACCESO, gradino basso della pulsazione
+  0x322014, // 27 legno del cartello acceso, gradino medio
+  0x22160e, // 28 legno del cartello acceso, gradino profondo: quasi silhouette
 ];
 
 const SNOW = 0;
@@ -85,6 +88,9 @@ const ICE_CORE = 22;
 const ABYSS = 23;
 const WOOD_SHADOW = 24;
 const PALE_WOOD = 25;
+const WOOD_LIT_1 = 26;
+const WOOD_LIT_2 = 27;
+const WOOD_LIT_3 = 28;
 
 /**
  * Griglia logica in cui vivono i modelli: 64³ celle centrate sull'origine.
@@ -389,15 +395,66 @@ export type SignpostState = 'none' | 'left' | 'right';
 
 export const SIGNPOST_STATES: readonly SignpostState[] = ['none', 'left', 'right'];
 
-function buildSignpost(lit: SignpostState): VoxelModel {
+/**
+ * ACCENSIONE: quanto il cartello è "attivo", cioè se la scelta si può fare
+ * ADESSO. È un asse ORTOGONALE alla scelta qui sopra, e va tenuto tale: la
+ * scelta dice DOVE si andrà, l'accensione dice SE si può ancora decidere.
+ *
+ * IL DIFETTO CHE CORREGGE. Le tre facce esistenti raccontano tutte una scelta
+ * GIÀ fatta; il momento in cui la scelta diventa possibile non lo diceva
+ * nessuno. Le frecce dell'interfaccia sono state tolte apposta e il prompt
+ * «SCEGLI» è del tutorial e si spegne per sempre dopo il primo bivio: dal
+ * secondo bivio in poi si preme a caso. La finestra vera è
+ * `choiceIsOpen(path)` (game/path.ts) e dura ~2 s — il cartello passa da 84 a
+ * 38 unità di distanza — quindi è a quella distanza che deve saltare all'occhio
+ * di chi sta schivando ostacoli, non a due metri.
+ *
+ * PERCHÉ TRE GRADINI E NON UNO. Acceso è una PULSAZIONE, non un colore: il
+ * cambiamento nel tempo si vede con la coda dell'occhio, un colore fermo no.
+ * I tre gradini sono la rampa (li percorre entities-view.ts, SIGNPOST_PULSE);
+ * `dormant` è, cella per cella, il cartello di sempre, così spento non è una
+ * regressione di leggibilità di un ostacolo in cui ci si schianta.
+ *
+ * PERCHÉ PIÙ SCURO. Stesso motivo delle frecce: su neve "acceso" non può
+ * voler dire più chiaro, perché più chiaro è meno contrasto. E non può voler
+ * dire più caldo o più saturo, perché quello nel gioco significa "da
+ * raccogliere". Resta la luminanza verso il basso: il legno scende da 0,248 a
+ * 0,094 di luminanza (−62%), cioè il cartello si chiude in silhouette. La
+ * pulsazione oscilla fra il primo e il terzo gradino, 0,188 → 0,094, e il
+ * gradino basso resta comunque più scuro di `dormant`: anche fermo su un
+ * fotogramma qualsiasi, acceso e spento non si confondono.
+ *
+ * COSA NON TOCCA. Solo il LEGNO cambia. La striscia interna, la neve alla base
+ * e la freccia sbiancata restano dove sono: sono quelle a portare il segnale
+ * della scelta, e schiacciarle insieme al resto avrebbe pagato l'accensione
+ * con metà del contrasto fra le due frecce. Di conseguenza accendere ALZA
+ * anche il contrasto interno della tavola, che è un di più gratuito.
+ */
+export type SignpostGlow = 'dormant' | 'lit1' | 'lit2' | 'lit3';
+
+/** In ordine di accensione crescente: `dormant` per primo. */
+export const SIGNPOST_GLOWS: readonly SignpostGlow[] = ['dormant', 'lit1', 'lit2', 'lit3'];
+
+/** Il legno di ogni gradino. È l'UNICA differenza fra i quattro. */
+const GLOW_WOOD: Readonly<Record<SignpostGlow, number>> = {
+  dormant: WOOD,
+  lit1: WOOD_LIT_1,
+  lit2: WOOD_LIT_2,
+  lit3: WOOD_LIT_3,
+};
+
+function buildSignpost(lit: SignpostState, glow: SignpostGlow): VoxelModel {
   const b = createBuilder();
+  /** Il legno di questo gradino di accensione: sostituisce WOOD ovunque, palo
+   *  e tavole, perché è la SILHOUETTE intera a pulsare. */
+  const wood = GLOW_WOOD[glow];
   /** 15 celle = 3,75 unità, cioè appena PIÙ del suo ingombro di collisione
    *  (CONFIG.collisions.entityBox.signpost.height = 3,6). Non è un dettaglio
    *  estetico: quell'altezza è tarata sopra l'apice del salto perché non
    *  esista una quota a cui passare, e un modello più basso della propria
    *  sagoma direbbe al giocatore l'esatto contrario — che saltando ci passa. */
   const postTop = 15;
-  b.box(-1, 0, -1, 2, postTop, 2, WOOD);
+  b.box(-1, 0, -1, 2, postTop, 2, wood);
   // Come la staccionata: la base sparisce nella neve invece di finire netta.
   b.box(-1, 0, -1, 2, 1, 2, SNOW);
 
@@ -406,7 +463,7 @@ function buildSignpost(lit: SignpostState): VoxelModel {
     // schermo, cioè il ramo 'left'.
     const arm: SignpostState = side > 0 ? 'left' : 'right';
     const off = lit !== 'none' && lit !== arm;
-    const board = off ? PALE_WOOD : WOOD;
+    const board = off ? PALE_WOOD : wood;
     // Freccia spenta: tinta piatta, nessuna striscia. Il dettaglio interno è
     // esso stesso un segnale di "questa conta", e va tolto con la luminanza.
     const stripe = off ? PALE_WOOD : lit === arm ? SNOW : LIGHT_WOOD;
@@ -431,20 +488,36 @@ function buildSignpost(lit: SignpostState): VoxelModel {
   return b.build();
 }
 
+function buildSignpostGlows(lit: SignpostState): Readonly<Record<SignpostGlow, VoxelModel>> {
+  return {
+    dormant: buildSignpost(lit, 'dormant'),
+    lit1: buildSignpost(lit, 'lit1'),
+    lit2: buildSignpost(lit, 'lit2'),
+    lit3: buildSignpost(lit, 'lit3'),
+  };
+}
+
 /**
- * Le tre varianti del cartello: STESSA geometria, colori diversi.
+ * Le dodici facce del cartello — tre scelte × quattro gradini di accensione —
+ * con la STESSA geometria e soli colori diversi.
  *
  * Che la geometria sia identica non è un caso ma il requisito che rende la
- * cosa gratuita: la vista tiene UNA sola InstancedMesh e, quando la scelta
- * cambia, scambia solo l'attributo `color` (vedi entities-view.ts). Nessuna
- * mesh in più, nessuna draw call in più, nessun materiale in più — e nessun
- * salto di sagoma nel frame in cui la freccia si accende, che di un cambio di
- * stato sarebbe la lettura sbagliata.
+ * cosa gratuita: la vista tiene UNA sola InstancedMesh e, quando la scelta o
+ * l'accensione cambiano, scambia solo l'attributo `color` (vedi
+ * entities-view.ts). Nessuna mesh in più, nessuna draw call in più, nessun
+ * materiale in più — e nessun salto di sagoma nel frame in cui la freccia si
+ * accende, che di un cambio di stato sarebbe la lettura sbagliata.
+ *
+ * Dodici e non tre non cambia nulla di quel conto: sono dodici buffer di
+ * colori tenuti in RAM (~15 KB l'uno, cioè meno di 200 KB in tutto) fra cui la
+ * vista sceglie un puntatore per frame. Il costo per frame resta zero.
  */
-export const SIGNPOST_VARIANTS: Readonly<Record<SignpostState, VoxelModel>> = {
-  none: buildSignpost('none'),
-  left: buildSignpost('left'),
-  right: buildSignpost('right'),
+export const SIGNPOST_VARIANTS: Readonly<
+  Record<SignpostState, Readonly<Record<SignpostGlow, VoxelModel>>>
+> = {
+  none: buildSignpostGlows('none'),
+  left: buildSignpostGlows('left'),
+  right: buildSignpostGlows('right'),
 };
 
 /**
@@ -709,7 +782,8 @@ export const MODELS: Record<
   fence: buildFence(),
   crevasse: buildCrevasse(),
   chasm: buildChasm(),
-  signpost: SIGNPOST_VARIANTS.none,
+  // Il cartello a riposo: `dormant` è cella per cella quello di sempre.
+  signpost: SIGNPOST_VARIANTS.none.dormant,
   branch: buildBranch(),
   arch: buildArch(),
   cornice: buildCornice(),

@@ -383,9 +383,12 @@ export function handleAction(game: GameState, action: Action): void {
 }
 
 /**
- * Uno swipe laterale. Vale SOLO mentre il bivio e' in avvicinamento e il punto
- * di non ritorno non e' ancora passato; fuori di li' non fa assolutamente
- * nulla, nemmeno restare in memoria.
+ * Uno swipe laterale. Vale finche' la biforcazione e' davanti: da quando la
+ * scadenza coincide con essa (config, commitZ = 0) non esiste piu' alcun
+ * tratto in cui il bivio si vede e lo swipe viene rifiutato in silenzio, che
+ * era il difetto riportato tre volte come «l'input della curva non funziona».
+ * Oltre la biforcazione non fa assolutamente nulla, nemmeno restare in
+ * memoria.
  *
  * La scelta ANTICIPATA e' stata rimossa (design §4, regola nuova). Permetteva
  * di decidere prima di vedere i due rami, cioe' saltava il primo dei tre tempi
@@ -396,8 +399,10 @@ export function handleAction(game: GameState, action: Action): void {
  * la corsa, una scelta che il giocatore non sa di avere dato sarebbe
  * intollerabile: e' l'unico input del gioco che decide dove si va.
  *
- * 'fork:chosen' resta l'unico riscontro che il giocatore riceve prima del
- * punto di non ritorno, ed e' anche il momento in cui il cartello se ne va.
+ * 'fork:chosen' non e' piu' l'unico riscontro della scelta: da quando la
+ * piegata parte dalla scelta invece che dal commit (game/path.ts, turnOf), il
+ * mondo comincia a curvare verso il ramo nello stesso istante. Resta pero' il
+ * momento in cui il cartello se ne va.
  */
 function chooseSide(game: GameState, side: 'left' | 'right'): void {
   if (chooseBranch(game.path, side)) {
@@ -420,11 +425,12 @@ function chooseSide(game: GameState, side: 'left' | 'right'): void {
  * riposizionamento e' venuto a correggere.
  *
  * Sparisce quando e' piu' lontano possibile, non sotto il muso: la finestra di
- * scelta si apre a `commitZ + speed * choiceWindowSeconds`, quindi nel momento
- * in cui si puo' scegliere il cartello dista fra 75 unita' (velocita' di
- * partenza) e 129 (al tetto di "Toro", dove lo limita previewZ) — a meta' strada
- * o oltre la nebbia (render.fogNear = 95). La vista puo' dissolverlo invece di
- * spegnerlo di colpo, ma anche cosi' non e' una sparizione a vista.
+ * scelta si apre a `commitZ + speed * choiceWindowSeconds`, quindi nel primo
+ * istante in cui si puo' scegliere il cartello dista fra 47 unita' (partenza di
+ * "Vitellino") e 111 (al tetto di "Toro"). Chi sceglie subito lo vede sparire
+ * lontano; chi sceglie all'ultimo istante lo vede sparire a 19 unita', cioe'
+ * mezzo secondo prima di arrivarci — ed e' il prezzo giusto per avere aspettato
+ * l'ultimo momento. La vista puo' dissolverlo invece di spegnerlo di colpo.
  *
  * Toglie TUTTI i cartelli e non "il" cartello: ce n'e' sempre al massimo uno,
  * ma cercarlo per identita' vorrebbe dire tenerne il riferimento nello stato di
@@ -664,7 +670,7 @@ function handleForkTransitions(
     removeMainEntitiesBeyond(game.entities, path.forkZ);
     // ZONA FRANCA: i rami non ripartono dalla biforcazione ma da
     // branchSpawnStartZ(forkZ), cioè branchClearanceAfterFork unità più in là.
-    // Il ramo scelto diventa solido al punto di non ritorno, ma la traslazione
+    // Il ramo scelto diventa solido alla biforcazione, ma la traslazione
     // laterale del mondo parte solo quando la biforcazione arriva a z=0 e dura
     // realignSeconds: nel frattempo un ostacolo del ramo è già letale MENTRE è
     // disegnato fino a branchSeparation (6) unità di lato, su un corridoio

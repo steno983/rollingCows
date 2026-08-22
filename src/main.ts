@@ -23,6 +23,7 @@ import {
   startRun,
   updateGame,
 } from './game/game';
+import { choiceIsOpen } from './game/path';
 import {
   attachQuests,
   completedQuestIds,
@@ -148,6 +149,11 @@ function main(): void {
   const snow = createSnowfall();
   const avalancheFx = createAvalancheFx();
   avalancheFx.setReducedMotion(reducedMotion);
+  // Il cartello del bivio pulsa mentre la scelta è possibile: sotto riduzione
+  // del movimento resta acceso e fermo, sul gradino con più contrasto.
+  // L'informazione "puoi scegliere adesso" non è un abbellimento e non si
+  // toglie — si rende immobile.
+  entitiesView.setReducedMotion(reducedMotion);
 
   // Pendio, entità e detriti vivono in un unico gruppo: durante un bivio è
   // QUESTO gruppo a ruotare attorno all'origine (render/curve.ts,
@@ -674,6 +680,7 @@ function main(): void {
     reducedMotion = event.matches;
     view.setReducedMotion(reducedMotion);
     avalancheFx.setReducedMotion(reducedMotion);
+    entitiesView.setReducedMotion(reducedMotion);
   });
 
   // Su mobile la perdita del contesto WebGL è un evento ordinario (memoria
@@ -697,6 +704,46 @@ function main(): void {
   });
 
   // ------------------------------------------------------------------- loop
+
+  /**
+   * Pannello di diagnosi, spento salvo `?debug` nell'indirizzo.
+   *
+   * Esiste perché il difetto «non funziona l'input della curva» non è
+   * riproducibile dove lo si vorrebbe indagare: un browser pilotato da fuori
+   * ha la finestra in secondo piano, e lì il throttling porta il gioco a un
+   * fotogramma al secondo — a quel ritmo l'azione in buffer scade prima che il
+   * loop la legga, quindi TUTTO sembra rotto anche quando non lo è. Questo
+   * pannello mostra la catena vera, a schermo, mentre si gioca davvero.
+   */
+  const debugPanel = new URLSearchParams(window.location.search).has('debug')
+    ? (() => {
+        const el = document.createElement('pre');
+        el.className = 'debug-panel';
+        uiRoot.appendChild(el);
+        return el;
+      })()
+    : null;
+  let lastAction: string = '—';
+  let lastActionAt = 0;
+  let choiceLog = '—';
+
+  function syncDebug(): void {
+    if (debugPanel === null) return;
+    const p = game.path;
+    const fork = 'forkZ' in p ? p.forkZ.toFixed(1) : '—';
+    const open = choiceIsOpen(p);
+    const scelta = 'choice' in p ? (p.choice ?? 'nessuna') : '—';
+    const attesa = 'pendingChoice' in p ? (p.pendingChoice ?? 'nessuna') : '—';
+    debugPanel.textContent = [
+      `stato      ${machine.current}   fps~${(1 / Math.max(1e-6, lastRealDt)).toFixed(0)}`,
+      `fase bivio ${p.phase}   forkZ ${fork}`,
+      `finestra   ${open ? 'APERTA — puoi scegliere' : 'chiusa'}`,
+      `scelta     ${scelta}    in attesa: ${attesa}`,
+      `velocita   ${game.world.speed.toFixed(1)} u/s`,
+      `ultimo input  ${lastAction}  (${((performance.now() - lastActionAt) / 1000).toFixed(1)}s fa)`,
+      `esito input   ${choiceLog}`,
+    ].join('\n');
+  }
 
   function syncHud(): void {
     hud.setPoints(game.score.points);
@@ -730,10 +777,12 @@ function main(): void {
    * vero fra due frame renderizzati si misura a parte, in render().
    */
   let lastFrameMs: number | null = null;
+  let lastRealDt = 1 / 60;
   function samplePerf(): void {
     const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
     if (lastFrameMs !== null) {
       const realDt = (now - lastFrameMs) / 1000;
+      lastRealDt = realDt;
       const clampedDt = Math.min(realDt, CONFIG.perf.maxSampleSeconds);
       if (perf.sample(clampedDt) && particleScale === 1) {
         particleScale = CONFIG.perf.lowQualityParticleScale;
@@ -797,6 +846,19 @@ function main(): void {
     update(dt: number): void {
       // PAUSE va letto in qualunque stato, altrimenti da fermi Esc non riprende.
       const action = input.consume();
+      if (action !== null && debugPanel !== null) {
+        lastAction = action;
+        lastActionAt = performance.now();
+        if (action === 'CHOOSE_LEFT' || action === 'CHOOSE_RIGHT') {
+          const p = game.path;
+          choiceLog =
+            p.phase !== 'approaching'
+              ? `IGNORATO: nessun bivio in avvicinamento (fase ${p.phase})`
+              : choiceIsOpen(p)
+                ? 'ACCETTATO'
+                : 'MESSO IN ATTESA: finestra non ancora aperta';
+        }
+      }
       if (action === 'PAUSE') {
         togglePause();
       } else if (action !== null && machine.current === 'playing' && !isDying(flow)) {
@@ -848,6 +910,7 @@ function main(): void {
     render(): void {
       samplePerf();
       if (machine.current === 'playing') syncHud();
+      syncDebug();
       syncViews(viewDt, viewAvalanche);
       // La shadow map non si ridisegna più a ogni frame: a menu, in pausa e a
       // game over la scena è ferma e ridisegnarla era lavoro buttato su un

@@ -1,5 +1,5 @@
 import { CONFIG } from '../game/config';
-import { branchOffsetX, type PathState, straightenProgress } from '../game/path';
+import { branchOffsetX, type PathState, straightenProgress, turnSideOf } from '../game/path';
 
 const DEG_TO_RAD = Math.PI / 180;
 const MAX_WORLD_YAW = CONFIG.render.curve.maxWorldTiltDeg * DEG_TO_RAD;
@@ -42,33 +42,38 @@ function ease(t: number): number {
 }
 
 /**
- * Intensità 0..1 della piegata, indipendente dal verso. Sale durante
- * 'committed' (la biforcazione si avvicina da commitZ a 0: il ramo è già
- * bloccato, chooseBranch non può più cambiarlo) e ridiscende durante
- * 'realigning', riusando `path.realignProgress` già calcolato da
- * game/path.ts — una frazione di distanza percorsa e non un tempo a parte
- * (vedi applyRealignment), quindi la piegata rientra alla stessa cadenza a
- * qualunque velocità. Zero in 'none' e 'approaching': è
- * cruciale restare a zero durante 'approaching', perché lì la scelta può
- * ancora cambiare idea (chooseBranch funziona solo in quella fase) e la pista
- * stessa resta simmetrica — se l'intensità iniziasse a crescere già lì,
- * cambiare ramo produrrebbe uno scatto di segno a metà salita. Bloccando la crescita
- * a 'committed' in poi (ramo ormai irrevocabile) l'unico punto in cui il
- * segno può cambiare è quando l'intensità è già a zero: nessuno scatto
- * possibile.
+ * Intensità 0..1 della piegata, indipendente dal verso. Sale dall'istante in
+ * cui il giocatore SCEGLIE — anche in piena fase di avvicinamento — e
+ * ridiscende durante 'realigning', riusando `path.realignProgress` già
+ * calcolato da game/path.ts: una frazione di distanza percorsa e non un tempo
+ * a parte (vedi applyRealignment), quindi la piegata rientra alla stessa
+ * cadenza a qualunque velocità. Zero in 'none' e per chi non sceglie mai.
+ *
+ * PRIMA RESTAVA A ZERO DURANTE 'approaching', e la ragione era che lì la
+ * scelta può ancora cambiare: un'intensità già cresciuta avrebbe cambiato
+ * segno di scatto a metà salita. Il conto tornava, la conseguenza no — il
+ * riscontro visivo della scelta arrivava solo quando la scelta non era più
+ * modificabile, e teneva inchiodata a 20 unità dal bivio la scadenza per
+ * darglielo. Ora il cambio di verso è gestito dove va gestito: la piegata è
+ * un valore CON SEGNO che per cambiare ramo deve passare per lo zero alla sua
+ * velocità (game/path.ts, advanceTurn), quindi non scatta, si raddrizza e
+ * ripiega dall'altra parte.
  */
 function turnIntensity(path: PathState): number {
-  // Durante la fase impegnata è ESATTAMENTE il raddrizzamento del ramo scelto
-  // (game/path.ts): non una curva parallela con la stessa forma, la stessa
-  // funzione. È lì che la strada si muove davvero — scivola sotto la mucca
-  // diventando la principale — e la piegata deve crescere con quel movimento,
-  // non per conto proprio. Le due copie della stessa easing erano già una di
-  // troppo la prima volta che una delle due è stata cambiata.
-  if (path.phase === 'committed') return straightenProgress(path);
-  if (path.phase === 'realigning') {
-    return ease(1 - path.realignProgress);
-  }
-  return 0;
+  // È ESATTAMENTE il raddrizzamento del ramo scelto (game/path.ts): non una
+  // curva parallela con la stessa forma, la stessa funzione. È lì che la
+  // strada si muove davvero — scivola sotto la mucca diventando la principale
+  // — e la piegata deve crescere con quel movimento, non per conto proprio. Le
+  // due copie della stessa easing erano già una di troppo la prima volta che
+  // una delle due è stata cambiata.
+  const straightening = straightenProgress(path);
+  // Oltre la biforcazione il raddrizzamento resta a 1 (la strada è dritta e ci
+  // resta) mentre la piegata deve tornare a zero: è il PRODOTTO delle due, non
+  // il solo rientro, così chi arriva al bivio con la piegata a metà — scelta
+  // all'ultimo istante, o cambio di idea — la vede rientrare da metà e non
+  // saltare prima a uno.
+  if (path.phase === 'realigning') return straightening * ease(1 - path.realignProgress);
+  return straightening;
 }
 
 /**
@@ -90,8 +95,14 @@ function turnIntensity(path: PathState): number {
  * volta con il verso di rotolamento della mucca (vedi player-view.ts).
  */
 function turnSign(path: PathState): number {
-  if (path.phase !== 'committed' && path.phase !== 'realigning') return 0;
-  const offset = branchOffsetX(path, path.activeBranch);
+  // Il ramo verso cui si sta piegando, non quello attivo: durante
+  // l'avvicinamento nessun ramo è ancora attivo eppure la piegata c'è già
+  // (game/path.ts, turnSideOf). Il verso continua a leggersi da
+  // `branchOffsetX` e non da un -1/+1 scritto qui: è la geometria del bivio a
+  // dire da che parte sta un ramo, e deve dirlo in un posto solo.
+  const side = turnSideOf(path);
+  if (side === null) return 0;
+  const offset = branchOffsetX(path, side);
   if (offset < 0) return -1;
   if (offset > 0) return 1;
   return 0;
@@ -108,9 +119,9 @@ function turnAmount(path: PathState): number {
 /**
  * Rotazione (radianti) del gruppo-mondo attorno all'asse Y, con perno
  * sull'origine — dove sta sempre la mucca (x=0, z=0): vedi main.ts. Zero
- * quando non c'è un bivio in corso (fasi 'none' e 'approaching'), positiva
- * per il ramo destro, negativa per il sinistro (vedi turnSign), torna
- * esattamente a 0 quando il riallineamento è completo.
+ * finché nessuno ha scelto (compreso tutto l'avvicinamento di chi non
+ * sceglierà mai), positiva per il ramo destro, negativa per il sinistro (vedi
+ * turnSign), torna esattamente a 0 quando il riallineamento è completo.
  *
  * `motionScale` scala l'ampiezza senza toccare la cadenza temporale: vedi
  * curveMotionScale. Il default 1 è il comportamento pieno.

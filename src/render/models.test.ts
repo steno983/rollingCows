@@ -8,9 +8,9 @@ import {
   buildGeometry,
   MODELS,
   PALETTE,
+  SIGNPOST_GLOWS,
   SIGNPOST_STATES,
   SIGNPOST_VARIANTS,
-  type SignpostState,
   type VoxelModel,
 } from './models';
 
@@ -553,25 +553,29 @@ describe('cartello: le due frecce mostrano la scelta', () => {
     return total / cells.length;
   }
 
-  it('le tre varianti hanno la STESSA geometria: cambia solo il colore', () => {
+  it('tutte le facce hanno la STESSA geometria: cambia solo il colore', () => {
     // È il requisito che rende gratuito il cambio di stato: la vista scambia
     // solo l'attributo `color` di una geometria sola. Se le varianti avessero
     // celle diverse, i vertici non corrisponderebbero e i colori finirebbero
-    // sulle facce sbagliate.
+    // sulle facce sbagliate. Vale sui DUE assi insieme — scelta e accensione —
+    // perché la vista li combina in una faccia sola.
     const shape = (model: VoxelModel): string =>
       model.voxels.map((v) => `${v[0]}|${v[1]}|${v[2]}`).join(' ');
+    const reference = SIGNPOST_VARIANTS.none.dormant;
+    const colorCount = (model: VoxelModel): number =>
+      buildGeometry(model, CONFIG.render.voxelSize).getAttribute('color').count;
     for (const state of SIGNPOST_STATES) {
-      expect(shape(SIGNPOST_VARIANTS[state]), state).toBe(shape(SIGNPOST_VARIANTS.none));
-    }
-    const colors = (state: SignpostState): number =>
-      buildGeometry(SIGNPOST_VARIANTS[state], CONFIG.render.voxelSize).getAttribute('color').count;
-    for (const state of SIGNPOST_STATES) {
-      expect(colors(state)).toBe(colors('none'));
+      for (const glow of SIGNPOST_GLOWS) {
+        const model = SIGNPOST_VARIANTS[state][glow];
+        expect(shape(model), `${state}/${glow}`).toBe(shape(reference));
+        expect(colorCount(model), `${state}/${glow}`).toBe(colorCount(reference));
+      }
     }
   });
 
   it('senza scelta le due frecce hanno lo stesso peso: il cartello CHIEDE', () => {
-    expect(armLuma(SIGNPOST_VARIANTS.none, 1)).toBeCloseTo(armLuma(SIGNPOST_VARIANTS.none, -1), 6);
+    const none = SIGNPOST_VARIANTS.none.dormant;
+    expect(armLuma(none, 1)).toBeCloseTo(armLuma(none, -1), 6);
   });
 
   it('con una scelta le due frecce si separano di quasi mezzo grado di luminanza', () => {
@@ -581,14 +585,18 @@ describe('cartello: le due frecce mostrano la scelta', () => {
     // tavola è alta una decina di pixel e l'occhio la integra: oggi vale 0,41
     // contro 0,85, e il tetto qui sotto è il minimo che resta leggibile.
     // e le due varianti sono l'una lo specchio dell'altra
-    expect(armLuma(SIGNPOST_VARIANTS.left, 1)).toBeCloseTo(armLuma(SIGNPOST_VARIANTS.right, -1), 6);
+    expect(armLuma(SIGNPOST_VARIANTS.left.dormant, 1)).toBeCloseTo(
+      armLuma(SIGNPOST_VARIANTS.right.dormant, -1),
+      6,
+    );
   });
 
   it('la freccia ACCESA è la più scura: su neve, acceso vuol dire contrasto', () => {
     // Su fondo bianco "più chiaro" significa meno visibile: la freccia scelta
     // resta legno pieno, quella scartata sbianca fin quasi alla neve.
-    const lit = Math.min(armLuma(SIGNPOST_VARIANTS.left, 1), armLuma(SIGNPOST_VARIANTS.left, -1));
-    const off = Math.max(armLuma(SIGNPOST_VARIANTS.left, 1), armLuma(SIGNPOST_VARIANTS.left, -1));
+    const model = SIGNPOST_VARIANTS.left.dormant;
+    const lit = Math.min(armLuma(model, 1), armLuma(model, -1));
+    const off = Math.max(armLuma(model, 1), armLuma(model, -1));
     expect(lit).toBeLessThan(luma(PALETTE[0] ?? 0) * 0.45);
     expect(off).toBeGreaterThan(luma(PALETTE[0] ?? 0) * 0.7);
   });
@@ -603,7 +611,7 @@ describe('cartello: le due frecce mostrano la scelta', () => {
     const leftOnScreen = Math.sign(worldToViewX(branchCenterAt(path, 'left', 90)));
     expect(leftOnScreen).not.toBe(0);
     for (const state of ['left', 'right'] as const) {
-      const model = SIGNPOST_VARIANTS[state];
+      const model = SIGNPOST_VARIANTS[state].dormant;
       const litSide = armLuma(model, 1) < armLuma(model, -1) ? 1 : -1;
       const expected = state === 'left' ? leftOnScreen : -leftOnScreen;
       expect(litSide, `variante ${state}`).toBe(expected);
@@ -612,8 +620,11 @@ describe('cartello: le due frecce mostrano la scelta', () => {
 
   it('ogni indice colore delle varianti esiste nella palette', () => {
     for (const state of SIGNPOST_STATES) {
-      for (const voxel of SIGNPOST_VARIANTS[state].voxels) {
-        expect(SIGNPOST_VARIANTS[state].palette[voxel[3] ?? -1]).toBeTypeOf('number');
+      for (const glow of SIGNPOST_GLOWS) {
+        const model = SIGNPOST_VARIANTS[state][glow];
+        for (const voxel of model.voxels) {
+          expect(model.palette[voxel[3] ?? -1], `${state}/${glow}`).toBeTypeOf('number');
+        }
       }
     }
   });
@@ -621,14 +632,119 @@ describe('cartello: le due frecce mostrano la scelta', () => {
   it('nessuna variante è accesa quanto un buff: resta legno, non un premio', () => {
     const weakestBuff = Math.min(...BUFF_KINDS.map((kind) => chroma(dominantColorHex(kind))));
     for (const state of SIGNPOST_STATES) {
-      const model = SIGNPOST_VARIANTS[state];
-      const counts = new Map<number, number>();
-      for (const voxel of model.voxels) {
-        const index = voxel[3] ?? 0;
-        counts.set(index, (counts.get(index) ?? 0) + 1);
+      for (const glow of SIGNPOST_GLOWS) {
+        const model = SIGNPOST_VARIANTS[state][glow];
+        const counts = new Map<number, number>();
+        for (const voxel of model.voxels) {
+          const index = voxel[3] ?? 0;
+          counts.set(index, (counts.get(index) ?? 0) + 1);
+        }
+        const dominant = [...counts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? 0;
+        expect(chroma(model.palette[dominant] ?? 0), `${state}/${glow}`).toBeLessThan(weakestBuff);
       }
-      const dominant = [...counts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? 0;
-      expect(chroma(model.palette[dominant] ?? 0), state).toBeLessThan(weakestBuff);
+    }
+  });
+});
+
+describe("cartello: l'accensione dice che si può scegliere ADESSO", () => {
+  const SNOW_LUMA = luma(PALETTE[0] ?? 0);
+
+  /** Luminanza media su TUTTE le celle: è la macchia che l'occhio integra a
+   *  quaranta-settanta unità, dove il cartello è alto una quarantina di pixel
+   *  e il dettaglio interno non si distingue più. */
+  function silhouetteLuma(model: VoxelModel): number {
+    const total = model.voxels.reduce((sum, v) => sum + luma(model.palette[v[3] ?? 0] ?? 0), 0);
+    return total / model.voxels.length;
+  }
+
+  function armLuma(model: VoxelModel, sideSign: 1 | -1): number {
+    const cells = model.voxels.filter((v) => (sideSign > 0 ? (v[0] ?? 0) >= 1 : (v[0] ?? 0) <= -2));
+    const total = cells.reduce((sum, v) => sum + luma(model.palette[v[3] ?? 0] ?? 0), 0);
+    return total / cells.length;
+  }
+
+  it('spento è il cartello di sempre: accendersi non è una regressione', () => {
+    // Il cartello è un ostacolo in cui ci si schianta: se "spento" volesse dire
+    // "più pallido", il gioco pagherebbe il segnale nuovo con la leggibilità di
+    // qualcosa che uccide. Spento non tocca una cella.
+    expect(MODELS.signpost).toBe(SIGNPOST_VARIANTS.none.dormant);
+    const litWoods = new Set([0x442c1b, 0x322014, 0x22160e]);
+    for (const state of SIGNPOST_STATES) {
+      for (const voxel of SIGNPOST_VARIANTS[state].dormant.voxels) {
+        const hex = SIGNPOST_VARIANTS[state].dormant.palette[voxel[3] ?? 0] ?? 0;
+        expect(litWoods.has(hex), `${state}: legno acceso in una faccia spenta`).toBe(false);
+      }
+    }
+  });
+
+  it('accendersi vuol dire scurirsi, a ogni gradino: su neve è il contrasto', () => {
+    // Stesso principio delle due frecce, applicato alla sagoma intera: più
+    // chiaro contro la neve vuol dire meno visibile, quindi la rampa può solo
+    // scendere. Un gradino che schiarisse spegnerebbe il cartello proprio nel
+    // momento in cui deve chiamare.
+    for (const state of SIGNPOST_STATES) {
+      const ramp = SIGNPOST_GLOWS.map((glow) => silhouetteLuma(SIGNPOST_VARIANTS[state][glow]));
+      for (let i = 1; i < ramp.length; i += 1) {
+        expect(ramp[i] ?? 1, `${state}: gradino ${i}`).toBeLessThan(ramp[i - 1] ?? 0);
+      }
+    }
+  });
+
+  it('il salto fra spento e acceso si legge da lontano, non è una sfumatura', () => {
+    // Misure di oggi sulla faccia senza scelta: la macchia passa da 0,329 a
+    // 0,195 (−41%) e il legno dominante da 0,248 a 0,094 (−62%). Contro la
+    // neve il contrasto sale da 0,67 a 0,81. I tetti qui sotto sono il minimo
+    // che resta leggibile, non la misura.
+    const off = silhouetteLuma(SIGNPOST_VARIANTS.none.dormant);
+    const on = silhouetteLuma(SIGNPOST_VARIANTS.none.lit3);
+    expect(off - on).toBeGreaterThan(0.1);
+    expect(on).toBeLessThan(off * 0.7);
+  });
+
+  it('il fondo della pulsazione resta più scuro di spento: un fermo immagine non mente', () => {
+    // La rampa non torna mai a `dormant` (vedi SIGNPOST_PULSE): se lo facesse,
+    // ci sarebbero trecento millisecondi per ciclo in cui un cartello acceso è
+    // indistinguibile da uno spento, cioè in cui il segnale dice il falso.
+    for (const state of SIGNPOST_STATES) {
+      expect(silhouetteLuma(SIGNPOST_VARIANTS[state].lit1)).toBeLessThan(
+        silhouetteLuma(SIGNPOST_VARIANTS[state].dormant) * 0.9,
+      );
+    }
+  });
+
+  it('accendersi non mangia il contrasto fra le due frecce: sono due segnali', () => {
+    // I due assi devono restare leggibili insieme: quando la finestra è aperta
+    // e una scelta è già stata data, il cartello dice CONTEMPORANEAMENTE "puoi
+    // ancora cambiare" e "per ora vai di là". Scurire anche la freccia
+    // scartata — che è quasi neve — avrebbe dimezzato il secondo dei due.
+    for (const state of ['left', 'right'] as const) {
+      const gap = (glow: (typeof SIGNPOST_GLOWS)[number]): number => {
+        const model = SIGNPOST_VARIANTS[state][glow];
+        return Math.abs(armLuma(model, 1) - armLuma(model, -1));
+      };
+      for (const glow of SIGNPOST_GLOWS) {
+        expect(gap(glow), `${state}/${glow}`).toBeGreaterThanOrEqual(gap('dormant'));
+        const model = SIGNPOST_VARIANTS[state][glow];
+        const off = Math.max(armLuma(model, 1), armLuma(model, -1));
+        expect(off, `${state}/${glow}: la freccia scartata deve restare sbiancata`).toBeGreaterThan(
+          SNOW_LUMA * 0.7,
+        );
+      }
+    }
+  });
+
+  it('nemmeno acceso somiglia a un raccoglibile: nessun gradino si scalda', () => {
+    // I buff sono gli unici oggetti caldi e saturi del gioco, ed è l'unica
+    // categoria che il cartello non deve mai evocare. La rampa scende in
+    // luminanza tenendo la tinta del legno: qui si verifica che il legno
+    // acceso non sia mai più saturo di quello spento, né del più tenue dei
+    // buff. (Il resto della tavolozza del cartello — striscia compresa — non
+    // lo tocca l'accensione, e lo copre già la prova sul colore dominante.)
+    const weakestBuff = Math.min(...BUFF_KINDS.map((kind) => chroma(dominantColorHex(kind))));
+    const dormantWood = chroma(0x5a3a24);
+    for (const hex of [0x442c1b, 0x322014, 0x22160e]) {
+      expect(chroma(hex), `0x${hex.toString(16)}`).toBeLessThan(weakestBuff);
+      expect(chroma(hex), `0x${hex.toString(16)}`).toBeLessThanOrEqual(dormantWood);
     }
   });
 });

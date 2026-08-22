@@ -16,11 +16,16 @@ export interface PathNone {
  * Il bivio è visibile.
  *
  * Fase più lunga di quanto il nome suggerisca: da `previewZ` fino alla
- * biforcazione se NESSUNO SCEGLIE. Chi sceglie passa a 'committed' al punto di
- * non ritorno (`commitZ`); chi non sceglie non ha alcun ramo da impegnare,
- * quindi resta qui, va dritto in mezzo ai due nastri e incontra il cartello
- * (design §4, regola nuova: l'indecisione costa la corsa, non il premio).
- * `forkZ` può quindi diventare negativa in questa fase, ed è normale.
+ * biforcazione, e oltre se NESSUNO SCEGLIE. Chi sceglie passa a 'committed'
+ * quando la biforcazione arriva (`commitZ`, che ora vale 0); chi non sceglie
+ * non ha alcun ramo da impegnare, quindi resta qui, va dritto in mezzo ai due
+ * nastri e incontra il cartello (design §4, regola nuova: l'indecisione costa
+ * la corsa, non il premio). `forkZ` può quindi diventare negativa in questa
+ * fase, ed è normale.
+ *
+ * È ANCHE LA FASE IN CUI SI PIEGA. La piegata non aspetta più il punto di non
+ * ritorno: parte dalla scelta, e quindi vive quasi tutta qui dentro (vedi
+ * `turnOf`).
  *
  * VEDERE E POTER SCEGLIERE SONO DUE COSE DIVERSE, e questa fase le contiene
  * entrambe: comincia quando il bivio diventa visibile, ma la scelta si apre
@@ -35,12 +40,14 @@ export interface PathApproaching {
    * La finestra di scelta è aperta.
    *
    * Si apre a `commitZ + speed * CONFIG.path.choiceWindowSeconds`, cioè a un
-   * TEMPO fisso dal punto di non ritorno invece che a una distanza fissa: era
-   * la stessa soglia della visibilità (`previewZ`), e una distanza fissa dura
-   * tempi diversi a velocità diverse — 2,15 s al tetto di "Normale" ma 4,78 s
-   * a velocità di partenza, cioè cinque secondi di bivio fermo davanti con la
+   * TEMPO fisso dalla scadenza invece che a una distanza fissa: era la stessa
+   * soglia della visibilità (`previewZ`), e una distanza fissa dura tempi
+   * diversi a velocità diverse — 2,15 s al tetto di "Normale" ma 4,78 s a
+   * velocità di partenza, cioè cinque secondi di bivio fermo davanti con la
    * decisione già presa. Il proprietario: «devo poter scegliere solo a ridosso
-   * del bivio, non ore prima».
+   * del bivio, non ore prima». Con `commitZ` a zero la finestra si chiude
+   * esattamente sulla biforcazione: due secondi che finiscono dove il bivio
+   * comincia, invece che venti unità prima.
    *
    * È un campo e non una funzione perché `speed` non è nota a chi la
    * interroga: `chooseBranch` riceve solo il percorso. Il posto in cui la
@@ -73,16 +80,26 @@ export interface PathApproaching {
    * soltanto di buttare via un'intenzione già espressa. È la stessa cosa che
    * il buffer di salto fa da sempre: chi anticipa non va punito.
    *
-   * Resta modificabile fino al punto di non ritorno: premere di nuovo
-   * sovrascrive, come per una scelta normale.
+   * Resta modificabile fino alla biforcazione: premere di nuovo sovrascrive,
+   * come per una scelta normale.
    */
   pendingChoice: 'left' | 'right' | null;
   /** Quale dei due rami è quello ricco (più fiocchi e buff, più ostacoli). */
   richBranch: 'left' | 'right';
+  /** Piegata con segno, 0 finché nessuno sceglie: vedi `turnOf`. */
+  turn: number;
 }
 
-/** Punto di non ritorno superato: il ramo è deciso e già solido, ma la
- *  biforcazione non è ancora stata raggiunta. */
+/**
+ * Scadenza superata: il ramo è deciso, irrevocabile e solido.
+ *
+ * Con `commitZ` a zero questa fase non è più un tratto di strada ma il singolo
+ * frame che ATTRAVERSA la biforcazione (`forkZ` ci entra già negativa di meno
+ * di un frame di corsa). Continua a esistere, e non è un residuo: è la
+ * transizione a cui il resto del gioco appende ciò che va fatto una volta
+ * sola quando la scelta diventa definitiva — togliere di mezzo le entità del
+ * ramo scartato, smettere di ripopolarlo (game.ts, handleForkTransitions).
+ */
 export interface PathCommitted {
   phase: 'committed';
   /** Ancora positiva: quanto manca alla biforcazione. */
@@ -92,6 +109,10 @@ export interface PathCommitted {
   /** Ramo solido. Non può più essere 'main': è per questo che il tipo lo
    *  restringe ai due lati invece di lasciarlo Branch. */
   activeBranch: 'left' | 'right';
+  /** Piegata con segno: vedi `turnOf`. Qui è già del verso definitivo, ma non
+   *  necessariamente completa — chi sceglie all'ultimo istante arriva alla
+   *  biforcazione con la piegata a metà e la finisce nel riallineamento. */
+  turn: number;
 }
 
 /** Biforcazione superata: il mondo trasla lateralmente per riportare il ramo
@@ -112,6 +133,10 @@ export interface PathRealigning {
    *  chiude, e per far rientrare la piegata. È l'ingresso lineare
    *  dell'apertura: `branchSpreadAt(path, 0)` è la sua smoothstep. */
   realignProgress: number;
+  /** Piegata con segno: vedi `turnOf`. Continua a crescere anche qui se alla
+   *  biforcazione non era finita, ed è per questo che il bivio non si chiude
+   *  finché non ha raggiunto il suo bersaglio (vedi applyRealignment). */
+  turn: number;
 }
 
 /**
@@ -124,7 +149,7 @@ export interface PathRealigning {
  * precisamente il punto in cui i bug del bivio erano già stati due volte. Ora
  * `forkZ` non esiste dove non c'è un bivio, `realignProgress` non esiste fuori
  * dal riallineamento, e `activeBranch` non esiste — né vale 'main' — prima del
- * punto di non ritorno: leggerli fuori posto non compila.
+ * la biforcazione: leggerli fuori posto non compila.
  *
  * Conseguenza inevitabile: il discriminante non si può cambiare mutando
  * l'oggetto, quindi `updatePath` RESTITUISCE lo stato nuovo e il chiamante lo
@@ -163,6 +188,54 @@ export function activeBranchOf(path: PathState): Branch {
  *  ruolo di `activeBranchOf`: rende esplicito il caso "non esiste". */
 export function forkZOf(path: PathState): number | null {
   return path.phase === 'none' ? null : path.forkZ;
+}
+
+/**
+ * LA PIEGATA, con segno e senza easing: -1 tutta a sinistra, +1 tutta a
+ * destra, 0 strada dritta. È la grandezza che il resto del progetto legge
+ * attraverso `straightenProgress` (la strada che scivola al centro) e
+ * render/curve.ts (rotazione del mondo, inclinazione della mucca, rollio della
+ * camera): una sola, perché sono la stessa cosa vista da due parti.
+ *
+ * È LEGATA ALLA SCELTA, NON AL COMMIT, e questo è il cambiamento. Prima
+ * cresceva durante la fase impegnata, cioè sulle ultime `commitZ` unità prima
+ * della biforcazione, e la ragione era buona: lì il ramo non poteva più
+ * cambiare, quindi il segno non poteva scattare a metà salita. Ma legava il
+ * riscontro visivo della scelta al punto in cui la scelta non era più
+ * possibile — il giocatore decideva e per un secondo abbondante non succedeva
+ * niente — e teneva la scadenza della scelta inchiodata a 20 unità dal bivio,
+ * che è il difetto per cui `commitZ` è stato portato a zero.
+ *
+ * Ora parte nell'istante in cui il giocatore sceglie, anche in piena fase di
+ * avvicinamento: è il riscontro immediato della scelta, la cosa che a questo
+ * bivio è sempre mancata. Il problema del segno che scatta è risolto tenendo
+ * il valore SENZA segno separato dal verso — un solo numero con segno, che per
+ * cambiare ramo deve passare per lo zero alla stessa velocità con cui è
+ * cresciuto (vedi advanceTurn). Chi cambia idea vede la strada raddrizzarsi e
+ * ripiegare dall'altra parte, non saltare.
+ *
+ * GREZZA, cioè lineare: chi la legge ci applica la propria easing (una sola
+ * volta), esattamente come per `realignProgress`. È anche il motivo per cui
+ * un cambio di verso non produce un angolo vivo: la smoothstep di
+ * `straightenProgress` ha derivata nulla nello zero, quindi il passaggio da un
+ * ramo all'altro è liscio da entrambi i lati.
+ */
+export function turnOf(path: PathState): number {
+  return path.phase === 'none' ? 0 : path.turn;
+}
+
+/**
+ * Verso della piegata, o null se la strada è dritta. È il ramo che si sta
+ * raddrizzando, che NON coincide con `activeBranchOf`: durante
+ * l'avvicinamento nessun ramo è ancora attivo (la scelta è reversibile e le
+ * entità dei due rami sono entrambe inerti) ma uno dei due può già essere
+ * quello verso cui si sta piegando.
+ */
+export function turnSideOf(path: PathState): 'left' | 'right' | null {
+  const turn = turnOf(path);
+  if (turn < 0) return 'left';
+  if (turn > 0) return 'right';
+  return null;
 }
 
 /** Avanzamento del riallineamento, 0 fuori dalla fase che lo possiede. Serve a
@@ -218,8 +291,9 @@ export function branchSpreadAt(path: PathState, z: number): number {
 /**
  * Quanto il ramo scelto è già diventato "la strada principale": 0 = sta ancora
  * di lato come l'altro, 1 = è dritto davanti alla mucca e sarà l'altro a
- * scostarsi. Sale durante la fase IMPEGNATA — cioè fra il punto di non ritorno
- * e la biforcazione — e vale 1 per tutto il riallineamento.
+ * scostarsi. È il valore assoluto della piegata (`turnOf`), smussato: sale da
+ * quando il giocatore sceglie, punta a essere completo alla biforcazione, e
+ * resta a 1 per il resto del bivio.
  *
  * È il pezzo che mancava, e il difetto che ha corretto si vedeva così: «la
  * telecamera curva bene ma poi la strada si deforma e viene presa la strada di
@@ -240,22 +314,15 @@ export function branchSpreadAt(path: PathState, z: number): number {
  * (il campo `offsetX` è stato rimosso), e non c'è più niente che debba
  * "chiudersi" alla fine del riallineamento: nessuno scatto, a nessuna z.
  *
- * La finestra è quella impegnata e non un'altra perché è esattamente il tratto
- * in cui la scelta è irrevocabile (`chooseBranch` fallisce da lì in poi):
- * raddrizzare prima significherebbe mostrare come già presa una decisione che
- * il giocatore può ancora cambiare. Smoothstep e non rampa lineare perché agli
- * estremi la derivata deve essere nulla, altrimenti lo scorrimento laterale
- * del ramo parte e si ferma di scatto.
+ * PARTIVA DALLA FASE IMPEGNATA e ora parte dalla scelta: il perché, e perché
+ * un ramo che si raddrizza mentre la scelta è ancora reversibile non è una
+ * contraddizione, stanno in `turnOf`. Smoothstep e non rampa lineare perché
+ * agli estremi la derivata deve essere nulla, altrimenti lo scorrimento
+ * laterale del ramo parte e si ferma di scatto — e perché è quella derivata
+ * nulla nello zero a rendere liscio anche il cambio di ramo.
  */
 export function straightenProgress(path: PathState): number {
-  if (path.phase === 'realigning') return 1;
-  if (path.phase !== 'committed') return 0;
-  // Distanza già percorsa dentro la fase impegnata, non `forkZ` grezza: gli
-  // estremi di una smoothstep vanno in ordine crescente, e passarli al
-  // contrario la fa restituire zero per sempre senza che niente lo segnali —
-  // il raddrizzamento scattava tutto in un frame alla biforcazione, cioè uno
-  // spostamento laterale di branchSeparation in 1/60 di secondo.
-  return smoothstep(0, CONFIG.path.commitZ, CONFIG.path.commitZ - path.forkZ);
+  return smoothstep(0, 1, Math.abs(turnOf(path)));
 }
 
 /**
@@ -278,7 +345,11 @@ export function straightenProgress(path: PathState): number {
  * il tronco è il riferimento, non una delle strade che si spostano.
  */
 export function branchCenterAt(path: PathState, branch: Branch, z: number): number {
-  const straightening = branch === activeBranchOf(path) ? 1 - straightenProgress(path) : 1;
+  // Il ramo che si raddrizza è quello verso cui punta la PIEGATA, non
+  // `activeBranchOf`: da quando la piegata parte dalla scelta i due
+  // differiscono per tutto l'avvicinamento, dove un ramo scivola già al centro
+  // benché nessuno dei due sia ancora quello solido (vedi turnSideOf).
+  const straightening = branch === turnSideOf(path) ? 1 - straightenProgress(path) : 1;
   // `+ 0` normalizza -0 a 0 (un ramo sinistro moltiplicato per un'apertura
   // nulla produce -0): stessa cautela di worldToViewX in camera-rig.ts e di
   // turnAmount in curve.ts, per lo stesso motivo — Object.is, e quindi toBe
@@ -287,15 +358,41 @@ export function branchCenterAt(path: PathState, branch: Branch, z: number): numb
   return branchOffsetX(path, branch) * straightening * branchSpreadAt(path, z) + 0;
 }
 
-/** true se le entità di quel ramo sono solide (collidono e si raccolgono). */
+/**
+ * true se le entità di quel ramo sono solide (collidono e si raccolgono).
+ *
+ * Due condizioni, e la seconda serve a un caso solo. La prima è la regola: è
+ * solido il ramo IMBOCCATO, gli altri no. La seconda è che quel ramo deve
+ * passare davvero sotto la mucca, perché un'entità è disegnata dove sta il suo
+ * pezzo di strada (`branchCenterAt`) e un ostacolo che uccide mentre sullo
+ * schermo passa di lato è la sola classe di morte che questo progetto non
+ * ammette (vedi run-simulation.test.ts, «nessun ostacolo uccide mentre è
+ * disegnato fuori dal corridoio»).
+ *
+ * Nella quasi totalità dei frame le due condizioni coincidono per costruzione,
+ * e lo scostamento vale 0 esatto: prima della biforcazione l'apertura alla
+ * quota della mucca è nulla, dopo la biforcazione il ramo scelto è già dritto.
+ * Divergono in un caso limite reale: chi CAMBIA IDEA sull'ultimo metro impone
+ * alla piegata di tornare indietro e ripartire dall'altra parte, e con il tetto
+ * di ripidità (config, turnRampZ) la strada nuova arriva sotto la mucca con
+ * qualche decina di unità di ritardo. In quel tratto la mucca taglia il cuneo
+ * fra i due rami — è il prezzo visivo di un ripensamento all'ultimo istante, e
+ * si legge come tale — ma NON deve morire contro qualcosa che vede passare
+ * cinque unità di lato.
+ *
+ * La tolleranza è la semilarghezza del tracciato: dentro quella l'entità sta
+ * comunque sulla strada che la mucca sta percorrendo, ed è la stessa soglia
+ * con cui l'invariante è scritta altrove.
+ */
 export function branchIsSolid(path: PathState, branch: Branch): boolean {
   if (branch === 'main') return true;
-  return activeBranchOf(path) === branch;
+  if (activeBranchOf(path) !== branch) return false;
+  return Math.abs(branchCenterAt(path, branch, 0)) <= CONFIG.world.trackWidth / 2;
 }
 
 /**
  * Registra o cambia la scelta. Restituisce false se non c'è un bivio
- * scegliibile (nessun bivio in corso, o punto di non ritorno gia' superato).
+ * scegliibile (nessun bivio in corso, o biforcazione gia' raggiunta).
  * Non emette eventi: la firma non riceve il bus, quindi 'fork:chosen' e'
  * responsabilita' del chiamante (l'orchestratore), che lo emette quando questa
  * funzione restituisce true.
@@ -305,13 +402,20 @@ export function branchIsSolid(path: PathState, branch: Branch): boolean {
  * diventava 'committed' da sola e il solo test sulla fase bastava a chiudere la
  * finestra. Ora la fase 'approaching' sopravvive al punto di non ritorno
  * proprio nel caso in cui nessuno ha scelto (vedi advanceApproaching), quindi
- * senza questa riga la scelta resterebbe possibile fino al cartello — cioe' il
- * punto di non ritorno sparirebbe esattamente nel caso per cui esiste.
+ * senza questa riga la scelta resterebbe possibile fino al cartello — cioe' la
+ * scadenza sparirebbe esattamente nel caso per cui esiste.
+ *
+ * Con `commitZ` a zero quella riga dice ora una cosa sola e leggibile: si
+ * sceglie finche' la biforcazione e' davanti. Non esiste piu' alcun tratto in
+ * cui il bivio si vede e la pressione viene rifiutata (vedi config, commitZ).
+ * Fino a li' si puo' anche CAMBIARE IDEA quante volte si vuole: la piegata
+ * gia' cominciata si raddrizza e riparte dall'altra parte invece di saltare
+ * (vedi advanceTurn).
  */
 export function chooseBranch(path: PathState, side: 'left' | 'right'): boolean {
   if (path.phase !== 'approaching') return false;
-  // Punto di non ritorno superato: non c'è più niente da scegliere, e non ha
-  // senso nemmeno ricordarlo.
+  // Biforcazione raggiunta: non c'è più niente da scegliere, e non ha senso
+  // nemmeno ricordarlo.
   if (path.forkZ <= CONFIG.path.commitZ) return false;
   if (!path.choiceOpen) {
     // Finestra non ancora aperta: si tiene da parte l'intenzione invece di
@@ -444,8 +548,54 @@ export function updatePath(
       return advanceCommitted(path, travelled, speed);
     case 'realigning':
       path.forkZ -= travelled;
+      path.turn = advanceTurn(path.turn, turnTargetFor(path.choice), travelled, path.forkZ);
       return applyRealignment(path, speed);
   }
+}
+
+/** Dove deve arrivare la piegata: il verso di `branchOffsetX` per il ramo
+ *  scelto, zero se nessuno ha scelto. È qui che sta scritta la regola «chi non
+ *  sceglie non piega affatto»: senza scelta il bersaglio è la strada dritta e
+ *  la piegata, che parte da zero, non si muove mai. */
+function turnTargetFor(choice: 'left' | 'right' | null): number {
+  if (choice === 'left') return -1;
+  if (choice === 'right') return 1;
+  return 0;
+}
+
+/**
+ * Avanza la piegata di un frame verso il suo bersaglio.
+ *
+ * DUE REGOLE IN UNA RIGA, e sono quelle che rendono la piegata un riscontro
+ * della scelta invece di un'animazione a durata fissa.
+ *
+ * 1. IL BERSAGLIO È LA BIFORCAZIONE. La rampa si distribuisce su `forkZ`, cioè
+ *    su quanto manca al bivio: chi sceglie a 90 unità piega su 90 unità, chi
+ *    sceglie a 25 piega su 25. La piegata dura quanto la decisione ha lasciato
+ *    di strada, e arriva a destinazione quando ci arriva la mucca.
+ *
+ * 2. C'È UN TETTO ALLA RIPIDITÀ. `turnRampZ` è il pavimento della distanza su
+ *    cui si distribuisce: sotto quella soglia la piegata non accelera più e
+ *    quel che resta si completa oltre la biforcazione, dentro il
+ *    riallineamento. È il numero che tiene lo scatto laterale del nastro dove
+ *    stava (vedi config, turnRampZ): senza tetto, scegliere all'ultimo
+ *    centimetro farebbe traslare la strada di oltre un'unità in un frame.
+ *
+ * Passo ASSOLUTO e non proporzionale a quanto manca: un avvicinamento
+ * proporzionale è un'esponenziale, arriva vicinissimo al bersaglio e non lo
+ * tocca mai, e la strada resterebbe storta di un millesimo per sempre — cioè
+ * il bivio si chiuderebbe con uno scatto residuo invece che con uno zero
+ * esatto. Con il passo assoluto e il taglio sull'ultimo frame il bersaglio è
+ * raggiunto ESATTAMENTE, che è ciò che i test della chiusura pretendono e che
+ * l'occhio vede come "la strada è dritta".
+ */
+function advanceTurn(turn: number, target: number, travelled: number, forkZ: number): number {
+  const delta = target - turn;
+  if (delta === 0) return turn;
+  const ramp = Math.max(forkZ, CONFIG.path.turnRampZ);
+  const step = travelled / ramp;
+  if (step >= Math.abs(delta)) return target;
+  return delta > 0 ? turn + step : turn - step;
 }
 
 /**
@@ -462,8 +612,11 @@ export function updatePath(
  * La soglia e' il MINIMO fra il tempo concesso e cio' che la visibilita'
  * permette, e non serve scriverlo: se `commitZ + speed * choiceWindowSeconds`
  * supera `previewZ` la condizione e' gia' vera al primo frame del bivio, e la
- * finestra si apre alla nascita. Succede sopra i 43 u/s, cioe' solo per "Toro"
- * vicino al suo tetto.
+ * finestra si apre alla nascita. Con `commitZ` a zero succede sopra i 55 u/s,
+ * cioe' mai — la velocita' di punta del profilo piu' veloce e' 46. Il caso
+ * resta gestito perche' e' una proprieta' dei numeri, non una garanzia: se
+ * domani `previewZ` cala o un profilo corre di piu', qui non c'e' niente da
+ * ricordarsi di aggiungere.
  */
 function openChoiceIfDue(path: PathApproaching, speed: number, bus: EventBus): void {
   if (path.choiceOpen) return;
@@ -512,20 +665,22 @@ function advanceNone(
     // avvicinamento, cioe' solo quando c'e' qualcosa da leggere.
     choice: null,
     richBranch,
+    // Strada dritta: la piegata esiste solo come conseguenza di una scelta.
+    turn: 0,
   };
-  // Sopra i 43 u/s la finestra e' gia' dovuta nel frame in cui il bivio nasce
-  // (commitZ + speed * choiceWindowSeconds supera previewZ): va aperta subito,
-  // o 'fork:appeared' arriverebbe con un frame di ritardo e, peggio, uno swipe
+  // Se la finestra e' gia' dovuta nel frame in cui il bivio nasce (commitZ +
+  // speed * choiceWindowSeconds oltre previewZ) va aperta subito, o
+  // 'fork:appeared' arriverebbe con un frame di ritardo e, peggio, uno swipe
   // dato in quel frame verrebbe buttato via.
   openChoiceIfDue(next, speed, bus);
   return next;
 }
 
 /**
- * Avvicinamento, punto di non ritorno, e il caso di chi non ha scelto.
+ * Avvicinamento, scadenza della scelta, e il caso di chi non ha scelto.
  *
- * REGOLA NUOVA (design §4): non esiste piu' un ramo di default. Chi arriva al
- * punto di non ritorno senza avere scelto non imbocca il ramo sgombro, non
+ * REGOLA NUOVA (design §4): non esiste piu' un ramo di default. Chi arriva alla
+ * biforcazione senza avere scelto non imbocca il ramo sgombro, non
  * imbocca NIENTE: resta in mezzo, la fase non cambia, e la biforcazione gli
  * arriva addosso insieme al cartello che ci sta piantato davanti. Prima
  * l'indecisione costava il premio, ora costa la corsa — perche' un bivio in cui
@@ -545,6 +700,9 @@ function advanceApproaching(
 ): PathState {
   path.forkZ -= travelled;
   openChoiceIfDue(path, speed, bus);
+  // DOPO l'apertura della finestra: una scelta tenuta da parte (pendingChoice)
+  // diventa effettiva proprio li' dentro, e deve piegare gia' da questo frame.
+  path.turn = advanceTurn(path.turn, turnTargetFor(path.choice), travelled, path.forkZ);
   if (path.forkZ > CONFIG.path.commitZ) return path;
 
   const resolved = path.choice;
@@ -556,6 +714,9 @@ function advanceApproaching(
     choice: resolved,
     richBranch: path.richBranch,
     activeBranch: resolved,
+    // La piegata non riparte e non salta: continua da dov'era. È l'unico
+    // motivo per cui il cambio di fase non si vede.
+    turn: path.turn,
   };
   bus.emit('fork:resolved', { side: resolved });
   return next;
@@ -596,6 +757,7 @@ function advanceUnchosen(path: PathApproaching, speed: number): PathState {
  *  straightenProgress). */
 function advanceCommitted(path: PathCommitted, travelled: number, speed: number): PathState {
   path.forkZ -= travelled;
+  path.turn = advanceTurn(path.turn, turnTargetFor(path.choice), travelled, path.forkZ);
   if (path.forkZ > 0) return path;
 
   const next: PathRealigning = {
@@ -605,6 +767,7 @@ function advanceCommitted(path: PathCommitted, travelled: number, speed: number)
     richBranch: path.richBranch,
     activeBranch: path.activeBranch,
     realignProgress: 0,
+    turn: path.turn,
   };
   // Nessuna uscita anticipata: l'eccedenza di questo passo è già distanza
   // percorsa OLTRE la biforcazione, quindi appartiene al riallineamento, e
@@ -638,6 +801,19 @@ function applyRealignment(path: PathRealigning, speed: number): PathState {
   path.realignProgress = t;
   if (t < 1) return path;
 
+  // SECONDA CONDIZIONE, e serve solo a un caso che però esiste: la piegata
+  // deve essere arrivata. Normalmente lo è da un pezzo (chi sceglie quando la
+  // finestra si apre la completa prima ancora della biforcazione), e anche chi
+  // sceglie sull'ultimo centimetro la finisce in `turnRampZ` = 20 unità,
+  // dentro le 28 del riallineamento. Ma chi CAMBIA IDEA all'ultimo deve far
+  // percorrere alla piegata fino a due unità di escursione invece di una, cioè
+  // fino a 40: chiudere lì il bivio riporterebbe la strada dritta di colpo,
+  // che è esattamente lo scatto che tutto questo modulo esiste per non avere.
+  // Si tiene aperto qualche unità in più e si chiude quando la strada è dritta
+  // davvero. Il riallineamento in sé non si allunga: `realignProgress` è già a
+  // 1, il nastro scartato è già svanito.
+  if (path.turn !== turnTargetFor(path.choice)) return path;
+
   // Bivio chiuso: il ramo scelto è il nuovo tronco. I campi del bivio non
   // vengono "azzerati", semplicemente non esistono più in questa fase.
   return {
@@ -665,6 +841,11 @@ export function forkApproaching(options: {
    *  stato su cui quasi tutti i test vogliono lavorare. Chi verifica
    *  l'apertura della finestra passa esplicitamente false. */
   choiceOpen?: boolean;
+  /** Piegata (`turnOf`). Default 0, cioe' "appena scelto": la piegata parte
+   *  dalla scelta e ci mette una rampa a crescere, quindi lo stato subito dopo
+   *  una scelta e' scelta fatta e strada ancora dritta. Chi vuole un
+   *  avvicinamento a piegata gia' avviata la passa. */
+  turn?: number;
 }): PathApproaching {
   return {
     phase: 'approaching',
@@ -673,6 +854,7 @@ export function forkApproaching(options: {
     choice: options.choice ?? null,
     pendingChoice: null,
     richBranch: options.richBranch ?? 'left',
+    turn: options.turn ?? 0,
   };
 }
 
@@ -680,6 +862,11 @@ export function forkCommitted(options: {
   forkZ: number;
   activeBranch: 'left' | 'right';
   richBranch?: 'left' | 'right';
+  /** Piegata (`turnOf`). Default: completa verso il ramo attivo, che e' come
+   *  ci si arriva in una partita — chi sceglie in tempo raddrizza il proprio
+   *  ramo prima della biforcazione. Chi vuole il caso della scelta tardiva,
+   *  che qui arriva a meta', la passa. */
+  turn?: number;
 }): PathCommitted {
   return {
     phase: 'committed',
@@ -687,6 +874,7 @@ export function forkCommitted(options: {
     choice: options.activeBranch,
     richBranch: options.richBranch ?? 'left',
     activeBranch: options.activeBranch,
+    turn: options.turn ?? (options.activeBranch === 'left' ? -1 : 1),
   };
 }
 
@@ -695,6 +883,8 @@ export function forkRealigning(options: {
   realignProgress: number;
   forkZ?: number;
   richBranch?: 'left' | 'right';
+  /** Piegata (`turnOf`). Default: completa verso il ramo attivo. */
+  turn?: number;
 }): PathRealigning {
   return {
     phase: 'realigning',
@@ -705,5 +895,6 @@ export function forkRealigning(options: {
     richBranch: options.richBranch ?? 'left',
     activeBranch: options.activeBranch,
     realignProgress: options.realignProgress,
+    turn: options.turn ?? (options.activeBranch === 'left' ? -1 : 1),
   };
 }

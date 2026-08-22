@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { CONFIG } from '../game/config';
 import { createEventBus } from '../core/events';
 import { createRng } from '../core/rng';
+import { CONFIG } from '../game/config';
 import {
   chooseBranch,
   createPath,

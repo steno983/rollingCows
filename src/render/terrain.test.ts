@@ -1,14 +1,20 @@
 import { describe, expect, it } from 'vitest';
 import { CONFIG } from '../game/config';
+import { createEventBus } from '../core/events';
+import { createRng } from '../core/rng';
 import {
+  chooseBranch,
   createPath,
   forkApproaching,
   forkCommitted,
   forkRealigning,
   type PathNone,
   type PathState,
+  updatePath,
 } from '../game/path';
-import { heightAt, trackCenterOffsets, trackHalfWidths } from './terrain';
+import { worldToViewX } from './camera-rig';
+import { entityWorldOffsetX } from './entities-view';
+import { heightAt, trackCenterOffsets, trackHalfWidths, trackRibbonViewX } from './terrain';
 
 /** Stessa zona sempre-piatta calcolata in terrain.ts: la separazione dei
  *  rami più mezza larghezza del tracciato, così il pendio resta piatto sotto
@@ -229,5 +235,53 @@ describe('trackHalfWidths', () => {
   it('non scende mai sotto zero, nemmeno con un avanzamento oltre 1', () => {
     const path = forkRealigning({ activeBranch: 'left', realignProgress: 1.5 });
     expect(trackHalfWidths(path)[1]).toBe(0);
+  });
+});
+
+describe('il nastro e le entità dello stesso ramo stanno dalla stessa parte', () => {
+  /**
+   * L'invariante che mancava, ed è quella che ha lasciato passare il difetto
+   * più visibile del bivio: `updateTrackGeometry` scriveva le x del nastro in
+   * coordinate di MONDO, mentre entities-view, scenery e debris passano tutti
+   * da `worldToViewX`. La pista battuta di un ramo finiva quindi sul lato
+   * opposto rispetto agli ostacoli che ci stavano sopra, e scegliendo il ramo
+   * destro la striscia che scivolava sotto la mucca era quella disegnata a
+   * sinistra.
+   *
+   * Il test confronta le due catene DOVE SI INCONTRANO — sullo schermo — invece
+   * di verificarle separatamente, che è esattamente ciò che entrambe facevano
+   * passando pur essendo in disaccordo.
+   */
+  it('il nastro di un ramo non finisce mai dal lato opposto alle sue entità', () => {
+    const bus = createEventBus();
+    const rng = createRng(11);
+    let path: PathState = createPath();
+    let chosen = false;
+    let confronti = 0;
+
+    for (let step = 0; step < 600; step += 1) {
+      path = updatePath(path, 0.5, 30, rng, bus);
+      if (path.phase === 'approaching' && !chosen) chosen = chooseBranch(path, 'right');
+      if (path.phase === 'none') continue;
+
+      for (const branch of ['left', 'right'] as const) {
+        for (const z of [12, 40, 80]) {
+          const entityViewX = worldToViewX(entityWorldOffsetX(path, { branch }));
+          const [leftView, rightView] = trackRibbonViewX(path, z);
+          const ribbonViewX = branch === 'left' ? leftView : rightView;
+
+          // Si confrontano solo i casi in cui il nastro è NETTAMENTE da un
+          // lato: vicino al centro il segno non significa nulla, e pretenderlo
+          // renderebbe il test fragile senza proteggere niente in più.
+          if (Math.abs(ribbonViewX) < 1 || Math.abs(entityViewX) < 1) continue;
+          confronti += 1;
+          expect(Math.sign(ribbonViewX)).toBe(Math.sign(entityViewX));
+        }
+      }
+    }
+
+    // Se il filtro sopra scartasse tutto, il test passerebbe senza verificare
+    // nulla: questa riga è ciò che impedisce che diventi una comodità.
+    expect(confronti).toBeGreaterThan(50);
   });
 });

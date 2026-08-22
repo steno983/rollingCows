@@ -12,6 +12,7 @@ import {
 } from '../game/path';
 import type { Branch } from '../game/types';
 import type { WorldState } from '../game/world';
+import { worldToViewX } from './camera-rig';
 
 export interface TerrainView {
   sync(world: WorldState, path: PathState): void;
@@ -540,6 +541,26 @@ function createTrackGeometryKey(): TrackGeometryKey {
  * e si spendevano 244 setXYZ più l'upload del buffer alla GPU per riscrivere
  * gli stessi numeri.
  */
+/**
+ * I centri dei due nastri in coordinate di VISTA, cioè già specchiati.
+ *
+ * Esiste come funzione a sé, esportata, perché la conversione da mondo a vista
+ * era il punto in cui il nastro divergeva da tutto il resto: `updateTrackGeometry`
+ * scriveva le x grezze mentre entità, scenografia e detriti passavano da
+ * `worldToViewX`, quindi la pista battuta di un ramo finiva sul lato opposto
+ * agli ostacoli che le stavano sopra. Tenendo la conversione in un solo posto
+ * esportato, un test può verificare ESATTAMENTE ciò che il renderer usa,
+ * invece di rifare il conto per conto proprio e concludere che va tutto bene.
+ */
+export function trackRibbonViewX(path: PathState, z: number): readonly [number, number] {
+  const [leftCenter, rightCenter] = trackCenterOffsets(path, z);
+  trackViewScratch[0] = worldToViewX(leftCenter);
+  trackViewScratch[1] = worldToViewX(rightCenter);
+  return trackViewScratch;
+}
+
+const trackViewScratch: [number, number] = [0, 0];
+
 function updateTrackGeometry(
   geometry: THREE.BufferGeometry,
   path: PathState,
@@ -565,13 +586,14 @@ function updateTrackGeometry(
   const [leftHalf, rightHalf] = trackHalfWidths(path);
   for (let i = 0; i < TRACK_ROWS; i += 1) {
     const z = i * TRACK_STEP;
-    const [leftCenter, rightCenter] = trackCenterOffsets(path, z);
+    // Le semilarghezze non si specchiano: sono simmetriche attorno al centro.
+    const [leftView, rightView] = trackRibbonViewX(path, z);
     const leftBase = i * 2;
     const rightBase = TRACK_VERTS_PER_RIBBON + i * 2;
-    position.setXYZ(leftBase, leftCenter - leftHalf, TRACK_Y_BIAS, z);
-    position.setXYZ(leftBase + 1, leftCenter + leftHalf, TRACK_Y_BIAS, z);
-    position.setXYZ(rightBase, rightCenter - rightHalf, TRACK_Y_BIAS, z);
-    position.setXYZ(rightBase + 1, rightCenter + rightHalf, TRACK_Y_BIAS, z);
+    position.setXYZ(leftBase, leftView - leftHalf, TRACK_Y_BIAS, z);
+    position.setXYZ(leftBase + 1, leftView + leftHalf, TRACK_Y_BIAS, z);
+    position.setXYZ(rightBase, rightView - rightHalf, TRACK_Y_BIAS, z);
+    position.setXYZ(rightBase + 1, rightView + rightHalf, TRACK_Y_BIAS, z);
   }
   position.needsUpdate = true;
 }

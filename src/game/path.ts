@@ -55,6 +55,28 @@ export interface PathApproaching {
   choiceOpen: boolean;
   /** Ramo verso cui il giocatore è orientato: null finché non sceglie. */
   choice: 'left' | 'right' | null;
+  /**
+   * Scelta data PRIMA che la finestra si aprisse. Vale per tutto
+   * l'avvicinamento e diventa effettiva nell'istante in cui la finestra apre.
+   *
+   * IL DIFETTO CHE CORREGGE. Il bivio si vede da `previewZ` = 110 unità, ma la
+   * finestra si apre a ~61: a velocità di crociera sono più di due secondi in
+   * cui chi guarda la strada — cioè chiunque, non l'interfaccia — preme e vede
+   * la propria pressione sparire nel nulla. Il proprietario l'ha riportato
+   * come «non funziona l'input della curva», ed era esatto: premeva appena
+   * vedeva il bivio, l'unico momento in cui è naturale farlo.
+   *
+   * PERCHÉ NON CONTRADDICE «non farmi scegliere ore prima». Quella richiesta
+   * riguardava il gioco che CHIEDE la scelta troppo presto: pannello acceso e
+   * finestra lunga fino a 4,8 secondi. Qui non si chiede niente in anticipo —
+   * l'interfaccia resta muta e il cartello si accende a ridosso — si evita
+   * soltanto di buttare via un'intenzione già espressa. È la stessa cosa che
+   * il buffer di salto fa da sempre: chi anticipa non va punito.
+   *
+   * Resta modificabile fino al punto di non ritorno: premere di nuovo
+   * sovrascrive, come per una scelta normale.
+   */
+  pendingChoice: 'left' | 'right' | null;
   /** Quale dei due rami è quello ricco (più fiocchi e buff, più ostacoli). */
   richBranch: 'left' | 'right';
 }
@@ -288,8 +310,15 @@ export function branchIsSolid(path: PathState, branch: Branch): boolean {
  */
 export function chooseBranch(path: PathState, side: 'left' | 'right'): boolean {
   if (path.phase !== 'approaching') return false;
-  if (!path.choiceOpen) return false;
+  // Punto di non ritorno superato: non c'è più niente da scegliere, e non ha
+  // senso nemmeno ricordarlo.
   if (path.forkZ <= CONFIG.path.commitZ) return false;
+  if (!path.choiceOpen) {
+    // Finestra non ancora aperta: si tiene da parte l'intenzione invece di
+    // buttarla. Vale poco (choiceGraceSeconds) e solo qui dentro.
+    path.pendingChoice = side;
+    return false;
+  }
   path.choice = side;
   return true;
 }
@@ -440,6 +469,12 @@ function openChoiceIfDue(path: PathApproaching, speed: number, bus: EventBus): v
   if (path.choiceOpen) return;
   if (path.forkZ > CONFIG.path.commitZ + speed * CONFIG.path.choiceWindowSeconds) return;
   path.choiceOpen = true;
+  // Chi ha premuto poco prima ha già scelto: la sua pressione non è andata
+  // persa, aspettava qui.
+  if (path.pendingChoice !== null) {
+    path.choice = path.pendingChoice;
+    path.pendingChoice = null;
+  }
   bus.emit('fork:appeared', { richBranch: path.richBranch });
 }
 
@@ -467,6 +502,7 @@ function advanceNone(
     // cui esce 'fork:appeared'. Alle velocita' piu' alte le due cose
     // coincidono, ed e' lo stesso codice a stabilirlo.
     choiceOpen: false,
+    pendingChoice: null,
     // Nessuna scelta ereditata: la scelta ANTICIPATA non esiste piu'.
     // Consentiva di decidere prima ancora di vedere i due rami, il che era in
     // contraddizione col primo dei tre tempi del bivio (design §4, "lettura":
@@ -635,6 +671,7 @@ export function forkApproaching(options: {
     forkZ: options.forkZ,
     choiceOpen: options.choiceOpen ?? true,
     choice: options.choice ?? null,
+    pendingChoice: null,
     richBranch: options.richBranch ?? 'left',
   };
 }

@@ -90,6 +90,7 @@ export const CONFIG = {
      * (game/run-simulation.test.ts): e' il margine vero, non i 2,0 nominali.
      */
     choiceWindowSeconds: 2,
+
     /**
      * Semi-larghezza del CARTELLO in unità di mondo, cioè quanto sporge di
      * lato dal proprio palo.

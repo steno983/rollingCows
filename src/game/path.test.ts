@@ -902,3 +902,59 @@ describe('il cartello sta nel CUNEO, non in mezzo alla strada', () => {
     expect(clearanceAt(committed, signZ)).toBeLessThan(0);
   });
 });
+
+describe('premere appena si vede il bivio', () => {
+  /**
+   * Il difetto riportato dal proprietario come «non funziona l'input della
+   * curva». Il bivio si vede da previewZ = 110 unità ma la finestra di scelta
+   * si apre a ~61: per più di due secondi chi premeva guardando la STRADA —
+   * cioè chiunque, non l'interfaccia — vedeva la propria pressione sparire.
+   *
+   * Il test simula esattamente quel giocatore: preme una volta sola, subito,
+   * e non tocca più niente. È il comportamento naturale, e deve funzionare.
+   */
+  it('la scelta data appena il bivio compare vale quando la finestra si apre', () => {
+    const bus = createEventBus();
+    const rng = createRng(99);
+    let path: PathState = createPath();
+    let premuto = false;
+
+    for (let i = 0; i < 4000; i += 1) {
+      path = updatePath(path, 0.5, 30, rng, bus);
+      if (path.phase === 'approaching' && !premuto) {
+        premuto = true;
+        // Preme SUBITO: la finestra non è ancora aperta, e infatti la scelta
+        // non è immediata...
+        expect(chooseBranch(path, 'right')).toBe(false);
+        expect(path.choice).toBeNull();
+      }
+      // ...ma non è andata persa: alla chiusura del bivio il ramo è il suo.
+      if (path.phase === 'committed') {
+        expect(path.activeBranch).toBe('right');
+        return;
+      }
+    }
+    throw new Error('il bivio non si è mai risolto');
+  });
+
+  it('ripremere prima del punto di non ritorno cambia idea', () => {
+    const bus = createEventBus();
+    const rng = createRng(7);
+    let path: PathState = createPath();
+    let premuto = false;
+
+    for (let i = 0; i < 4000; i += 1) {
+      path = updatePath(path, 0.5, 30, rng, bus);
+      if (path.phase === 'approaching' && !premuto) {
+        premuto = true;
+        chooseBranch(path, 'right');
+        chooseBranch(path, 'left'); // ci ripensa, sempre in anticipo
+      }
+      if (path.phase === 'committed') {
+        expect(path.activeBranch).toBe('left');
+        return;
+      }
+    }
+    throw new Error('il bivio non si è mai risolto');
+  });
+});

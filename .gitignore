@@ -3,3 +3,8 @@ dist
 .DS_Store
 *.local
 .vite
+
+# Registrazioni di gioco: utili per segnalare difetti, ma pesano centinaia di
+# MB e in un repository git ci resterebbero per sempre, anche cancellandole poi.
+*.mov
+*.mp4
